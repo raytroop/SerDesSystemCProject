@@ -32,6 +32,7 @@ RxCtleTdf::~RxCtleTdf() {
     if (m_H_cmfb) delete m_H_cmfb;
 }
 
+
 void RxCtleTdf::set_attributes() {
     in_p.set_rate(1);
     in_n.set_rate(1);
@@ -165,6 +166,12 @@ void RxCtleTdf::processing() {
     m_out_n_prev = v_out_n;
 }
 
+// build_transfer_function: 构建传递函数对象
+// 功能说明：
+// 1. 根据给定的零点(zeros)、极点(poles)和直流增益(dc_gain)构建一个线性时不变传递函数
+// 2. 传递函数形式: H(s) = dc_gain * ∏(s/(2πfz) + 1) / ∏(s/(2πfp) + 1)
+// 3. 其中 fz 是零点频率, fp 是极点频率
+// 4. 返回一个 sca_tdf::sca_ltf_nd 对象指针，用于后续的信号滤波处理
 sca_tdf::sca_ltf_nd* RxCtleTdf::build_transfer_function(
     const std::vector<double>& zeros,
     const std::vector<double>& poles,
@@ -223,6 +230,12 @@ sca_tdf::sca_ltf_nd* RxCtleTdf::build_transfer_function(
     return new sca_tdf::sca_ltf_nd(num, den);
 }
 
+// apply_saturation: 应用软饱和函数
+// 功能说明：
+// 1. 使用双曲正切函数(tanh)实现软饱和特性
+// 2. 当输入信号 x 超过饱和电压 Vsat 时，输出会平滑地趋向于 ±Vsat
+// 3. 这模拟了实际模拟电路中的非线性饱和效应
+// 4. 相比硬限幅(hard clipping)，tanh 函数提供了更真实的模拟电路行为
 double RxCtleTdf::apply_saturation(double x, double Vsat) {
     if (Vsat <= 0.0) {
         return x;  // No saturation
