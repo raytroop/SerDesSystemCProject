@@ -19,14 +19,15 @@ if(UNIT_TEST_SOURCES)
     )
     
     target_link_libraries(unit_tests
+        GTest::gtest
         serdes_lib
         ${SYSTEMC_AMS_LIBRARY}
         ${SYSTEMC_LIBRARY}
-        GTest::gtest
-        GTest::gtest_main
     )
     
-    gtest_discover_tests(unit_tests)
+    # Don't use gtest_discover_tests as it requires running the executable
+    # which needs sc_main. Instead, add as a regular test
+    add_test(NAME unit_tests COMMAND unit_tests)
 endif()
 
 # Integration tests executable

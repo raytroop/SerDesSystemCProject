@@ -65,10 +65,32 @@ private:
     RxCtleParams m_params;
     
     // Linear transfer function filters
-    sca_tdf::sca_ltf_nd* m_H_ctle;      // Main CTLE filter
-    sca_tdf::sca_ltf_nd* m_H_psrr;      // PSRR path filter
-    sca_tdf::sca_ltf_nd* m_H_cmrr;      // CMRR path filter
-    sca_tdf::sca_ltf_nd* m_H_cmfb;      // CMFB loop filter
+    sca_tdf::sca_ltf_nd m_ltf_ctle;      // Main CTLE filter (Laplace TF)
+    sca_tdf::sca_ltf_nd m_ltf_psrr;      // PSRR path filter
+    sca_tdf::sca_ltf_nd m_ltf_cmrr;      // CMRR path filter
+    sca_tdf::sca_ltf_nd m_ltf_cmfb;      // CMFB loop filter
+    
+    // Transfer function coefficients for main CTLE
+    sca_util::sca_vector<double> m_num_ctle;   // Numerator coefficients
+    sca_util::sca_vector<double> m_den_ctle;   // Denominator coefficients
+    
+    // Transfer function coefficients for PSRR
+    sca_util::sca_vector<double> m_num_psrr;
+    sca_util::sca_vector<double> m_den_psrr;
+    
+    // Transfer function coefficients for CMRR
+    sca_util::sca_vector<double> m_num_cmrr;
+    sca_util::sca_vector<double> m_den_cmrr;
+    
+    // Transfer function coefficients for CMFB
+    sca_util::sca_vector<double> m_num_cmfb;
+    sca_util::sca_vector<double> m_den_cmfb;
+    
+    // Filter enable flags
+    bool m_ctle_filter_enabled;
+    bool m_psrr_enabled;
+    bool m_cmrr_enabled;
+    bool m_cmfb_enabled;
     
     // Internal states
     double m_vcm_prev;                   // Previous common mode output
@@ -80,16 +102,32 @@ private:
     std::normal_distribution<double> m_noise_dist;
     
     /**
-     * @brief Build transfer function from zeros and poles
+     * @brief Build transfer function coefficients from zeros and poles
      * @param zeros Zero frequencies in Hz
      * @param poles Pole frequencies in Hz
      * @param dc_gain DC gain
-     * @return Pointer to ltf_nd filter (caller owns memory)
+     * @param num Output numerator coefficients
+     * @param den Output denominator coefficients
+     * 
+     * Transfer function: H(s) = dc_gain * prod(1 + s/wz_i) / prod(1 + s/wp_j)
+     * where wz_i = 2*pi*zeros[i], wp_j = 2*pi*poles[j]
      */
-    sca_tdf::sca_ltf_nd* build_transfer_function(
+    void build_transfer_function(
         const std::vector<double>& zeros,
         const std::vector<double>& poles,
-        double dc_gain);
+        double dc_gain,
+        sca_util::sca_vector<double>& num,
+        sca_util::sca_vector<double>& den);
+    
+    /**
+     * @brief Multiply two polynomials
+     * @param p1 First polynomial coefficients [c0, c1, c2, ...] for c0 + c1*s + c2*s^2 + ...
+     * @param p2 Second polynomial coefficients
+     * @return Result polynomial coefficients
+     */
+    std::vector<double> poly_multiply(
+        const std::vector<double>& p1,
+        const std::vector<double>& p2);
     
     /**
      * @brief Apply soft saturation using tanh

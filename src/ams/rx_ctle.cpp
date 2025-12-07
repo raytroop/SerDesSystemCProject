@@ -12,10 +12,10 @@ RxCtleTdf::RxCtleTdf(sc_core::sc_module_name nm, const RxCtleParams& params)
     , out_p("out_p")
     , out_n("out_n")
     , m_params(params)
-    , m_H_ctle(nullptr)
-    , m_H_psrr(nullptr)
-    , m_H_cmrr(nullptr)
-    , m_H_cmfb(nullptr)
+    , m_ctle_filter_enabled(false)
+    , m_psrr_enabled(false)
+    , m_cmrr_enabled(false)
+    , m_cmfb_enabled(false)
     , m_vcm_prev(params.vcm_out)
     , m_out_p_prev(params.vcm_out)
     , m_out_n_prev(params.vcm_out)
@@ -25,11 +25,7 @@ RxCtleTdf::RxCtleTdf(sc_core::sc_module_name nm, const RxCtleParams& params)
 }
 
 RxCtleTdf::~RxCtleTdf() {
-    // Clean up dynamically allocated filter objects
-    if (m_H_ctle) delete m_H_ctle;
-    if (m_H_psrr) delete m_H_psrr;
-    if (m_H_cmrr) delete m_H_cmrr;
-    if (m_H_cmfb) delete m_H_cmfb;
+    // No dynamic memory to clean up - all filters are stack objects
 }
 
 
@@ -41,57 +37,59 @@ void RxCtleTdf::set_attributes() {
     out_n.set_rate(1);
     
     // Set default timestep if needed
-    set_timestep(1.0 / 100e9);  // 100 GHz sampling for high-speed SerDes
+    set_timestep(1.0 / 100e9, sc_core::SC_SEC);  // 100 GHz sampling for high-speed SerDes
 }
 
 void RxCtleTdf::initialize() {
-    // Build main CTLE transfer function H_ctle(s)
-    m_H_ctle = build_transfer_function(
-        m_params.zeros,
-        m_params.poles,
-        m_params.dc_gain
-    );
-    
-    // Build PSRR transfer function if enabled
-    if (m_params.psrr.enable && m_params.psrr.gain != 0.0) {
-        m_H_psrr = build_transfer_function(
-            m_params.psrr.zeros,
-            m_params.psrr.poles,
-            m_params.psrr.gain
-        );
-    }
-    
-    // Build CMRR transfer function if enabled
-    if (m_params.cmrr.enable && m_params.cmrr.gain != 0.0) {
-        m_H_cmrr = build_transfer_function(
-            m_params.cmrr.zeros,
-            m_params.cmrr.poles,
-            m_params.cmrr.gain
-        );
-    }
-    
-    // Build CMFB loop filter if enabled
-    if (m_params.cmfb.enable) {
-        // First-order approximation: H_cmfb(s) = loop_gain / (1 + s/(2*pi*bandwidth))
-        std::vector<double> cmfb_zeros;
-        std::vector<double> cmfb_poles = {m_params.cmfb.bandwidth};
-        m_H_cmfb = build_transfer_function(
-            cmfb_zeros,
-            cmfb_poles,
-            m_params.cmfb.loop_gain
-        );
-    }
-    
     // Initialize states
     m_vcm_prev = m_params.vcm_out;
     m_out_p_prev = m_params.vcm_out;
     m_out_n_prev = m_params.vcm_out;
+    
+    // Build main CTLE transfer function if zeros or poles are defined
+    if (!m_params.zeros.empty() || !m_params.poles.empty()) {
+        build_transfer_function(m_params.zeros, m_params.poles, 
+                               m_params.dc_gain, m_num_ctle, m_den_ctle);
+        m_ctle_filter_enabled = true;
+    } else {
+        // No zeros/poles defined, use simple DC gain
+        m_num_ctle.resize(1);
+        m_num_ctle(0) = m_params.dc_gain;
+        m_den_ctle.resize(1);
+        m_den_ctle(0) = 1.0;
+        m_ctle_filter_enabled = false;
+    }
+    
+    // Build PSRR transfer function if enabled
+    if (m_params.psrr.enable) {
+        build_transfer_function(m_params.psrr.zeros, m_params.psrr.poles,
+                               m_params.psrr.gain, m_num_psrr, m_den_psrr);
+        m_psrr_enabled = true;
+    }
+    
+    // Build CMRR transfer function if enabled
+    if (m_params.cmrr.enable) {
+        build_transfer_function(m_params.cmrr.zeros, m_params.cmrr.poles,
+                               m_params.cmrr.gain, m_num_cmrr, m_den_cmrr);
+        m_cmrr_enabled = true;
+    }
+    
+    // Build CMFB transfer function if enabled
+    if (m_params.cmfb.enable) {
+        // CMFB is typically a low-pass filter with given bandwidth
+        std::vector<double> cmfb_zeros;  // No zeros for simple integrator
+        std::vector<double> cmfb_poles = {m_params.cmfb.bandwidth};
+        build_transfer_function(cmfb_zeros, cmfb_poles,
+                               m_params.cmfb.loop_gain, m_num_cmfb, m_den_cmfb);
+        m_cmfb_enabled = true;
+    }
 }
 
 void RxCtleTdf::processing() {
     // Step 1: Read differential and common-mode inputs
     double v_in_p = in_p.read();
     double v_in_n = in_n.read();
+    double v_vdd = vdd.read();
     
     // Calculate differential and common-mode inputs
     double vin_diff = v_in_p - v_in_n;
@@ -107,11 +105,15 @@ void RxCtleTdf::processing() {
         vin_diff += m_noise_dist(m_rng);
     }
     
-    // Step 4: Main CTLE filtering - apply to differential signal
-    double vout_diff_linear = 0.0;
-    if (m_H_ctle) {
-        vout_diff_linear = m_H_ctle->estimate_nd(get_time().to_seconds(), vin_diff);
+    // Step 4: Main CTLE filtering with zero-pole transfer function
+    // H(s) = dc_gain * prod(1 + s/wz_i) / prod(1 + s/wp_j)
+    double vout_diff_linear;
+    if (m_ctle_filter_enabled) {
+        // Apply Laplace transfer function using sca_ltf_nd
+        // The ltf_nd operator() applies the filter: output = H(s) * input
+        vout_diff_linear = m_ltf_ctle(m_num_ctle, m_den_ctle, vin_diff);
     } else {
+        // Fallback to simple DC gain
         vout_diff_linear = m_params.dc_gain * vin_diff;
     }
     
@@ -119,41 +121,38 @@ void RxCtleTdf::processing() {
     double Vsat = 0.5 * (m_params.sat_max - m_params.sat_min);
     double vout_diff_sat = apply_saturation(vout_diff_linear, Vsat);
     
-    // Step 6: PSRR path (optional)
-    double vout_psrr_diff = 0.0;
-    if (m_params.psrr.enable && m_H_psrr) {
-        double vdd_current = vdd.read();
-        double vdd_ripple = vdd_current - m_params.psrr.vdd_nom;
-        vout_psrr_diff = m_H_psrr->estimate_nd(get_time().to_seconds(), vdd_ripple);
+    // Step 6: PSRR path - power supply noise coupling to differential output
+    // Models how VDD variations affect the differential output
+    double vout_psrr = 0.0;
+    if (m_psrr_enabled) {
+        double vdd_deviation = v_vdd - m_params.psrr.vdd_nom;
+        vout_psrr = m_ltf_psrr(m_num_psrr, m_den_psrr, vdd_deviation);
     }
     
-    // Step 7: CMRR path (optional)
-    double vout_cmrr_diff = 0.0;
-    if (m_params.cmrr.enable && m_H_cmrr) {
-        vout_cmrr_diff = m_H_cmrr->estimate_nd(get_time().to_seconds(), vin_cm);
+    // Step 7: CMRR path - common-mode to differential conversion
+    // Models imperfect common-mode rejection
+    double vout_cmrr = 0.0;
+    if (m_cmrr_enabled) {
+        vout_cmrr = m_ltf_cmrr(m_num_cmrr, m_den_cmrr, vin_cm);
     }
     
-    // Step 8: Sum all differential contributions
-    double vout_total_diff = vout_diff_sat + vout_psrr_diff + vout_cmrr_diff;
+    // Step 8: Combine all differential contributions
+    double vout_total_diff = vout_diff_sat + vout_psrr + vout_cmrr;
     
-    // Step 9: Common-mode and CMFB
+    // Step 9: Common-mode feedback (CMFB) loop
+    // CMFB regulates output common-mode voltage to target vcm_out
     double vcm_eff = m_params.vcm_out;
-    
-    if (m_params.cmfb.enable && m_H_cmfb) {
-        // Measure previous output common mode (avoid algebraic loop)
-        double vcm_meas = 0.5 * (m_out_p_prev + m_out_n_prev);
-        
-        // Common-mode error
-        double e_cm = m_params.vcm_out - vcm_meas;
-        
-        // Apply CMFB loop filter
-        double delta_vcm = m_H_cmfb->estimate_nd(get_time().to_seconds(), e_cm);
-        
-        // Effective common mode
-        vcm_eff = m_params.vcm_out + delta_vcm;
+    if (m_cmfb_enabled) {
+        // Measure current output common-mode
+        double vcm_measured = 0.5 * (m_out_p_prev + m_out_n_prev);
+        // Error signal: difference from target
+        double vcm_error = m_params.vcm_out - vcm_measured;
+        // CMFB correction through loop filter
+        double vcm_correction = m_ltf_cmfb(m_num_cmfb, m_den_cmfb, vcm_error);
+        vcm_eff = m_params.vcm_out + vcm_correction;
     }
     
-    // Step 10: Generate differential outputs
+    // Step 10: Generate differential outputs around common-mode
     double v_out_p = vcm_eff + 0.5 * vout_total_diff;
     double v_out_n = vcm_eff - 0.5 * vout_total_diff;
     
@@ -164,70 +163,6 @@ void RxCtleTdf::processing() {
     // Step 12: Update previous states for CMFB
     m_out_p_prev = v_out_p;
     m_out_n_prev = v_out_n;
-}
-
-// build_transfer_function: 构建传递函数对象
-// 功能说明：
-// 1. 根据给定的零点(zeros)、极点(poles)和直流增益(dc_gain)构建一个线性时不变传递函数
-// 2. 传递函数形式: H(s) = dc_gain * ∏(s/(2πfz) + 1) / ∏(s/(2πfp) + 1)
-// 3. 其中 fz 是零点频率, fp 是极点频率
-// 4. 返回一个 sca_tdf::sca_ltf_nd 对象指针，用于后续的信号滤波处理
-sca_tdf::sca_ltf_nd* RxCtleTdf::build_transfer_function(
-    const std::vector<double>& zeros,
-    const std::vector<double>& poles,
-    double dc_gain)
-{
-    if (poles.empty()) {
-        // No poles - simple gain
-        return nullptr;
-    }
-    
-    // Build numerator and denominator for ltf_nd
-    // H(s) = dc_gain * prod((s/wz + 1)) / prod((s/wp + 1))
-    
-    sca_util::sca_vector<double> num;
-    sca_util::sca_vector<double> den;
-    
-    // Start with dc_gain in numerator
-    num(0) = dc_gain;
-    
-    // Multiply numerator by (s/wz + 1) for each zero
-    for (size_t i = 0; i < zeros.size(); ++i) {
-        double wz = 2.0 * M_PI * zeros[i];
-        sca_util::sca_vector<double> zero_term(2);
-        zero_term(0) = 1.0;      // constant term
-        zero_term(1) = 1.0 / wz; // s term coefficient
-        
-        // Convolve with existing numerator
-        sca_util::sca_vector<double> new_num(num.length() + 1);
-        for (int j = 0; j < num.length(); ++j) {
-            new_num(j) += num(j) * zero_term(0);
-            new_num(j + 1) += num(j) * zero_term(1);
-        }
-        num = new_num;
-    }
-    
-    // Start denominator at 1
-    den(0) = 1.0;
-    
-    // Multiply denominator by (s/wp + 1) for each pole
-    for (size_t i = 0; i < poles.size(); ++i) {
-        double wp = 2.0 * M_PI * poles[i];
-        sca_util::sca_vector<double> pole_term(2);
-        pole_term(0) = 1.0;      // constant term
-        pole_term(1) = 1.0 / wp; // s term coefficient
-        
-        // Convolve with existing denominator
-        sca_util::sca_vector<double> new_den(den.length() + 1);
-        for (int j = 0; j < den.length(); ++j) {
-            new_den(j) += den(j) * pole_term(0);
-            new_den(j + 1) += den(j) * pole_term(1);
-        }
-        den = new_den;
-    }
-    
-    // Create and return the transfer function
-    return new sca_tdf::sca_ltf_nd(num, den);
 }
 
 // apply_saturation: 应用软饱和函数
@@ -241,6 +176,83 @@ double RxCtleTdf::apply_saturation(double x, double Vsat) {
         return x;  // No saturation
     }
     return std::tanh(x / Vsat) * Vsat;
+}
+
+// build_transfer_function: 从零极点构建传递函数系数
+// 传递函数形式: H(s) = dc_gain * prod(1 + s/wz_i) / prod(1 + s/wp_j)
+// 其中 wz_i = 2*pi*zeros[i], wp_j = 2*pi*poles[j]
+//
+// 对于 sca_ltf_nd，多项式系数格式为:
+// num(s) = num[0] + num[1]*s + num[2]*s^2 + ...
+// den(s) = den[0] + den[1]*s + den[2]*s^2 + ...
+void RxCtleTdf::build_transfer_function(
+    const std::vector<double>& zeros,
+    const std::vector<double>& poles,
+    double dc_gain,
+    sca_util::sca_vector<double>& num,
+    sca_util::sca_vector<double>& den)
+{
+    // Build numerator polynomial from zeros
+    // Each zero at frequency fz contributes factor (1 + s/(2*pi*fz))
+    // = (1 + s/wz) which in coefficient form is [1, 1/wz]
+    std::vector<double> num_poly = {dc_gain};  // Start with DC gain
+    
+    for (double fz : zeros) {
+        if (fz > 0.0) {
+            double wz = 2.0 * M_PI * fz;
+            std::vector<double> factor = {1.0, 1.0 / wz};  // (1 + s/wz)
+            num_poly = poly_multiply(num_poly, factor);
+        }
+    }
+    
+    // Build denominator polynomial from poles
+    // Each pole at frequency fp contributes factor (1 + s/(2*pi*fp))
+    std::vector<double> den_poly = {1.0};  // Start with 1
+    
+    for (double fp : poles) {
+        if (fp > 0.0) {
+            double wp = 2.0 * M_PI * fp;
+            std::vector<double> factor = {1.0, 1.0 / wp};  // (1 + s/wp)
+            den_poly = poly_multiply(den_poly, factor);
+        }
+    }
+    
+    // Copy to sca_vector format
+    num.resize(num_poly.size());
+    for (size_t i = 0; i < num_poly.size(); ++i) {
+        num(i) = num_poly[i];
+    }
+    
+    den.resize(den_poly.size());
+    for (size_t i = 0; i < den_poly.size(); ++i) {
+        den(i) = den_poly[i];
+    }
+}
+
+// poly_multiply: 多项式乘法
+// 输入: p1 = [a0, a1, a2, ...] 表示 a0 + a1*s + a2*s^2 + ...
+//       p2 = [b0, b1, b2, ...] 表示 b0 + b1*s + b2*s^2 + ...
+// 输出: result = p1 * p2 的系数
+std::vector<double> RxCtleTdf::poly_multiply(
+    const std::vector<double>& p1,
+    const std::vector<double>& p2)
+{
+    if (p1.empty() || p2.empty()) {
+        return {1.0};
+    }
+    
+    size_t n1 = p1.size();
+    size_t n2 = p2.size();
+    std::vector<double> result(n1 + n2 - 1, 0.0);
+    
+    // Convolution: result[k] = sum(p1[i] * p2[k-i]) for all valid i
+    for (size_t i = 0; i < n1; ++i) {
+        for (size_t j = 0; j < n2; ++j) {
+            result[i + j] += p1[i] * p2[j];
+        }
+    }
+    
+    return result;
 }
 
 } // namespace serdes

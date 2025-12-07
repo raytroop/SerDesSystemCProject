@@ -65,7 +65,7 @@ SystemParams ConfigLoader::load_default() {
     params.rx.ctle.dc_gain = 1.5;
     
     // RX VGA
-    params.rx.vga.gain = 4.0;
+    params.rx.vga.dc_gain = 4.0;
     
     // RX Sampler  
     params.rx.sampler.threshold = 0.0;

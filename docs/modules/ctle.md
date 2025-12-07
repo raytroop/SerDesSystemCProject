@@ -1,34 +1,47 @@
-# CTLE 模块文档
+# CTLE 模块技术文档
 
 **级别**：AMS 子模块（RX）  
 **类名**：`RxCtleTdf`  
-**当前版本**：v0.3 (2025-11-23)  
+**当前版本**：v0.4 (2025-12-07)  
 **状态**：生产就绪
 
 ---
 
 ## 1. 概述
 
-连续时间线性均衡器（CTLE）是接收端的关键模块，用于补偿信道引入的高频衰减。本模块采用**差分输入/差分输出**架构，使用多零点/多极点传递函数实现频率选择性放大。
+连续时间线性均衡器（CTLE）是SerDes接收端的核心模拟前端模块，主要功能是补偿高速信道引入的高频衰减，通过频率选择性放大恢复被信道损伤的信号质量。
 
-### 核心特性
+### 1.1 设计原理
 
-- ✅ **差分架构**：完整的差分信号路径，支持共模抑制
-- ✅ **灵活传递函数**：支持任意多零点/多极点配置
-- ✅ **非理想效应建模**：输入偏移、输入噪声、输出饱和
-- ✅ **PSRR建模**：电源噪声通过可配置传递函数耦合到输出
-- ✅ **CMFB环路**：共模反馈环路，稳定输出共模电压
-- ✅ **CMRR建模**：输入共模到差分输出的泄漏路径
+CTLE的核心设计思想是利用零极点传递函数实现频率相关的增益特性：
 
-### 版本历史
+- **低频信号**：信道衰减较小，CTLE提供较低增益（DC增益）
+- **高频信号**：信道衰减较大，CTLE通过零点提升高频增益进行补偿
+- **极高频信号**：通过极点限制带宽，避免高频噪声放大
+
+传递函数的数学形式为：
+```
+H(s) = dc_gain × ∏(1 + s/ωz_i) / ∏(1 + s/ωp_j)
+```
+其中 ωz = 2π×fz（零点角频率），ωp = 2π×fp（极点角频率）。
+
+### 1.2 核心特性
+
+- **差分架构**：完整的差分信号路径，支持共模抑制
+- **灵活传递函数**：支持任意多零点/多极点配置
+- **非理想效应建模**：输入偏移、输入噪声、输出软饱和
+- **PSRR建模**：电源噪声通过可配置传递函数耦合到输出
+- **CMFB环路**：共模反馈环路，稳定输出共模电压
+- **CMRR建模**：输入共模到差分输出的泄漏路径
+
+### 1.3 版本历史
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
 | v0.1 | 2025-09 | 初始版本，单端接口 |
 | v0.2 | 2025-10 | 新增PSRR/CMFB/CMRR功能 |
-| v0.3 | 2025-11-23 | **⚠️ 破坏性更新**：改为差分接口，统一共模控制 |
-
-> **⚠️ 重要提示**：v0.3是破坏性更新，单端接口（`in`, `out`）已移除，必须使用差分接口（`in_p`, `in_n`, `out_p`, `out_n`）。详见第5节迁移指南。
+| v0.3 | 2025-11-23 | 改为差分接口，统一共模控制 |
+| v0.4 | 2025-12-07 | 完善测试平台，支持多场景仿真 |
 
 ---
 
@@ -36,27 +49,15 @@
 
 ### 2.1 端口定义（TDF域）
 
-#### 差分输入端口
+| 端口名 | 方向 | 类型 | 说明 |
+|-------|------|------|------|
+| `in_p` | 输入 | double | 差分输入正端 |
+| `in_n` | 输入 | double | 差分输入负端 |
+| `vdd` | 输入 | double | 电源电压（PSRR建模用） |
+| `out_p` | 输出 | double | 差分输出正端 |
+| `out_n` | 输出 | double | 差分输出负端 |
 
-```cpp
-sca_tdf::sca_in<double> in_p;   // 差分输入正端
-sca_tdf::sca_in<double> in_n;   // 差分输入负端
-```
-
-#### 电源端口
-
-```cpp
-sca_tdf::sca_in<double> vdd;    // 电源电压（用于PSRR建模）
-```
-
-> ⚠️ **重要**：即使不启用PSRR功能，`vdd`端口也**必须连接**（SystemC-AMS要求所有端口均需连接）。可连接到常数电源源。
-
-#### 差分输出端口
-
-```cpp
-sca_tdf::sca_out<double> out_p; // 差分输出正端
-sca_tdf::sca_out<double> out_n; // 差分输出负端
-```
+> **重要**：即使不启用PSRR功能，`vdd`端口也必须连接（SystemC-AMS要求所有端口均需连接）。
 
 ### 2.2 参数配置（RxCtleParams）
 
@@ -75,494 +76,305 @@ sca_tdf::sca_out<double> out_n; // 差分输出负端
 | `sat_min` | double | -0.5 | 输出最小电压（V） |
 | `sat_max` | double | 0.5 | 输出最大电压（V） |
 
-#### PSRR子结构（psrr）
+#### PSRR子结构
 
-电源抑制比路径配置，建模电源纹波对差分输出的影响。
+电源抑制比路径，建模VDD纹波对差分输出的影响。
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable` | bool | false | 启用PSRR建模 |
-| `gain` | double | 0.0 | PSRR路径增益（线性倍数） |
-| `zeros` | vector&lt;double&gt; | [] | 零点频率（Hz） |
-| `poles` | vector&lt;double&gt; | [] | 极点频率（Hz） |
-| `vdd_nom` | double | 1.0 | 名义电源电压（V） |
+| 参数 | 说明 |
+|------|------|
+| `enable` | 启用PSRR建模 |
+| `gain` | PSRR路径增益（如0.01表示-40dB） |
+| `poles` | 低通滤波极点频率 |
+| `vdd_nom` | 名义电源电压 |
 
-**工作原理**：`vdd_ripple = vdd - vdd_nom` → `H_psrr(s)` → 添加到差分输出
+工作原理：`vdd_ripple = vdd - vdd_nom` → PSRR传递函数 → 耦合到差分输出
 
-#### CMFB子结构（cmfb）
+#### CMFB子结构
 
-共模反馈环路配置，稳定输出共模电压到目标值`vcm_out`。
+共模反馈环路，稳定输出共模电压到目标值。
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable` | bool | false | 启用CMFB环路 |
-| `bandwidth` | double | 1e6 | 环路带宽（Hz） |
-| `loop_gain` | double | 1.0 | 环路增益（线性倍数） |
+| 参数 | 说明 |
+|------|------|
+| `enable` | 启用CMFB环路 |
+| `bandwidth` | 环路带宽（Hz） |
+| `loop_gain` | 环路增益 |
 
-**工作原理**：测量`vcm_meas = 0.5*(out_p_prev + out_n_prev)` → 计算误差 → 环路滤波器 → 调整有效共模
+工作原理：测量输出共模 → 与目标比较 → 环路滤波器 → 调整共模
 
-#### CMRR子结构（cmrr）
+#### CMRR子结构
 
-共模抑制比路径配置，建模输入共模到差分输出的泄漏。
+共模抑制比路径，建模输入共模到差分输出的泄漏。
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enable` | bool | false | 启用CMRR建模 |
-| `gain` | double | 0.0 | CM→DIFF 泄漏增益（线性倍数） |
-| `zeros` | vector&lt;double&gt; | [] | 零点频率（Hz） |
-| `poles` | vector&lt;double&gt; | [] | 极点频率（Hz） |
-
-**工作原理**：`vin_cm = 0.5*(in_p + in_n)` → `H_cmrr(s)` → 添加到差分输出
+| 参数 | 说明 |
+|------|------|
+| `enable` | 启用CMRR建模 |
+| `gain` | CM→DIFF泄漏增益 |
+| `poles` | 低通滤波极点频率 |
 
 ---
 
-## 3. 行为模型与实现
+## 3. 核心实现机制
 
 ### 3.1 信号处理流程
 
-以下是`processing()`方法的详细处理流程：
+CTLE模块的`processing()`方法采用严格的多步骤流水线处理架构，确保信号处理的正确性和可维护性：
 
-#### 步骤1：读取差分和共模输入
-
-```cpp
-double vin_diff = in_p.read() - in_n.read();
-double vin_cm = 0.5 * (in_p.read() + in_n.read());
+```
+输入读取 → 偏移注入 → 噪声注入 → CTLE滤波 → 软饱和 → PSRR路径 → CMRR路径 → 合成 → CMFB → 输出
 ```
 
-- `vin_diff`：差分输入信号
-- `vin_cm`：共模输入信号
+**步骤1-输入读取**：从差分输入端口读取信号，计算差分分量 `vin_diff = in_p - in_n` 和共模分量 `vin_cm = 0.5*(in_p + in_n)`。
 
-#### 步骤2：添加输入偏移（可选）
+**步骤2-偏移注入**：若启用`offset_enable`，将直流偏移电压`vos`叠加到差分信号，模拟实际放大器的失配引起的偏移。
 
-```cpp
-if (m_params.offset_enable) {
-    vin_diff += m_params.vos;
-}
-```
+**步骤3-噪声注入**：若启用`noise_enable`，采用Mersenne Twister随机数生成器产生高斯分布噪声，标准差由`vnoise_sigma`指定。
 
-- 只有当`offset_enable=true`时才添加偏移电压`vos`
+**步骤4-CTLE核心滤波**：这是CTLE的核心功能。如果配置了零极点，使用SystemC-AMS的`sca_tdf::sca_ltf_nd`滤波器应用传递函数；否则直接应用DC增益。
 
-#### 步骤3：注入输入噪声（可选）
+**步骤5-软饱和**：使用双曲正切函数`tanh(x/Vsat)*Vsat`实现平滑饱和，避免硬限幅带来的谐波失真，更真实地模拟模拟电路行为。
 
-```cpp
-if (m_params.noise_enable && m_params.vnoise_sigma > 0) {
-    double noise = m_noise_dist(m_rng);  // 高斯分布 N(0, sigma)
-    vin_diff += noise;
-}
-```
+**步骤6-PSRR路径**：若启用，计算VDD偏离名义值的纹波，通过PSRR传递函数处理后耦合到差分输出。
 
-- 使用Mersenne Twister随机数生成器
-- 高斯分布，标准差为`vnoise_sigma`
+**步骤7-CMRR路径**：若启用，输入共模信号通过CMRR传递函数后泄漏到差分输出。
 
-#### 步骤4：主CTLE滤波
+**步骤8-差分合成**：将主通道、PSRR路径、CMRR路径的贡献累加，形成总差分输出。
 
-```cpp
-if (m_H_ctle) {
-    vout_diff = m_H_ctle->estimate_nd(t, vin_diff);
-} else {
-    vout_diff = m_params.dc_gain * vin_diff;
-}
-```
+**步骤9-CMFB处理**：若启用共模反馈，测量前一周期的输出共模（避免代数环），与目标共模比较并通过环路滤波器调整。
 
-- 如果配置了零极点，使用`sca_ltf_nd`滤波器
-- 否则直接应用DC增益
+**步骤10-输出生成**：基于有效共模电压和差分信号生成差分输出：`out_p = vcm + 0.5*vdiff`，`out_n = vcm - 0.5*vdiff`。
 
-#### 步骤5：软饱和限制
+### 3.2 传递函数构建机制
 
-```cpp
-double Vsat = 0.5 * (m_params.sat_max - m_params.sat_min);
-if (Vsat > 0) {
-    vout_diff_sat = tanh(vout_diff / Vsat) * Vsat;
-} else {
-    vout_diff_sat = vout_diff;
-}
-```
+模块采用动态多项式卷积方法构建任意阶数的传递函数：
 
-- 使用`tanh`函数实现平滑的软饱和
-- 避免硬限幅导致的谐波失真
+1. **初始化**：分子多项式以DC增益为常数项，分母为1
+2. **零点处理**：对每个零点频率fz，分子与`(1 + s/ωz)`卷积
+3. **极点处理**：对每个极点频率fp，分母与`(1 + s/ωp)`卷积
+4. **系数转换**：将多项式系数转换为`sca_util::sca_vector`格式
 
-#### 步骤6：PSRR路径（可选）
+多项式系数布局采用升幂顺序：`[a0, a1, a2, ...]` 表示 `a0 + a1*s + a2*s² + ...`
 
-```cpp
-double vout_psrr_diff = 0.0;
-if (m_params.psrr.enable && m_H_psrr) {
-    double vdd_ripple = vdd.read() - m_params.psrr.vdd_nom;
-    vout_psrr_diff = m_H_psrr->estimate_nd(t, vdd_ripple);
-}
-```
+### 3.3 软饱和设计思想
 
-- 计算电源纹波：`vdd_ripple = vdd - vdd_nom`
-- 通过PSRR传递函数滤波
+传统的硬限幅会引入丰富的谐波分量，不符合实际模拟电路行为。本模块采用`tanh`函数实现软饱和：
 
-#### 步骤7：CMRR路径（可选）
+- 当输入远小于饱和电压Vsat时，输出近似线性
+- 当输入接近Vsat时，增益渐进压缩
+- 输出渐近地趋近±Vsat，但永不达到
 
-```cpp
-double vout_cmrr_diff = 0.0;
-if (m_params.cmrr.enable && m_H_cmrr) {
-    vout_cmrr_diff = m_H_cmrr->estimate_nd(t, vin_cm);
-}
-```
-
-- 输入共模信号通过CMRR传递函数
-- 模拟共模到差分的泄漏
-
-#### 步骤8：差分输出合成
-
-```cpp
-double vout_total_diff = vout_diff_sat + vout_psrr_diff + vout_cmrr_diff;
-```
-
-- 合并主信号、PSRR路径、CMRR路径
-
-#### 步骤9：共模与CMFB（可选）
-
-**无CMFB时**：
-```cpp
-double vcm_eff = m_params.vcm_out;
-```
-
-**有CMFB时**：
-```cpp
-// 测量前一周期共模（避免代数环）
-double vcm_meas = 0.5 * (m_out_p_prev + m_out_n_prev);
-double e_cm = m_params.vcm_out - vcm_meas;
-
-// 通过环路滤波器
-double delta_vcm = m_H_cmfb->estimate_nd(t, e_cm);
-
-// 有效共模
-double vcm_eff = m_params.vcm_out + delta_vcm;
-```
-
-- ⚠️ **关键**：使用**前一周期输出**进行测量，避免代数环
-
-#### 步骤10：生成差分输出
-
-```cpp
-double out_p_val = vcm_eff + 0.5 * vout_total_diff;
-double out_n_val = vcm_eff - 0.5 * vout_total_diff;
-
-out_p.write(out_p_val);
-out_n.write(out_n_val);
-```
-
-#### 步骤11：更新内部状态
-
-```cpp
-// 保存当前输出用于下一周期的CMFB
-m_out_p_prev = out_p_val;
-m_out_n_prev = out_n_val;
-m_vcm_prev = vcm_eff;
-```
-
-### 3.2 传递函数构建
-
-`build_transfer_function()`方法从零极点列表构建`sca_ltf_nd`对象：
-
-```cpp
-// 形式：H(s) = dc_gain * ∏(s/ωz + 1) / ∏(s/ωp + 1)
-sca_ltf_nd* build_transfer_function(
-    double dc_gain,
-    const std::vector<double>& zeros,  // Hz
-    const std::vector<double>& poles   // Hz
-)
-```
-
-**实现方法**：
-1. 初始化分子 = `[dc_gain]`，分母 = `[1]`
-2. 对每个零点，分子与`[1, 1/(2π*fz)]`卷积
-3. 对每个极点，分母与`[1, 1/(2π*fp)]`卷积
-4. 返回`sca_create_ltf_nd(num, den)`
-
-### 3.3 软饱和函数
-
-```cpp
-double apply_saturation(double x, double sat_min, double sat_max) {
-    double Vsat = 0.5 * (sat_max - sat_min);
-    if (Vsat <= 0) return x;
-    
-    return tanh(x / Vsat) * Vsat;
-}
-```
-
-**特性**：
-- 平滑的饵和曲线
-- 输出范围渐近于`[−Vsat, +Vsat]`
-- 当`Vsat ≤ 0`时不进行饱和处理
+这种设计更精确地模拟了跑稍对输出摆幅的自然限制。
 
 ---
 
-## 4. 配置指南
+## 4. 测试平台架构
 
-### 4.1 最小配置（快速开始）
+### 4.1 测试平台设计思想
 
-基本的CTLE功能，使用默认值：
+CTLE测试平台（`CtleTransientTestbench`）采用模块化设计，支持多种测试场景的统一管理。核心设计理念：
 
-```json
-{
-  "rx": {
-    "ctle": {
-      "zeros": [2e9],
-      "poles": [30e9],
-      "dc_gain": 1.5,
-      "vcm_out": 0.6
-    }
-  }
-}
+1. **场景驱动**：通过枚举类型选择不同测试场景，每个场景自动配置相应的信号源和CTLE参数
+2. **组件复用**：差分信号源、VDD源、信号监控器等辅助模块可复用
+3. **结果分析**：根据场景类型自动选择合适的分析方法
+
+### 4.2 测试场景定义
+
+测试平台支持五种核心测试场景：
+
+| 场景 | 命令行参数 | 测试目标 | 输出文件 |
+|------|----------|---------|----------|
+| BASIC_PRBS | `prbs` / `0` | 基本信号传输和增益特性 | ctle_tran_prbs.csv |
+| FREQUENCY_RESPONSE | `freq` / `1` | 频率响应特性 | ctle_tran_freq.csv |
+| PSRR_TEST | `psrr` / `2` | 电源抑制比测试 | ctle_tran_psrr.csv |
+| CMRR_TEST | `cmrr` / `3` | 共模抑制比测试 | ctle_tran_cmrr.csv |
+| SATURATION_TEST | `sat` / `4` | 大信号饱和测试 | ctle_tran_sat.csv |
+
+### 4.3 场景配置详解
+
+#### BASIC_PRBS - 基本PRBS测试
+
+验证CTLE基本的差分信号传输和DC增益特性。
+
+- **信号源**：PRBS-7伪随机序列
+- **输入幅度**：100mV
+- **符号率**：10 Gbps
+- **共模电压**：0.6V
+- **VDD**：1.0V稳定电源
+- **验证点**：输出幅度 ≈ 输入幅度 × DC增益
+
+#### FREQUENCY_RESPONSE - 频率响应测试
+
+验证CTLE在特定频率下的响应特性。
+
+- **信号源**：正弦波
+- **测试频率**：5 GHz
+- **输入幅度**：100mV
+- **验证点**：在零极点频率附近，增益应高于DC增益
+
+#### PSRR_TEST - 电源抑制比测试
+
+验证VDD纹波对差分输出的影响。
+
+- **差分输入**：DC（无差分信号）
+- **VDD纹波**：100mV @ 1MHz正弦波
+- **PSRR增益**：0.01（-40dB）
+- **PSRR极点**：1MHz
+- **仿真时间**：必须≥3μs（褆3个完整周期）
+- **验证点**：输出差分纹波幅度应远小于VDD纹波
+
+#### CMRR_TEST - 共模抑制比测试
+
+验证输入共模变化对差分输出的影响。
+
+- **差分输入**：100mV小差分信号
+- **CMRR增益**：0.001（-60dB）
+- **CMRR极点**：10MHz
+- **验证点**：输出中共模泄漏分量应符合设定CMRR
+
+#### SATURATION_TEST - 饱和测试
+
+验证CTLE在大信号输入下的饱和行为。
+
+- **信号源**：方波
+- **输入幅度**：500mV（大信号）
+- **频率**：1 GHz
+- **验证点**：输出幅度应受限于sat_min/sat_max范围
+
+### 4.4 信号连接拓扑
+
+测试平台的模块连接关系如下：
+
+```
+┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+│ DiffSignalSource  │       │    RxCtleTdf     │       │  SignalMonitor  │
+│                   │       │                   │       │                   │
+│  out_p ───────────┼───────▶ in_p             │       │                   │
+│  out_n ───────────┼───────▶ in_n             │       │                   │
+└─────────────────┘       │                   │       │                   │
+                            │  out_p ───────────┼───────▶ in_p            │
+┌─────────────────┐       │  out_n ───────────┼───────▶ in_n            │
+│    VddSource      │       │                   │       │                   │
+│                   │       │                   │       │  → 统计分析        │
+│  vdd ─────────────┼───────▶ vdd              │       │  → CSV保存         │
+└─────────────────┘       └─────────────────┘       └─────────────────┘
 ```
 
-### 4.2 标准配置（常用功能）
+### 4.5 辅助模块说明
 
-包含偏移、噪声和饱和限制：
+#### DiffSignalSource - 差分信号源
 
-```json
-{
-  "rx": {
-    "ctle": {
-      "zeros": [2e9, 5e9],
-      "poles": [30e9, 50e9],
-      "dc_gain": 2.0,
-      "vcm_out": 0.6,
-      "offset_enable": true,
-      "vos": 0.005,
-      "noise_enable": true,
-      "vnoise_sigma": 0.001,
-      "sat_min": -0.4,
-      "sat_max": 0.8
-    }
-  }
-}
+支持四种波形类型：
+- **DC**：直流信号
+- **SINE**：正弦波
+- **SQUARE**：方波
+- **PRBS**：伪随机序列
+
+可配置参数：幅度、频率、共模电压
+
+#### VddSource - 电源模块
+
+支持两种模式：
+- **CONSTANT**：稳定电源
+- **SINUSOIDAL**：带正弦纹波的电源（用于PSRR测试）
+
+#### SignalMonitor - 信号监控器
+
+功能：
+- 实时记录波形数据
+- 计算统计信息（均值、RMS、峰峰值、最大/最小值）
+- 输出CSV格式波形文件
+
+---
+
+## 5. 仿真结果分析
+
+### 5.1 统计指标说明
+
+| 指标 | 计算方法 | 意义 |
+|------|----------|------|
+| 均值 (mean) | 所有采样点的算术平均 | 反映信号的直流分量 |
+| RMS | 均方根 | 反映信号的有效值/功率 |
+| 峰峰值 (peak_to_peak) | 最大值 - 最小值 | 反映信号的动态范围 |
+| 最大/最小值 | 极值统计 | 用于判断饱和等 |
+
+### 5.2 典型测试结果解读
+
+#### BASIC_PRBS测试结果示例
+
+配置：输入100mV，DC增益1.5，零点2GHz，极点30GHz
+
+期望结果：
+- 差分输出峰峰值 ≈ 291mV（输入200mV峰峰值 × 1.5 ≈ 300mV，略有差异由于频响特性）
+- 差分输出均值 ≈ 0（PRBS信号平均应为零）
+- 共模输出均值 ≈ 0.6V（等于vcm_out配置值）
+
+分析方法：DC增益 = 输出峰峰值 / 输入峰峰值
+
+#### PSRR测试结果解读
+
+- VDD纹波: 100mV @ 1MHz
+- 若输出差分纹波 < 1mV：VDD噪声被有效抑制
+- 若输出差分纹波较大：PSRR配置已生效，可计算实际PSRR值
+
+PSRR计算：`PSRR_dB = 20 * log10(Vdd_ripple / Vout_diff_ripple)`
+
+#### 饱和测试结果解读
+
+- 输入幅度: 500mV
+- 若线性: 输出应为500mV × 1.5 = 750mV
+- 实际输出峰峰值 < 750mV × 某比例：说明进入饱和区
+
+### 5.3 波形数据文件格式
+
+CSV输出格式：
+```
+时间(s),差分信号(V),共模信号(V)
+0.000000e+00,0.000000,0.600000
+1.000000e-11,0.001234,0.600000
+...
 ```
 
-### 4.3 完整配置（所有功能）
+采样点数依据仿真时间和时间步长决定（默认10ps步长）。
 
-启用PSRR、CMFB和CMRR：
+---
 
-```json
-{
-  "rx": {
-    "ctle": {
-      "zeros": [2e9, 5e9],
-      "poles": [30e9, 50e9],
-      "dc_gain": 2.0,
-      "vcm_out": 0.6,
-      "offset_enable": true,
-      "vos": 0.005,
-      "noise_enable": true,
-      "vnoise_sigma": 0.001,
-      "sat_min": -0.4,
-      "sat_max": 0.8,
-      "psrr": {
-        "enable": true,
-        "gain": 0.05,
-        "zeros": [1e6],
-        "poles": [1e3, 1e7],
-        "vdd_nom": 1.0
-      },
-      "cmfb": {
-        "enable": true,
-        "bandwidth": 1e6,
-        "loop_gain": 2.0
-      },
-      "cmrr": {
-        "enable": true,
-        "gain": 1e-3,
-        "zeros": [],
-        "poles": [1e5]
-      }
-    }
-  }
-}
+## 6. 运行指南
+
+### 6.1 环境配置
+
+运行测试前需要配置环境变量：
+
+```bash
+source scripts/setup_env.sh
 ```
 
-### 4.4 代码示例
+### 6.2 构建与运行
 
-```cpp
-// 创建差分信号
-sca_tdf::sca_signal<double> tx_out_p, tx_out_n;
-sca_tdf::sca_signal<double> vdd_supply;
-sca_tdf::sca_signal<double> ctle_out_p, ctle_out_n;
+```bash
+cd build
+cmake ..
+make ctle_tran_tb
+cd tb
+./ctle_tran_tb [scenario]
+```
 
-// 实例化CTLE模块
-RxCtleTdf ctle("ctle", ctle_params);
-ctle.in_p(tx_out_p);
-ctle.in_n(tx_out_n);
-ctle.vdd(vdd_supply);  // 必须连接
-ctle.out_p(ctle_out_p);
-ctle.out_n(ctle_out_n);
+场景参数：
+- `prbs` 或 `0` - 基本PRBS测试（默认）
+- `freq` 或 `1` - 频率响应测试
+- `psrr` 或 `2` - PSRR测试
+- `cmrr` 或 `3` - CMRR测试
+- `sat` 或 `4` - 饱和测试
 
-// 电源源（示例）
-sca_tdf::sca_source<double> vdd_src("vdd_src");
-vdd_src.set_value(1.0);  // 1.0V
-vdd_src.y(vdd_supply);
+### 6.3 结果查看
+
+测试完成后，控制台输出统计结果，波形数据保存到CSV文件。使用Python进行可视化：
+
+```bash
+python scripts/plot_ctle_waveform.py
 ```
 
 ---
 
-## 5. 从v0.1迁移到v0.3
-
-### 5.1 破坏性更改总结
-
-| 项目 | v0.1 (旧版) | v0.3 (新版) |
-|------|------------|------------|
-| 端口接口 | `in`, `out` | `in_p`, `in_n`, `out_p`, `out_n`, `vdd` |
-| 信号类型 | 单端 | 差分 |
-| 必须连接 | 2个端口 | 5个端口 |
-| 新增参数 | - | `vcm_out`, `vos`, `vnoise_sigma`, `sat_min/max`, `psrr`, `cmfb`, `cmrr` |
-
-### 5.2 快速迁移检查清单
-
-- [ ] **更新端口连接**：将`in/out`改为`in_p/in_n/out_p/out_n`
-- [ ] **添加vdd端口**：连接到电源源（即使不用PSRR）
-- [ ] **更新信号类型**：单端信号改为差分信号
-- [ ] **更新配置文件**：添加`vcm_out`等新参数
-- [ ] **测试验证**：确认差分信号传输正常
-
-### 5.3 代码修改要点
-
-#### 修改前（v0.1）：
-
-```cpp
-// 旧版 - 单端信号
-sca_tdf::sca_signal<double> tx_out;
-sca_tdf::sca_signal<double> ctle_out;
-
-RxCtleTdf ctle("ctle", ctle_params);
-ctle.in(tx_out);
-ctle.out(ctle_out);
-```
-
-#### 修改后（v0.3）：
-
-```cpp
-// 新版 - 差分信号
-sca_tdf::sca_signal<double> tx_out_p, tx_out_n;
-sca_tdf::sca_signal<double> vdd_supply;
-sca_tdf::sca_signal<double> ctle_out_p, ctle_out_n;
-
-RxCtleTdf ctle("ctle", ctle_params);
-ctle.in_p(tx_out_p);
-ctle.in_n(tx_out_n);
-ctle.vdd(vdd_supply);  // 新增！
-ctle.out_p(ctle_out_p);
-ctle.out_n(ctle_out_n);
-```
-
-### 5.4 单端↔差分转换
-
-#### 单端转差分：
-
-```cpp
-SC_MODULE(Single2Diff) {
-    sca_tdf::sca_in<double> in;
-    sca_tdf::sca_out<double> out_p;
-    sca_tdf::sca_out<double> out_n;
-    double vcm;
-    
-    void processing() {
-        double sig = in.read();
-        out_p.write(vcm + 0.5 * sig);
-        out_n.write(vcm - 0.5 * sig);
-    }
-    
-    SCA_CTOR(Single2Diff) : vcm(0.6) {}
-};
-```
-
-#### 差分转单端：
-
-```cpp
-SC_MODULE(Diff2Single) {
-    sca_tdf::sca_in<double> in_p;
-    sca_tdf::sca_in<double> in_n;
-    sca_tdf::sca_out<double> out;
-    
-    void processing() {
-        double diff = in_p.read() - in_n.read();
-        out.write(diff);
-    }
-    
-    SCA_CTOR(Diff2Single) {}
-};
-```
-
----
-
-## 6. 测试与验证
-
-### 6.1 基本功能测试
-
-- ✅ **频响一致性**：Bode幅相响应与目标零极点模型一致
-- ✅ **共模正确性**：`out_p/out_n`共模为`vcm_out`
-- ✅ **偏移开关**：`offset_enable`控制下，输出偏移符合`vos`
-- ✅ **噪声开关**：`noise_enable`控制下，输出噪底与`vnoise_sigma`对应
-- ✅ **饱和行为**：输出在`sat_min/sat_max`范围内有效限制
-
-### 6.2 PSRR验证
-
-**测试方法**：
-
-1. 启用PSRR：`psrr.enable = true`
-2. 配置PSRR参数（增益、零极点）
-3. 在`vdd`端口注入单频或多频纹波
-4. 测量差分输出的纹波幅度
-5. 计算抑制比：`PSRR_dB = 20*log10(Vdd_ripple / Vout_ripple)`
-
-**示例电源源（带纹波）**：
-
-```cpp
-SC_MODULE(VddSource) {
-    sca_tdf::sca_out<double> vdd;
-    
-    void processing() {
-        double t = get_time().to_seconds();
-        // 1.0V DC + 10mV @ 1MHz 纹波
-        double v = 1.0 + 0.01 * sin(2*M_PI*1e6*t);
-        vdd.write(v);
-    }
-    
-    SCA_CTOR(VddSource) {}
-};
-```
-
-### 6.3 CMFB验证
-
-**测试方法**：
-
-1. 启用CMFB：`cmfb.enable = true`
-2. 测量输出共模电压：`vcm_meas = 0.5 * (out_p + out_n)`
-3. 施加阶跃或慢变扰动
-4. 验证`vcm_meas`最终收敛到`vcm_out`
-5. 测量建立时间与配置的`bandwidth`一致
-
-### 6.4 CMRR验证
-
-**测试方法**：
-
-1. 启用CMRR：`cmrr.enable = true`
-2. 在输入叠加共模扫频信号
-3. 测得差分输出中的残余曲线
-4. 与`cmrr.gain`及配置的`zeros/poles`对比
-
-### 6.5 测试检查清单
-
-- [ ] 基本差分信号传输正常
-- [ ] 频响曲线与零极点配置一致
-- [ ] 输出共模电压为`vcm_out`
-- [ ] 偏移开关功能正常（`offset_enable`）
-- [ ] 噪声开关功能正常（`noise_enable`）
-- [ ] 饱和限制工作正常（大信号输入）
-- [ ] PSRR功能（如果启用）
-- [ ] CMFB功能（如果启用）
-- [ ] CMRR功能（如果启用）
-- [ ] 配置文件加载正常
-- [ ] 与下游模块（VGA、Sampler）连接正常
-
----
-
-## 7. 技术要点与最佳实践
-
-### 7.1 避免代数环
+## 7. 技术要点
 
 **问题**：CMFB环路如果直接使用当前周期输出进行测量，会造成代数环（输出依赖于输出）。
 
@@ -573,238 +385,67 @@ SC_MODULE(VddSource) {
 
 ### 7.2 多零点/多极点传递函数
 
-**实现方法**：
-- 使用动态构建的`sca_ltf_nd`对象
-- 支持任意数量的零点和极点
-- 自动处理多项式卷积
-
-**形式**：
-```
-H(s) = dc_gain * ∏(s/ωz + 1) / ∏(s/ωp + 1)
-```
-
-**注意事项**：
-- 零极点总数建议 ≤ 10
-- 过高阶滤波器可能导致数值不稳定
+支持任意数量的零点和极点，自动处理多项式卷积。零极点总数建议 ≤ 10，过高阶滤波器可能导致数值不稳定。
 
 ### 7.3 软饱和
 
-**实现**：
-```cpp
-y = tanh(x / Vsat) * Vsat
-```
+使用`tanh(x/Vsat)*Vsat`实现平滑饱和特性，减少谐波失真，符合实际电路行为。
 
-**优点**：
-- 平滑的饱和特性，无锹变
-- 减少谐波失真
-- 符合实际电路行为
+### 7.4 可选功能独立控制
 
-### 7.4 可选功能
-
-- PSRR、CMFB、CMRR均可**独立启用/禁用**
-- 通过参数的`enable`标志控制
-- 未启用时不创建对应的滤波器对象，节省内存和计算
+PSRR、CMFB、CMRR均可独立启用/禁用，未启用时不创建对应的滤波器对象，节省内存和计算。
 
 ### 7.5 时间步设置
 
-**默认设置**：
-```cpp
-set_timestep(1.0 / 100e9);  // 10ps
-```
+默认10ps（100GHz采样率）。采样率应远高于最高极点频率，建议 f_sample ≥ 20-50 × f_pole_max。
 
-**调整原则**：
-- 采样率应远高于最高极点频率
-- 建议：`f_sample ≥ 20-50 × f_pole_max`
-- 对于>50GHz的极点，需要调整为更小的时间步
+### 7.6 PSRR测试特殊要求
 
-### 7.6 滤波器稳定性
+PSRR测试场景下，仿真时间必须不少于3微秒，以确保完整覆盖至少3个1MHz周期的信号变化。
 
-**需要注意**：
-- 零极点配置需保证滤波器稳定性
-- 所有极点必须在左半平面（负实部）
-- 采样率不足可能导致混叠效应
+### 7.7 VDD端口必须连接
 
-### 7.7 VDD端口连接
-
-**必须连接**：
-- 即使不使用PSRR功能，`vdd`端口也必须连接
-- SystemC-AMS要求所有端口都必须连接
-- 可连接到常数源（例如`sca_tdf::sca_source<double>`）
-
-### 7.8 内存管理
-
-**当前问题**：
-- `build_transfer_function()`返回的指针使用`new`分配
-- 当前未实现析构函数释放内存
-
-**建议改进**：
-```cpp
-~RxCtleTdf() {
-    if (m_H_ctle) delete m_H_ctle;
-    if (m_H_psrr) delete m_H_psrr;
-    if (m_H_cmrr) delete m_H_cmrr;
-    if (m_H_cmfb) delete m_H_cmfb;
-}
-```
-
-### 7.9 性能优化
-
-1. **采样率设置**：
-   - 默认时间步10ps适用于大多数应用
-   - 超高速应用(>50GHz)需要手动调整
-
-2. **滤波器复杂度**：
-   - 零极点数量影响仿真速度
-   - 建议零极点总数 ≤ 10
-
-3. **内存使用**：
-   - 每个CTLE实例最多创建4个`ltf_nd`对象
-   - 大规模仿真时注意内存消耗
+即使不使用PSRR功能，`vdd`端口也必须连接（SystemC-AMS要求）。
 
 ---
 
-## 8. 常见问题FAQ
+## 8. 参考信息
 
-### Q1：旧版测试平台无法编译
-
-**原因**：端口名称和接口已更改
-
-**解决方案**：
-- 按照第5节迁移指南更新测试平台代码
-- 将单端连接改为差分连接
-- 添加`vdd`端口连接
-
-### Q2：vdd端口未连接导致编译错误
-
-**原因**：SystemC-AMS要求所有端口必须连接
-
-**解决方案**：
-- 如果不使用PSRR，连接到常数电源源：
-  ```cpp
-  sca_tdf::sca_source<double> vdd_source("vdd_source");
-  vdd_source.set_value(1.0);  // 1.0V
-  sca_tdf::sca_signal<double> vdd_sig;
-  vdd_source.y(vdd_sig);
-  ctle.vdd(vdd_sig);
-  ```
-- 如果使用PSRR，连接到带纹波的电源源（见第6.2节）
-
-### Q3：配置文件加载失败
-
-**原因**：缺少新增的参数字段
-
-**解决方案**：
-- 方案A：更新配置文件，添加所有新字段（参见第4节）
-- 方案B：修改config_loader支持可选字段和默认值
-
-### Q4：如何验证PSRR功能？
-
-**测试方法**：
-1. 启用PSRR：`psrr.enable = true`
-2. 配置PSRR参数（增益、零极点）
-3. 在`vdd`端口注入单频或多频纹波
-4. 测量差分输出的纹波幅度
-5. 计算抑制比：`PSRR_dB = 20*log10(Vdd_ripple / Vout_ripple)`
-
-详细示例见第6.2节。
-
-### Q5：如何验证CMFB功能？
-
-**测试方法**：
-1. 启用CMFB：`cmfb.enable = true`
-2. 测量输出共模电压：`vcm_meas = 0.5 * (out_p + out_n)`
-3. 施加阶跃或慢变扰动
-4. 验证`vcm_meas`最终收敛到`vcm_out`
-5. 测量建立时间与配置的`bandwidth`一致
-
-详细示例见第6.3节。
-
-### Q6：差分输出如何转回单端？
-
-**方法**：
-```cpp
-SC_MODULE(Diff2Single) {
-    sca_tdf::sca_in<double> in_p;
-    sca_tdf::sca_in<double> in_n;
-    sca_tdf::sca_out<double> out;
-    
-    void processing() {
-        double diff = in_p.read() - in_n.read();
-        out.write(diff);
-    }
-    
-    SCA_CTOR(Diff2Single) {}
-};
-```
-
-详细示例见第5.4节。
-
----
-
-## 9. 参考信息
-
-### 9.1 相关文件
+### 8.1 相关文件
 
 | 文件 | 路径 | 说明 |
 |------|------|------|
-| 参数定义 | `/include/common/parameters.h` | `RxCtleParams`结构体 |
-| 头文件 | `/include/ams/rx_ctle.h` | `RxCtleTdf`类声明 |
-| 实现文件 | `/src/ams/rx_ctle.cpp` | `RxCtleTdf`类实现 |
-| 配置示例 | `/config/default.json` | JSON配置示例 |
-| 配置示例 | `/config/default.yaml` | YAML配置示例 |
-| 测试平台 | `/tb/simple_link_tb.cpp` | 简单链路测试 |
+| 参数定义 | `/include/common/parameters.h` | RxCtleParams结构体 |
+| 头文件 | `/include/ams/rx_ctle.h` | RxCtleTdf类声明 |
+| 实现文件 | `/src/ams/rx_ctle.cpp` | RxCtleTdf类实现 |
+| 测试平台 | `/tb/rx/ctle/ctle_tran_tb.cpp` | 瞬态仿真测试 |
+| 测试辅助 | `/tb/rx/ctle/ctle_helpers.h` | 信号源和监控器 |
+| 单元测试 | `/tests/unit/test_ctle_basic.cpp` | GoogleTest单元测试 |
+| 波形绘图 | `/scripts/plot_ctle_waveform.py` | Python可视化脚本 |
 
-### 9.2 依赖项
+### 8.2 依赖项
 
-**必需**：
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
-- C++14 标准
-- C++ 标准库：`<random>`, `<cmath>`, `<vector>`
+- C++11标准
+- GoogleTest 1.12.1（单元测试）
 
-**建模域建议**：
-- CTLE/PSRR/CMRR：推荐使用TDF的`sca_tdf::sca_ltf_nd`
-- CMFB闭环：如需更自然的连续实现可采用LSF/ELN
+### 8.3 配置示例
 
-### 9.3 编译注意事项
-
-- 需要SystemC-2.3.4和SystemC-AMS-2.3.4
-- C++14标准
-- 使用`<random>`头文件（C++11特性）
-- 使用`<cmath>`中的`tanh`函数
-
-### 9.4 实现与文档对应关系
-
-| 文档章节 | 实现位置 |
-|---------|----------|
-| 接口 - 差分端口 | `rx_ctle.h`: in_p, in_n, out_p, out_n |
-| 接口 - 电源端口 | `rx_ctle.h`: vdd |
-| 配置键 | `parameters.h`: RxCtleParams |
-| 参数 - 主传递函数 | `processing()`: Step 4 |
-| 参数 - 偏移 | `processing()`: Step 2 |
-| 参数 - 噪声 | `processing()`: Step 3 |
-| 参数 - 饱和 | `processing()`: Step 5 |
-| 参数 - PSRR | `processing()`: Step 6 |
-| 参数 - CMFB | `processing()`: Step 9 |
-| 参数 - CMRR | `processing()`: Step 7 |
-| 行为模型 - 11个步骤 | `processing()`: Steps 1-11 |
-
-### 9.5 建议的后续工作
-
-1. **添加析构函数**：释放动态分配的滤波器内存
-2. **参数验证**：在构造函数中验证参数有效性
-3. **测试用例**：完善频响、PSRR、CMFB、CMRR测试
-4. **配置文件示例**：更新`config/default.json`和`default.yaml`
-
-### 9.6 技术支持
-
-如遇到问题，请参考：
-1. 本文档 - 完整设计文档
-2. 项目GitHub仓库：`https://github.com/lewisliuliuliu/SerDesSystemCProject`
-3. GitHub Issues
+基本配置：
+```json
+{
+  "ctle": {
+    "zeros": [2e9],
+    "poles": [30e9],
+    "dc_gain": 1.5,
+    "vcm_out": 0.6
+  }
+}
+```
 
 ---
 
-**文档版本**：v0.3  
-**最后更新**：2025-11-23  
-**作者**：SerDes Project Team
+**文档版本**：v0.4  
+**最后更新**：2025-12-07  
+**作者**：Yizhe Liu

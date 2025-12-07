@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(SerDes VERSION 1.0.0 LANGUAGES CXX)
 
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 14)
+# Set C++ standard to match SystemC library (C++11)
+set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -114,8 +114,10 @@ message(STATUS "SystemC-AMS library: ${SYSTEMC_AMS_LIBRARY}")
 include(FetchContent)
 FetchContent_Declare(
     json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
+set(JSON_BuildTests OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(json)
 
 # YAML library
@@ -125,19 +127,26 @@ if(NOT yaml-cpp_FOUND)
     FetchContent_Declare(
         yaml-cpp
         GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-        GIT_TAG yaml-cpp-0.7.0
+        GIT_TAG 0.8.0
     )
+    set(YAML_CPP_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(YAML_CPP_BUILD_TOOLS OFF CACHE INTERNAL "")
+    set(YAML_CPP_BUILD_CONTRIB OFF CACHE INTERNAL "")
     FetchContent_MakeAvailable(yaml-cpp)
 endif()
 
 # GoogleTest (for testing)
 option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
+    # 使用GitHub官方release包
     FetchContent_Declare(
         googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG release-1.12.1
+        URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
     enable_testing()
 endif()
@@ -154,12 +163,13 @@ include_directories(
 # ============================================================================
 # Source files
 # ============================================================================
-file(GLOB_RECURSE AMS_SOURCES "src/ams/*.cpp")
+# 暂时只编译测试所需的模块
 file(GLOB_RECURSE DE_SOURCES "src/de/*.cpp")
 file(GLOB_RECURSE SYSTEM_SOURCES "src/system/*.cpp")
 
 set(ALL_SOURCES
-    ${AMS_SOURCES}
+    src/ams/rx_ctle.cpp
+    src/ams/rx_vga.cpp
     ${DE_SOURCES}
     ${SYSTEM_SOURCES}
 )
@@ -172,7 +182,6 @@ target_link_libraries(serdes_lib
     ${SYSTEMC_AMS_LIBRARY}
     ${SYSTEMC_LIBRARY}
     nlohmann_json::nlohmann_json
-    yaml-cpp
 )
 
 # ============================================================================

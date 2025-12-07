@@ -180,12 +180,75 @@ struct RxCtleParams {
 };
 
 struct RxVgaParams {
-    double gain;
-    bool agc_enable;
+    // Main transfer function
+    std::vector<double> zeros;       // Zero frequencies (Hz)
+    std::vector<double> poles;       // Pole frequencies (Hz)
+    double dc_gain;                  // DC gain (linear)
+    
+    // Common mode output voltage
+    double vcm_out;                  // Differential output common mode voltage (V)
+    
+    // Offset
+    bool offset_enable;              // Offset enable
+    double vos;                      // Input offset voltage (V)
+    
+    // Noise
+    bool noise_enable;               // Noise enable
+    double vnoise_sigma;             // Noise standard deviation (V)
+    
+    // Saturation
+    double sat_min;                  // Output minimum voltage (V)
+    double sat_max;                  // Output maximum voltage (V)
+    
+    // PSRR (Power Supply Rejection Ratio)
+    struct PsrrParams {
+        bool enable;
+        double gain;                 // PSRR path gain (linear)
+        std::vector<double> zeros;   // Hz
+        std::vector<double> poles;   // Hz
+        double vdd_nom;              // Nominal supply voltage (V)
+        
+        PsrrParams()
+            : enable(false)
+            , gain(0.0)
+            , vdd_nom(1.0) {}
+    } psrr;
+    
+    // CMFB (Common Mode Feedback)
+    struct CmfbParams {
+        bool enable;
+        double bandwidth;            // Loop bandwidth (Hz)
+        double loop_gain;            // Loop gain (linear)
+        
+        CmfbParams()
+            : enable(false)
+            , bandwidth(1e6)
+            , loop_gain(1.0) {}
+    } cmfb;
+    
+    // CMRR (Common Mode Rejection Ratio)
+    struct CmrrParams {
+        bool enable;
+        double gain;                 // CM->DIFF leakage gain (linear)
+        std::vector<double> zeros;   // Hz
+        std::vector<double> poles;   // Hz
+        
+        CmrrParams()
+            : enable(false)
+            , gain(0.0) {}
+    } cmrr;
     
     RxVgaParams()
-        : gain(4.0)
-        , agc_enable(false) {}
+        : zeros({1e9})               // Default 1 GHz zero
+        , poles({20e9})              // Default 20 GHz pole
+        , dc_gain(2.0)               // Default 2.0 gain (VGA typically higher than CTLE)
+        , vcm_out(0.6)
+        , offset_enable(false)
+        , vos(0.0)
+        , noise_enable(false)
+        , vnoise_sigma(0.0)
+        , sat_min(-0.5)
+        , sat_max(0.5) {}
 };
 
 struct RxSamplerParams {

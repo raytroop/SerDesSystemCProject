@@ -11,6 +11,7 @@ build/
 .qoder/
 .vscode/
 .idea/
+.venv/
 *.swp
 *.swo
 *~
