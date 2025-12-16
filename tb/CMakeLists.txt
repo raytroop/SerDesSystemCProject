@@ -45,3 +45,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/vga/vga_tran_tb.cpp)
         ${SYSTEMC_LIBRARY}
     )
 endif()
+
+# Sampler transient testbench
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/sampler/sampler_tran_tb.cpp)
+    add_executable(sampler_tran_tb rx/sampler/sampler_tran_tb.cpp)
+    target_include_directories(sampler_tran_tb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/rx/sampler
+    )
+    target_link_libraries(sampler_tran_tb
+        serdes_lib
+        ${SYSTEMC_AMS_LIBRARY}
+        ${SYSTEMC_LIBRARY}
+    )
+endif()

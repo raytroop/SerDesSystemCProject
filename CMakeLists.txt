@@ -170,6 +170,7 @@ file(GLOB_RECURSE SYSTEM_SOURCES "src/system/*.cpp")
 set(ALL_SOURCES
     src/ams/rx_ctle.cpp
     src/ams/rx_vga.cpp
+    src/ams/rx_sampler.cpp
     ${DE_SOURCES}
     ${SYSTEM_SOURCES}
 )

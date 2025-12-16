@@ -12,6 +12,9 @@ build/
 .vscode/
 .idea/
 .venv/
+.iflow/
+.trae/
+IFLOW.md
 *.swp
 *.swo
 *~

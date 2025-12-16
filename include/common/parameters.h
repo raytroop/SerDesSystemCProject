@@ -254,12 +254,31 @@ struct RxVgaParams {
 struct RxSamplerParams {
     double threshold;
     double hysteresis;
+    double sample_delay;
+    std::string phase_source;
+    double resolution;
+    
+    // Offset configuration
+    bool offset_enable;
+    double offset_value;
+    
+    // Noise configuration
+    bool noise_enable;
+    double noise_sigma;
+    unsigned int noise_seed;
     
     RxSamplerParams()
         : threshold(0.0)
-        , hysteresis(0.02) {}
+        , hysteresis(0.02)
+        , sample_delay(0.0)
+        , phase_source("clock")
+        , resolution(0.02)
+        , offset_enable(false)
+        , offset_value(0.0)
+        , noise_enable(false)
+        , noise_sigma(0.0)
+        , noise_seed(DEFAULT_SEED) {}  
 };
-
 struct RxDfeParams {
     std::vector<double> taps;
     std::string update;              // Update algorithm
