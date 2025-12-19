@@ -49,3 +49,17 @@ coverage/
 tmp/
 temp/
 tests/workspace.code-workspace
+
+# Documentation framework files (generated 2025-12-19)
+docs/claude-progress-docs.txt
+docs/feature_list.json
+
+# Script tools (generated 2025-12-19)
+scripts/init_docs.sh
+scripts/run_serdes_expert.sh
+scripts/verify_docs.py
+
+# Python cache (generated 2025-12-19)
+scripts/__pycache__/
+*.pyc
+*.pyo
