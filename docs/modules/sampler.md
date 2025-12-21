@@ -213,9 +213,11 @@ t_sample = t_nominal + phase_offset + sample_delay
 
 ---
 
-## 3. 核心实现机制
+## 3. 核w实现机制
 
-### 3.1 信号处理流程
+本章从实现机制的角度，详细阐述采样器模块的信号处理流程、判决逻辑、参数验证以及噪声/抖动建模，并在此基础上推导出完整的误码率（BER）性能分析模型。通过将实现细节与性能指标有机结合，帮助读者深入理解采样器的行为特性与BER之间的关系。
+
+### 3.1 信号处理流程与噪声建模
 
 采样器模块的`processing()`方法采用严格的多步骤流水线处理架构，确保判决逻辑的正确性和可维护性：
 
@@ -225,9 +227,16 @@ t_sample = t_nominal + phase_offset + sample_delay
 
 **步骤1-输入读取**：从差分输入端口读取信号，计算差分分量 `Vdiff = inp - inn` 和共模分量 `Vcm = 0.5*(inp + inn)`。
 
-**步骤2-偏移注入**：若启用`offset_enable`，将失调电压`value`叠加到差分信号，模拟比较器的输入失调。
+**步骤2-偏移注入**：若启用`offset_enable`，将失调电压`value`叠加到差分信号，模拟比较器的输入失调。具体工作原理为：
+```
+Vdiff_effective = (inp - inn) + offset.value
+```
 
-**步骤3-噪声注入**：若启用`noise_enable`，采用Mersenne Twister随机数生成器产生高斯分布噪声，标准差由`sigma`指定。
+**步骤3-噪声注入**：若启用`noise_enable`，采用Mersenne Twister随机数生成器产生高斯分布噪声，标准差由`sigma`指定。噪声样本服从：
+```
+noise_sample ~ N(0, noise.sigma²)
+```
+该噪声将叠加到差分信号上，构成器件级的热噪声和输入参考噪声建模。
 
 **步骤4-相位调整**：根据`phase_source`选择时钟采样或相位偏移模式，计算实际采样时刻。
 
@@ -237,7 +246,18 @@ t_sample = t_nominal + phase_offset + sample_delay
 
 **步骤6-输出生成**：将判决结果转换为数字输出，支持TDF和DE两种域。
 
-### 3.2 判决逻辑实现
+**等效传递函数总结**：
+
+综合上述流程，采样器的输入到输出传递函数可以表示为：
+```
+data_out = f(Vdiff, phase_offset, parameters)
+其中：Vdiff = (inp - inn) + offset.value + noise_sample
+```
+这一等效关系对应第1章中提到的设计原理，并为后续的BER分析提供了基础。
+
+### 3.2 判决逻辑与模糊区行为
+
+采样器的核心功能是基于输入差分电压进行数字判决。根据`resolution`参数的设置，判决机制分为标准判决和模糊判决两种模式。这两种机制直接决定了在不同输入条件下发生误判的概率，并在后续3.5节中成为BER建模的基础。
 
 #### 3.2.1 标准判决机制（resolution = 0）
 
@@ -279,7 +299,9 @@ else:
     output = random_bernoulli(0.5, seed)
 ```
 
-### 3.3 参数验证与错误处理
+### 3.3 参数验证与错误处理机制
+
+为确保仿真结果的有效性，采样器模块实现了严格的参数验证机制。一旦参数设置不合理（如 `hysteresis ≥ resolution`），后续基于这些参数计算的BER将没有物理意义，因此采用强制终止策略以避免误导性结果。
 
 #### 3.3.1 参数冲突检测
 
@@ -294,7 +316,12 @@ if (hysteresis >= resolution):
     terminate_simulation()
 ```
 
-#### 3.3.2 错误处理流程
+**物理意义说明**：
+- `hysteresis` 定义了双阈值判决的迟滞区间宽度
+- `resolution` 定义了模糊判决区的半宽
+- 若 `hysteresis ≥ resolution`，会导致判决行为冲突，无法明确判决策略
+
+#### 3.3.2 错误处理流程与数据保存
 
 当检测到参数冲突时，系统执行以下错误处理流程：
 
@@ -304,7 +331,7 @@ if (hysteresis >= resolution):
 4. **友好提示**：输出用户友好的错误信息和解决建议
 5. **仿真终止**：安全终止仿真进程，避免错误结果
 
-#### 3.3.3 数据保存机制
+**数据保存机制**：
 
 在错误终止前，系统确保完整保存所有关键数据：
 
@@ -314,7 +341,9 @@ if (hysteresis >= resolution):
 - **统计信息**：已计算的BER、抖动等性能指标
 - **仿真状态**：时间、迭代计数、模块状态
 
-### 3.4 Jitter建模与影响分析
+### 3.4 抖动建模与综合噪声
+
+时序抖动（Jitter）是影响采样器性能的关键因素之一。本节从抖动的物理来源出发，推导抖动引起的等效电压误差，并给出综合噪声的统一建模方法，为后续3.5节的BER分析提供完整的噪声模型。
 
 #### 3.4.1 Jitter来源分类
 
@@ -328,17 +357,33 @@ if (hysteresis >= resolution):
 - 相位噪声抖动：振荡器相位噪声转换
 - 统计特性：高斯分布，均值为0
 
-#### 3.4.2 Jitter对判决精度的影响
+#### 3.4.2 Jitter引起的电压误差与综合噪声
 
 **时域误差分析**：
+
+Jitter引起的采样时刻偏差会在信号跳变沿处转换为等效电压误差。对于数据速率为 `f_data`、信号幅度为 `A` 的差分信号：
+
 ```
 采样时刻偏差: Δt_jitter
 信号变化率: dV/dt = 2π × f_data × A
 电压误差: ΔV_jitter = (dV/dt) × Δt_jitter = 2π × f_data × A × Δt_jitter
-
-总噪声模型：
-σ_total = sqrt(σ_noise² + (2π × f_data × A × σ_tjitter)²)
 ```
+
+将时序抖动的标准差 `σ_tjitter` 转换为等效电压噪声：
+```
+σ_jitter = 2π × f_data × A × σ_tjitter
+```
+
+**综合噪声模型**：
+
+结合3.1节定义的器件噪声 `σ_noise`（即配置参数 `noise.sigma`）和上述抖动诱发的电压噪声 `σ_jitter`，可得总噪声标准差：
+
+```
+σ_total = sqrt(σ_noise² + σ_jitter²)
+      = sqrt(σ_noise² + (2π × f_data × A × σ_tjitter)²)
+```
+
+这一统一的 `σ_total` 定义将在后续BER分析中作为核心参数使用。
 
 **信噪比恶化**：
 ```
@@ -357,130 +402,164 @@ SNR_jitter = -20log₁₀(2π × f_data × A × σ_tjitter)
 低速SerDes (<1 Gbps): σ_tjitter < 0.02 × UI
 ```
 
----
+### 3.5 BER分析与数值示例
 
-## 4. 误码率（BER）分析
+在明确了噪声、偏移和抖动对输入信号的综合影响之后，本节基于前述实现机制推导采样器的BER性能模型。我们将从最简单的仅噪声情况开始，逐步引入偏移、模糊判决和抖动等因素，最终给出完整的综合BER模型及数值计算示例。
 
-### 4.1 理想信道BER计算
-
-#### 4.1.1 仅噪声情况
+#### 3.5.1 理想信道下的BER（仅噪声）
 
 **假设条件**：
 - 发送信号：±A（差分幅度2A）
-- 噪声：σ_n = noise.sigma
+- 器件噪声：σ_noise = noise.sigma（3.1节定义）
 - 判决阈值：V_th = 0
+- 忽略偏移和抖动（offset = 0, σ_tjitter = 0）
 
 **BER计算**：
 ```
-BER = Q(A / σ_n)
+BER = Q(A / σ_noise)
 
-其中Q函数：
+其中Q函数定义为：
 Q(x) = (1/√(2π)) ∫[x,∞] exp(-t²/2) dt
      ≈ (1/2) erfc(x/√2)
 ```
 
-#### 4.1.2 噪声+偏移情况
+这是最基础的BER模型，仅考虑加性高斯噪声对判决的影响。
 
-**假设条件**：
-- 偏移：V_offset = offset.value
+#### 3.5.2 噪声与偏移下的BER
+
+**引入偏移电压**：
+- 偏移：V_offset = offset.value（3.1节定义）
+
+由于偏移电压的存在，发送'1'和发送'0'时的判决裕量不再对称：
 
 **BER计算**：
 ```
 对于发送'1' (信号 = +A):
-BER_1 = Q((A - V_offset) / σ_n)
+BER_1 = Q((A - V_offset) / σ_noise)
 
 对于发送'0' (信号 = -A):
-BER_0 = Q((A + V_offset) / σ_n)
+BER_0 = Q((A + V_offset) / σ_noise)
 
 总BER = (BER_1 + BER_0) / 2
 ```
 
-#### 4.1.3 模糊判决BER修正
+在实际系统中，偏移电压会导致眼图中心偏移，从而增加误码率。
 
-**分辨率阈值影响**：
+#### 3.5.3 模糊判决对BER的修正
+
+如3.2.2节所述，当启用模糊判决机制（`resolution > 0`）时，输入差分电压落在模糊区 `|Vdiff| < resolution` 内将进行随机判决，这会引入额外的误码。
+
+**模糊区概率**：
+
+信号加噪声后落入模糊区的概率可近似表示为：
 ```
-当 |V_signal + V_noise| < resolution 时，输出随机
-
-BER ≈ Q(A / σ_n) + P_metastable × 0.5
-
-其中：
-P_metastable ≈ erf(resolution / (√2 × σ_n))
+P_metastable ≈ erf(resolution / (√2 × σ_total))
 ```
 
-### 4.2 综合BER模型
+其中 `σ_total` 为综合噪声标准差。在仅考虑器件噪声时，`σ_total = σ_noise`；考虑抖动时则使用3.4.2节定义的完整表达式。
 
-#### 4.2.1 完整BER公式
+**额外误码率**：
+
+模糊区内的随机判决（50/50概率）导致的额外误码率为：
+```
+BER_fuzzy ≈ P_metastable × 0.5
+```
+
+**修正后的BER**：
+```
+BER ≈ Q(A / σ_total) + P_metastable × 0.5
+```
+
+这一修正项反映了比较器亚稳态行为对系统BER的影响。
+
+#### 3.5.4 综合BER模型与计算示例
+
+**完整BER公式**：
+
+综合3.1～3.4节的所有建模要素（器件噪声、偏移、抖动、模糊判决），可得采样器的完整BER模型：
 
 ```
 BER_total ≈ Q((A - |V_offset|) / σ_total) + P_metastable × 0.5
 
 其中：
-σ_total = sqrt(σ_noise² + σ_jitter²)
-P_metastable = erf(resolution / (√2 × σ_total))
+σ_total = sqrt(σ_noise² + σ_jitter²)  （由3.4.2节定义）
+σ_jitter = 2π × f_data × A × σ_tjitter
+P_metastable = erf(resolution / (√2 × σ_total))  （由3.5.3节定义）
 ```
 
-#### 4.2.2 数值计算示例
+这一统一公式将所有非理想效应整合到一个可计算的BER函数中，便于进行参数扫描和性能优化。
+
+**Python数值计算示例**：
 
 ```python
 import numpy as np
 from scipy.special import erfc, erf
 
-def calculate_ber(A, sigma_n, V_offset, resolution, f_data, sigma_tjitter):
+def calculate_ber(A, sigma_noise, V_offset, resolution, f_data, sigma_tjitter):
     """
     计算Sampler的综合误码率
     
     参数：
     A: 信号幅度（V）
-    sigma_n: 器件噪声标准差（V）
-    V_offset: 偏移电压（V）
-    resolution: 分辨率阈值（V）
+    sigma_noise: 器件噪声标准差（V），对应配置参数 noise.sigma
+    V_offset: 偏移电压（V），对应配置参数 offset.value
+    resolution: 分辨率阈值（V），对应配置参数 resolution
     f_data: 数据速率（Hz）
     sigma_tjitter: 时序抖动标准差（s）
     
     返回：
     BER_total: 总误码率
+    
+    公式对应关系：
+    - sigma_jitter 计算与 3.4.2 节一致
+    - sigma_total 定义与 3.4.2 节一致
+    - P_metastable 定义与 3.5.3 节一致
     """
     # Q函数
     def Q(x):
         return 0.5 * erfc(x / np.sqrt(2))
     
-    # Jitter诱发的电压误差
+    # Jitter诱发的电压误差（3.4.2节公式）
     sigma_jitter = 2 * np.pi * f_data * A * sigma_tjitter
     
-    # 总噪声
-    sigma_total = np.sqrt(sigma_n**2 + sigma_jitter**2)
+    # 综合噪声（3.4.2节公式）
+    sigma_total = np.sqrt(sigma_noise**2 + sigma_jitter**2)
     
-    # 噪声和偏移导致的BER
+    # 噪声和偏移导致的BER（3.5.2节扩展）
     SNR_eff = (A - abs(V_offset)) / sigma_total
     BER_noise = Q(SNR_eff)
     
-    # 模糊判决导致的BER
+    # 模糊判决导致的BER（3.5.3节公式）
     P_metastable = erf(resolution / (np.sqrt(2) * sigma_total))
     BER_fuzzy = P_metastable * 0.5
     
-    # 总BER
+    # 总BER（3.5.4节综合公式）
     BER_total = BER_noise + BER_fuzzy
     
     return BER_total
 
 # 示例参数
-A = 0.5           # 500 mV差分幅度
-sigma_n = 0.01    # 10 mV RMS器件噪声
-V_offset = 0.005  # 5 mV偏移
-resolution = 0.02 # 20 mV分辨率阈值
-f_data = 10e9     # 10 Gbps数据速率
+A = 0.5              # 500 mV差分幅度
+sigma_noise = 0.01   # 10 mV RMS器件噪声
+V_offset = 0.005     # 5 mV偏移
+resolution = 0.02    # 20 mV分辨率阈值
+f_data = 10e9        # 10 Gbps数据速率
 sigma_tjitter = 1e-12 # 1 ps RMS抖动
 
-BER = calculate_ber(A, sigma_n, V_offset, resolution, f_data, sigma_tjitter)
+BER = calculate_ber(A, sigma_noise, V_offset, resolution, f_data, sigma_tjitter)
 print(f"BER = {BER:.2e}")
 # 输出示例: BER ≈ 1e-12
 ```
 
+**说明**：
+
+上述函数将3.1～3.4节的所有建模要素（噪声、偏移、抖动、模糊判决）统一到一个可计算的BER函数中。通过调整各参数，可以进行参数扫描和性能优化，指导实际设计中的裕量分配。
+
 ---
 
-## 5. 测试平台架构
+## 4. 测试平台架构
 
-### 5.1 测试平台设计思想
+### 4.1 测试平台设计思想
 
 采样器测试平台（`SamplerTransientTestbench`）采用场景驱动的模块化设计，支持多种工作模式和边界条件的统一验证。核心设计理念：
 
@@ -489,7 +568,7 @@ print(f"BER = {BER:.2e}")
 3. **结果验证**：自动化结果分析和性能指标计算
 4. **文档集成**：测试结果直接生成到技术文档
 
-### 5.2 测试场景定义
+### 4.2 测试场景定义
 
 | 场景 | 命令行参数 | 测试目标 | 输出文件 |
 |------|----------|---------|----------|
@@ -499,7 +578,7 @@ print(f"BER = {BER:.2e}")
 | PARAMETER_VALIDATION | `validate` / `3` | 参数验证和错误处理 | sampler_tran_validation.csv |
 | BER_MEASUREMENT | `ber` / `4` | 误码率性能测试 | sampler_tran_ber.csv |
 
-### 5.3 场景配置详解
+### 4.3 场景配置详解
 
 #### BASIC_FUNCTION - 基本功能测试
 
@@ -543,7 +622,7 @@ print(f"BER = {BER:.2e}")
 - **非理想效应**：噪声5mV，偏移2mV，抖动1ps
 - **验证点**：实际BER与理论计算对比
 
-### 5.4 信号连接拓扑
+### 4.4 信号连接拓扑
 
 ```
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -562,9 +641,9 @@ print(f"BER = {BER:.2e}")
 
 ---
 
-## 6. 仿真结果分析
+## 5. 仿真结果分析
 
-### 6.1 性能指标定义
+### 5.1 性能指标定义
 
 | 指标 | 计算方法 | 意义 |
 |------|----------|------|
@@ -574,9 +653,9 @@ print(f"BER = {BER:.2e}")
 | 抖动容限 | σ_tjitter_max | 时序鲁棒性 |
 | 模糊区概率 | P(\|Vdiff\| < resolution) | 亚稳态频率 |
 
-### 6.2 典型测试结果解读
+### 5.2 典型测试结果解读
 
-#### 6.2.1 基本功能测试结果
+#### 5.2.1 基本功能测试结果
 
 **配置**：200mV输入，hysteresis=20mV，resolution=0
 
@@ -587,7 +666,7 @@ print(f"BER = {BER:.2e}")
 
 **分析方法**：统计错误比特数，计算BER值
 
-#### 6.2.2 CDR集成测试结果
+#### 5.2.2 CDR集成测试结果
 
 **配置**：±100ps相位调制，phase_source="phase"
 
@@ -598,7 +677,7 @@ print(f"BER = {BER:.2e}")
 
 **分析方法**：比较理论相位和实际采样时刻的差异
 
-#### 6.2.3 模糊判决测试结果
+#### 5.2.3 模糊判决测试结果
 
 **配置**：50mV输入，resolution=20mV，hysteresis=10mV
 
@@ -609,7 +688,7 @@ print(f"BER = {BER:.2e}")
 
 **分析方法**：统计模糊区的0和1比例，验证随机性
 
-### 6.3 波形数据文件格式
+### 5.3 波形数据文件格式
 
 CSV输出格式：
 ```
@@ -623,9 +702,9 @@ CSV输出格式：
 
 ---
 
-## 7. 运行指南
+## 6. 运行指南
 
-### 7.1 环境配置
+### 6.1 环境配置
 
 运行测试前需要配置环境变量：
 
@@ -635,7 +714,7 @@ export SYSTEMC_HOME=/path/to/systemc
 export SYSTEMC_AMS_HOME=/path/to/systemc-ams
 ```
 
-### 7.2 构建与运行
+### 6.2 构建与运行
 
 ```bash
 cd build
@@ -652,9 +731,9 @@ cd tb
 - `validate` 或 `3` - 参数验证测试
 - `ber` 或 `4` - BER性能测试
 
-### 7.3 参数配置示例
+### 6.3 参数配置示例
 
-#### 7.3.1 基本配置
+#### 6.3.1 基本配置
 
 ```json
 {
@@ -667,7 +746,7 @@ cd tb
 }
 ```
 
-#### 7.3.2 高级配置
+#### 6.3.2 高级配置
 
 ```json
 {
@@ -689,7 +768,7 @@ cd tb
 }
 ```
 
-### 7.4 结果查看
+### 6.4 结果查看
 
 测试完成后，控制台输出性能统计，波形数据保存到CSV文件。使用Python进行可视化分析：
 
@@ -699,9 +778,9 @@ python scripts/plot_sampler_waveform.py
 
 ---
 
-## 8. 技术要点
+## 7. 技术要点
 
-### 8.1 CDR相位集成注意事项
+### 7.1 CDR相位集成注意事项
 
 **问题**：相位信号路径可能引入额外的相位延迟，影响采样时刻精度。
 
@@ -710,7 +789,7 @@ python scripts/plot_sampler_waveform.py
 - 考虑相位信号到采样器的传播延迟
 - 在`sample_delay`参数中补偿固定延迟
 
-### 8.2 模糊判决的随机性验证
+### 7.2 模糊判决的随机性验证
 
 **问题**：如何确保模糊区的随机判决具有真正的随机性。
 
@@ -719,7 +798,7 @@ python scripts/plot_sampler_waveform.py
 - 提供可配置的随机种子
 - 通过统计测试验证随机性分布
 
-### 8.3 参数验证机制实现
+### 7.3 参数验证机制实现
 
 **核心验证规则**：
 ```cpp
@@ -736,7 +815,7 @@ if (hysteresis >= resolution) {
 3. 保存当前仿真状态
 4. 终止仿真进程
 
-### 8.4 数值稳定性考虑
+### 7.4 数值稳定性考虑
 
 **问题**：在高采样率下，浮点数精度可能影响判决准确性。
 
@@ -745,7 +824,7 @@ if (hysteresis >= resolution) {
 - 避免接近机器精度的阈值设置
 - 考虑数值误差在参数选择中的影响
 
-### 8.5 时间步设置指导
+### 7.5 时间步设置指导
 
 **采样率要求**：采样率应远高于信号带宽，建议：
 ```
@@ -754,7 +833,7 @@ f_sample ≥ 20 × f_data
 
 对于10 Gbps信号，建议采样步长 ≤ 5ps。
 
-### 8.6 性能优化建议
+### 7.6 性能优化建议
 
 1. **噪声生成优化**：使用查表法替代实时随机数生成
 2. **参数缓存**：缓存计算频繁的参数值
@@ -763,9 +842,9 @@ f_sample ≥ 20 × f_data
 
 ---
 
-## 9. 参考信息
+## 8. 参考信息
 
-### 9.1 相关文件
+### 8.1 相关文件
 
 | 文件 | 路径 | 说明 |
 |------|------|------|
@@ -777,7 +856,7 @@ f_sample ≥ 20 × f_data
 | 单元测试 | `/tests/unit/test_sampler_basic.cpp` | GoogleTest单元测试 |
 | 波形绘图 | `/scripts/plot_sampler_waveform.py` | Python可视化脚本 |
 
-### 9.2 依赖项
+### 8.2 依赖项
 
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
@@ -785,7 +864,7 @@ f_sample ≥ 20 × f_data
 - GoogleTest 1.12.1（单元测试）
 - NumPy/SciPy（Python分析工具）
 
-### 9.3 性能基准
+### 8.3 性能基准
 
 **典型性能指标**：
 - 判决延迟：< 1ns
