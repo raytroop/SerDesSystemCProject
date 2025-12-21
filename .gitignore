@@ -70,3 +70,10 @@ qodercli-progress.txt
 feature_list.json
 serdes-doc-writer.md
 AGENTS.md
+docs/checklist.md
+docs/docs-init.sh
+.gitignore
+.gitignore
+docs/workflow.md
+docs/progress.txt
+docs/features.json
