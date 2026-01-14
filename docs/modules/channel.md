@@ -1182,24 +1182,21 @@ void check_passivity() {
 ```
 
 ---
-
 ## 4. 测试平台架构
 
 ### 4.1 测试平台设计思想
 
-信道模块测试平台采用**分层验证策略**，针对简化模型和完整S参数模型分别设计测试环境，确保从基础传输特性到复杂多端口耦合的全面覆盖。核心设计理念：
+信道模块测试平台采用**分层验证策略**。核心设计理念：
 
-1. **版本适配性**：区分v0.4简化实现与未来完整实现的测试需求
-2. **频域验证**：通过扫频测试验证传递函数精度（幅度/相位响应）
-3. **时域验证**：通过码型测试验证眼图质量和串扰效应
-4. **性能基准**：测量仿真速度和计算资源占用，对比不同实现方法
-5. **自动化流程**：离线处理→在线仿真→后处理分析的端到端自动化
+1. **版本适配性**：区分v0.4简化实现与未来完整S参数建模的测试需求
+2. **集成优先**：当前通过完整链路集成测试验证基本传输功能
+3. **局限性明确**：清晰标识未覆盖的高级特性（S参数加载、串扰、双向传输）
+
+v0.4版本**无独立测试平台**，依赖`simple_link_tb.cpp`完整链路集成测试。未来扩展方向包括独立测试台（`tb/channel/`）、频域验证工具和多端口测试场景。
 
 ### 4.2 当前测试环境（v0.4）
 
 #### 4.2.1 集成测试平台（Simple Link Testbench）
-
-**当前状态**：v0.4版本的信道模块**无独立测试平台**，通过完整链路集成测试验证基本功能。
 
 **测试平台位置**：
 ```
@@ -1220,7 +1217,7 @@ TX链路                        Channel                      RX链路
 └─────────────────┘      └─────────────────┘      └─────────────────┘
 ```
 
-**信号连接代码**（来自`simple_link_tb.cpp`）：
+**信号连接代码**（来自`simple_link_tb.cpp`第50-74行）：
 ```cpp
 // 创建信道模块
 ChannelSparamTdf channel("channel", params.channel);
@@ -1234,26 +1231,35 @@ channel.out(sig_channel_out);
 rx_ctle.in(sig_channel_out);
 ```
 
-**测试配置**：
+**测试配置**（来自`config/default.json`第33-42行）：
 ```json
 {
   "channel": {
-    "attenuation_db": 10.0,
-    "bandwidth_hz": 20e9
+    "touchstone": "chan_4port.s4p",
+    "ports": 2,
+    "crosstalk": true,
+    "bidirectional": true,
+    "simple_model": {
+      "attenuation_db": 10.0,
+      "bandwidth_hz": 20e9
+    }
   }
 }
 ```
 
-**验证能力**：
-- ✅ 基本信号传输功能（输入→衰减/带限→输出）
-- ✅ 与TX/RX模块的接口兼容性
-- ✅ 一阶低通滤波器的频率响应
-- ❌ S参数文件加载（未实现）
-- ❌ 多端口串扰（未实现）
-- ❌ 双向传输（未实现）
+**验证能力清单**：
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 基本信号传输 | ✅ 可用 | 输入→一阶LPF→输出 |
+| 接口兼容性 | ✅ 可用 | 与TX/RX模块正确连接 |
+| 一阶低通滤波器 | ✅ 可用 | 通过`attenuation_db`和`bandwidth_hz`配置 |
+| S参数文件加载 | ❌ 未实现 | `touchstone`参数占位但未启用 |
+| 多端口串扰 | ❌ 未实现 | `crosstalk`参数无效 |
+| 双向传输 | ❌ 未实现 | `bidirectional`参数无效 |
 
 **测试输出**：
-- 波形追踪文件：`simple_link.dat`（包含`channel_out`信号）
+- 波形追踪文件：`simple_link.dat`（包含`channel_out`信号，第97行定义）
 - 终端日志：信道模块创建和连接信息
 
 #### 4.2.2 当前测试的局限性
@@ -1262,790 +1268,241 @@ v0.4集成测试的主要限制：
 
 | 限制项 | 原因 | 影响 |
 |-------|------|------|
-| 无独立单元测试 | 未创建`tb/channel/`目录 | 无法隔离验证信道功能 |
-| 无频响校验 | 集成测试仅运行时域仿真 | 无法验证滤波器精度 |
-| 无S参数加载测试 | 功能未实现 | 无法测试Touchstone解析 |
-| 无串扰场景 | 仅单端口 | 无法验证多端口耦合矩阵 |
-| 无性能基准 | 未测量计算时间 | 无法对比不同实现方法 |
+| 无独立单元测试 | `tb/channel/`目录不存在 | 无法隔离验证信道功能，无法快速调试 |
+| 无频响校验 | 简化模型为一阶LPF，未实现S参数频域响应 | 无法验证传递函数精度（幅度/相位误差） |
+| 无S参数加载测试 | Touchstone解析功能未实现 | 无法测试文件格式兼容性（.s2p/.s4p） |
+| 无串扰场景 | 仅单输入单输出 | 无法验证多端口耦合矩阵（NEXT/FEXT） |
+| 无性能基准 | 未测量计算时间 | 无法对比有理函数法vs冲激响应法效率 |
 
 ---
 
-### 4.3 完整测试平台架构（设计规格）
+### 4.3 测试结果分析
 
-#### 4.3.1 测试目录结构
+#### 4.3.1 输出文件说明
 
-**推荐目录布局**：
+**波形文件**：`simple_link.dat`（SystemC-AMS标准制表符分隔格式）
+
+典型文件内容结构：
 ```
-tb/channel/
-├── channel_tran_tb.cpp              # 主测试台（时域瞬态仿真）
-├── channel_freq_tb.cpp              # 频域扫频验证
-├── channel_crosstalk_tb.cpp         # 多端口串扰测试
-├── channel_bidirectional_tb.cpp     # 双向传输测试
-├── channel_gpu_bench_tb.cpp         # GPU加速性能基准（Apple Silicon）
-├── channel_helpers.h                # 辅助模块和工具函数
-└── scenarios/
-    ├── short_backplane.json         # 短背板信道配置
-    ├── long_cable.json              # 长电缆信道配置
-    └── crosstalk_4port.json         # 4端口串扰配置
-```
-
-#### 4.3.2 测试场景分类
-
-| 场景类别 | 测试台文件 | 测试目标 | 关键指标 |
-|---------|----------|---------|---------|
-| **时域传输** | `channel_tran_tb.cpp` | PRBS码型传输、眼图质量 | 眼高/眼宽、ISI幅度 |
-| **频域响应** | `channel_freq_tb.cpp` | 幅频/相频特性验证 | 幅度误差<0.5dB、相位误差<5° |
-| **串扰耦合** | `channel_crosstalk_tb.cpp` | NEXT/FEXT幅度测量 | 串扰比值与S13/S14一致±2dB |
-| **双向传输** | `channel_bidirectional_tb.cpp` | S12反向路径、S11/S22反射 | 反射系数与S11一致±1dB |
-| **方法对比** | `channel_tran_tb.cpp`（多配置） | Rational vs Impulse精度 | 归一化MSE<1%、峰值偏差<1采样周期 |
-| **性能基准** | `channel_gpu_bench_tb.cpp` | 仿真速度、GPU加速效果 | 吞吐量（samples/s）、加速倍数 |
-| **长期稳定性** | `channel_tran_tb.cpp`（长时间） | 数值发散检测 | 1e6时间步无NaN/Inf、能量守恒 |
-
----
-
-### 4.4 信号源与激励模块
-
-#### 4.4.1 ChannelSignalSource - 通用信号源
-
-**功能**：生成多种测试激励信号，支持扫频、码型、冲激等多种模式。
-
-**类声明**：
-```cpp
-class ChannelSignalSource : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_out<double> out;
-    
-    enum SignalType {
-        SINE_SWEEP,      // 扫频正弦波
-        PRBS,            // 伪随机码（PRBS-7/15/23）
-        IMPULSE,         // 冲激函数
-        STEP,            // 阶跃函数
-        SQUARE_WAVE,     // 方波
-        MULTITONE        // 多音频测试
-    };
-    
-    ChannelSignalSource(sc_module_name nm, SignalType type, 
-                        const SignalParams& params);
-    void processing();
-    
-private:
-    SignalType m_type;
-    SignalParams m_params;
-    int m_sample_count;
-    std::mt19937 m_rng;
-};
-```
-
-**信号类型说明**：
-
-| 类型 | 用途 | 关键参数 |
-|------|------|---------|
-| `SINE_SWEEP` | 频域扫频测试 | `f_start`, `f_end`, `sweep_duration` |
-| `PRBS` | 时域眼图测试 | `prbs_order` (7/15/23), `amplitude` |
-| `IMPULSE` | 冲激响应测量 | `impulse_time`, `impulse_amplitude` |
-| `STEP` | 阶跃响应测量 | `step_time`, `step_amplitude` |
-| `SQUARE_WAVE` | 带宽验证 | `frequency`, `amplitude`, `duty_cycle` |
-| `MULTITONE` | 非线性失真测试 | `frequencies[]`, `amplitudes[]` |
-
-**扫频正弦波实现示例**：
-```cpp
-void ChannelSignalSource::processing() {
-    if (m_type == SINE_SWEEP) {
-        double t = m_sample_count / m_params.Fs;
-        
-        // 线性扫频：f(t) = f0 + (f1-f0)*t/T
-        double f_sweep = m_params.f_start + 
-            (m_params.f_end - m_params.f_start) * t / m_params.sweep_duration;
-        
-        // 瞬时相位：φ(t) = 2π∫f(τ)dτ
-        double phase = 2 * M_PI * (m_params.f_start * t + 
-            0.5 * (m_params.f_end - m_params.f_start) * t * t / m_params.sweep_duration);
-        
-        double signal = m_params.amplitude * sin(phase);
-        out.write(signal);
-        m_sample_count++;
-    }
-}
-```
-
-#### 4.4.2 MultiPortSource - 多端口信号源
-
-**功能**：为多端口S参数测试生成N路独立或相关的激励信号。
-
-**类声明**：
-```cpp
-class MultiPortSource : public sca_tdf::sca_module {
-public:
-    std::vector<sca_tdf::sca_out<double>*> out;  // N个输出端口
-    
-    MultiPortSource(sc_module_name nm, int N_ports, 
-                    const MultiPortParams& params);
-    void processing();
-    
-private:
-    int m_N_ports;
-    std::vector<std::unique_ptr<ChannelSignalSource>> m_sources;
-    std::vector<double> m_crosstalk_matrix;  // N×N耦合矩阵（可选）
-};
-```
-
-**使用场景**：
-
-**场景A：单端口激励，其他端口接地**（测量S21, S31, S41...）
-```cpp
-MultiPortParams params;
-params.active_port = 0;  // 仅端口0有信号
-params.signal_type = PRBS;
-params.amplitude = 1.0;
-params.inactive_level = 0.0;  // 其他端口接地
-```
-
-**场景B：双端口差分激励**（测量差模传输）
-```cpp
-params.active_ports = {0, 1};
-params.differential_mode = true;
-params.polarity = {+1.0, -1.0};  // 差分对
-```
-
-**场景C：串扰注入**（测量NEXT/FEXT）
-```cpp
-params.active_ports = {0, 2};
-params.signal_types = {PRBS, SINE_WAVE};
-params.amplitudes = {1.0, 0.1};  // 主信号 + 10%串扰
-```
-
-#### 4.4.3 SParameterStimulus - S参数验证激励器
-
-**功能**：根据S参数文件自动生成最优验证激励序列。
-
-**工作原理**：
-1. 解析Touchstone文件，识别通带范围和关键频率点
-2. 生成覆盖通带的多音频测试信号
-3. 在通带边缘和衰减区加密测试点
-
-**实现示例**：
-```cpp
-class SParameterStimulus : public sca_tdf::sca_module {
-public:
-    SParameterStimulus(sc_module_name nm, const std::string& touchstone_file);
-    void processing();
-    
-private:
-    std::vector<double> m_test_frequencies;  // 从S参数提取
-    std::vector<double> m_test_amplitudes;
-    int m_current_tone;
-};
-```
-
----
-
-### 4.5 测量与监控模块
-
-#### 4.5.1 FrequencyResponseMonitor - 频响测量器
-
-**功能**：测量信道输入/输出的幅频和相频响应，与S参数对比。
-
-**类声明**：
-```cpp
-class FrequencyResponseMonitor : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_in<double> in_ref;   // 输入信号（参考）
-    sca_tdf::sca_in<double> in_meas;  // 输出信号（测量）
-    
-    FrequencyResponseMonitor(sc_module_name nm, const std::string& sparam_file);
-    void processing();
-    void end_of_simulation();  // 计算频响和误差
-    
-private:
-    std::vector<std::complex<double>> m_fft_input;
-    std::vector<std::complex<double>> m_fft_output;
-    std::vector<double> m_freq_axis;
-    std::vector<double> m_H_magnitude;  // 测量幅频
-    std::vector<double> m_H_phase;      // 测量相频
-    std::vector<double> m_S21_ref;      // 参考S21（从文件加载）
-};
-```
-
-**测量算法**：
-```cpp
-void FrequencyResponseMonitor::end_of_simulation() {
-    // 1. 对输入/输出信号执行FFT
-    auto X_fft = fft(m_input_buffer);
-    auto Y_fft = fft(m_output_buffer);
-    
-    // 2. 计算传递函数 H(f) = Y(f) / X(f)
-    for (size_t i = 0; i < m_freq_axis.size(); ++i) {
-        std::complex<double> H = Y_fft[i] / X_fft[i];
-        m_H_magnitude[i] = 20 * log10(abs(H));  // dB
-        m_H_phase[i] = arg(H) * 180 / M_PI;     // 度
-    }
-    
-    // 3. 与S参数对比，计算误差
-    double max_mag_error = 0.0;
-    double max_phase_error = 0.0;
-    for (size_t i = 0; i < passband_indices.size(); ++i) {
-        double mag_error = abs(m_H_magnitude[i] - m_S21_ref[i]);
-        double phase_error = abs(m_H_phase[i] - m_S21_phase_ref[i]);
-        max_mag_error = std::max(max_mag_error, mag_error);
-        max_phase_error = std::max(max_phase_error, phase_error);
-    }
-    
-    // 4. 输出验证报告
-    std::cout << "频响验证结果：\n";
-    std::cout << "  最大幅度误差: " << max_mag_error << " dB\n";
-    std::cout << "  最大相位误差: " << max_phase_error << " 度\n";
-    std::cout << "  通过标准: " << (max_mag_error < 0.5 && max_phase_error < 5.0 
-                                    ? "PASS" : "FAIL") << "\n";
-}
-```
-
-#### 4.5.2 EyeDiagramAnalyzer - 眼图分析器
-
-**功能**：收集时域波形数据，计算眼高、眼宽、抖动等指标。
-
-**类声明**：
-```cpp
-class EyeDiagramAnalyzer : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_in<double> in;
-    
-    EyeDiagramAnalyzer(sc_module_name nm, double UI, int samples_per_UI);
-    void processing();
-    void end_of_simulation();
-    
-private:
-    double m_UI;
-    int m_samples_per_UI;
-    std::vector<std::vector<double>> m_eye_matrix;  // [UI样本数][采样点数]
-    
-    struct EyeMetrics {
-        double eye_height;
-        double eye_width;
-        double jitter_rms;
-        double SNR;
-    };
-    EyeMetrics calculate_metrics();
-};
-```
-
-**眼图重构算法**：
-```cpp
-void EyeDiagramAnalyzer::processing() {
-    double sample = in.read();
-    
-    // 确定当前样本在UI内的位置
-    int ui_index = m_sample_count / m_samples_per_UI;
-    int phase_index = m_sample_count % m_samples_per_UI;
-    
-    // 存储到眼图矩阵
-    m_eye_matrix[phase_index].push_back(sample);
-    m_sample_count++;
-}
-
-EyeMetrics EyeDiagramAnalyzer::calculate_metrics() {
-    EyeMetrics metrics;
-    
-    // 1. 眼高计算：中心采样点的最小间距
-    int center_phase = m_samples_per_UI / 2;
-    auto& center_samples = m_eye_matrix[center_phase];
-    std::sort(center_samples.begin(), center_samples.end());
-    
-    double high_level = percentile(center_samples, 0.95);
-    double low_level = percentile(center_samples, 0.05);
-    metrics.eye_height = high_level - low_level;
-    
-    // 2. 眼宽计算：所有相位点满足阈值的宽度
-    double threshold = (high_level + low_level) / 2.0;
-    int eye_open_start = -1, eye_open_end = -1;
-    for (int p = 0; p < m_samples_per_UI; ++p) {
-        if (has_valid_opening(m_eye_matrix[p], threshold)) {
-            if (eye_open_start < 0) eye_open_start = p;
-            eye_open_end = p;
-        }
-    }
-    metrics.eye_width = (eye_open_end - eye_open_start) / (double)m_samples_per_UI * m_UI;
-    
-    // 3. 抖动计算：边沿过零时刻的标准差
-    metrics.jitter_rms = calculate_crossing_jitter(m_eye_matrix);
-    
-    return metrics;
-}
-```
-
-#### 4.5.3 CrosstalkMeasurement - 串扰测量器
-
-**功能**：量化多端口系统中的NEXT/FEXT耦合幅度。
-
-**测量原理**：
-```
-端口1激励 → 测量端口2/3/4响应 → 计算Sij / S11比值
-```
-
-**实现示例**：
-```cpp
-class CrosstalkMeasurement {
-public:
-    void measure_crosstalk(int active_port, 
-                          const std::vector<double>& port_outputs) {
-        double active_power = compute_power(port_outputs[active_port]);
-        
-        for (int i = 0; i < port_outputs.size(); ++i) {
-            if (i == active_port) continue;
-            
-            double crosstalk_power = compute_power(port_outputs[i]);
-            double crosstalk_db = 10 * log10(crosstalk_power / active_power);
-            
-            std::cout << "S" << (i+1) << (active_port+1) 
-                      << " 串扰: " << crosstalk_db << " dB\n";
-        }
-    }
-};
-```
-
----
-
-### 4.6 测试场景配置详解
-
-#### 4.6.1 场景1：BASIC_TRANSMISSION - 基本传输测试
-
-**测试目标**：验证单端口信号传输的基本功能和一致性。
-
-**配置示例**（`scenarios/basic_transmission.json`）：
-```json
-{
-  "scenario": "BASIC_TRANSMISSION",
-  "channel": {
-    "touchstone": "data/short_backplane.s2p",
-    "ports": 2,
-    "method": "rational",
-    "config_file": "config/basic_channel_filters.json",
-    "crosstalk": false,
-    "bidirectional": false,
-    "fit": {
-      "order": 8,
-      "enforce_stable": true,
-      "enforce_passive": true
-    }
-  },
-  "stimulus": {
-    "type": "PRBS",
-    "prbs_order": 15,
-    "amplitude": 1.0,
-    "data_rate": 10e9
-  },
-  "measurement": {
-    "eye_diagram": true,
-    "frequency_response": false,
-    "duration": 1e-6
-  }
-}
-```
-
-**验证点**：
-- 输出信号幅度 = 输入幅度 × S21幅度
-- 眼图开口大于阈值
-- 无数值异常（NaN/Inf）
-
-#### 4.6.2 场景2：FREQUENCY_SWEEP - 频率响应验证
-
-**测试目标**：验证时域实现与S参数频域的一致性。
-
-**配置示例**：
-```json
-{
-  "scenario": "FREQUENCY_SWEEP",
-  "stimulus": {
-    "type": "SINE_SWEEP",
-    "f_start": 100e6,
-    "f_end": 30e9,
-    "sweep_duration": 10e-6,
-    "amplitude": 1.0
-  },
-  "measurement": {
-    "frequency_response": true,
-    "passband_tolerance_db": 0.5,
-    "phase_tolerance_deg": 5.0
-  }
-}
-```
-
-**验证标准**：
-- 通带内幅度误差 < 0.5 dB
-- 通带内相位误差 < 5°
-- -3dB带宽与S参数一致（±10%）
-
-#### 4.6.3 场景3：CROSSTALK_4PORT - 4端口串扰测试
-
-**测试目标**：验证多端口耦合矩阵的正确性。
-
-**配置示例**：
-```json
-{
-  "scenario": "CROSSTALK_4PORT",
-  "channel": {
-    "touchstone": "data/backplane_4port.s4p",
-    "ports": 4,
-    "method": "rational",
-    "crosstalk": true,
-    "bidirectional": false
-  },
-  "stimulus": {
-    "active_port": 0,
-    "type": "PRBS",
-    "prbs_order": 7,
-    "amplitude": 1.0
-  },
-  "measurement": {
-    "crosstalk_ports": [1, 2, 3],
-    "expected_crosstalk_db": {
-      "S21": -3.0,
-      "S31": -25.0,
-      "S41": -30.0
-    }
-  }
-}
-```
-
-**验证点**：
-- 主传输路径S21幅度与预期一致（±1dB）
-- NEXT（S31）和FEXT（S41）与S参数匹配（±2dB）
-- 串扰能量总和满足无源性约束
-
-#### 4.6.4 场景4：BIDIRECTIONAL - 双向传输测试
-
-**测试目标**：验证S12反向路径和S11/S22反射项。
-
-**配置示例**：
-```json
-{
-  "scenario": "BIDIRECTIONAL",
-  "channel": {
-    "touchstone": "data/cable_s2p",
-    "ports": 2,
-    "method": "impulse",
-    "bidirectional": true
-  },
-  "stimulus": {
-    "forward_signal": {
-      "type": "PRBS",
-      "amplitude": 1.0
-    },
-    "backward_signal": {
-      "type": "SINE_WAVE",
-      "frequency": 1e9,
-      "amplitude": 0.1
-    }
-  },
-  "measurement": {
-    "reflection_coefficient": true,
-    "expected_S11_db": -15.0,
-    "tolerance_db": 1.0
-  }
-}
-```
-
-**验证点**：
-- 端口1反射系数与S11一致（±1dB）
-- 端口2反射系数与S22一致（±1dB）
-- 反向传输S12与正向传输S21对称性检查
-
-#### 4.6.5 场景5：METHOD_COMPARISON - 方法对比测试
-
-**测试目标**：对比Rational拟合法和Impulse卷积法的精度和性能。
-
-**配置示例**：
-```json
-{
-  "scenario": "METHOD_COMPARISON",
-  "test_cases": [
-    {
-      "name": "rational_8th_order",
-      "method": "rational",
-      "fit": {"order": 8}
-    },
-    {
-      "name": "impulse_2048_samples",
-      "method": "impulse",
-      "impulse": {"time_samples": 2048}
-    }
-  ],
-  "comparison_metrics": {
-    "impulse_response_mse": true,
-    "frequency_response_error": true,
-    "simulation_speed": true
-  }
-}
-```
-
-**验证点**：
-- 冲激响应归一化MSE < 1%
-- 峰值时刻偏差 < 1采样周期
-- 频响一致性（两种方法与S参数的误差对比）
-- 仿真速度对比（Rational应显著快于Impulse）
-
-#### 4.6.6 场景6：GPU_BENCHMARK - GPU加速性能测试（Apple Silicon）
-
-**系统要求**：Apple Silicon Mac（M1/M2/M3/M4或更新）
-
-**配置示例**：
-```json
-{
-  "scenario": "GPU_BENCHMARK",
-  "channel": {
-    "method": "impulse",
-    "impulse": {"time_samples": 4096}
-  },
-  "test_cases": [
-    {
-      "name": "cpu_single_core",
-      "gpu_acceleration": {"enabled": false}
-    },
-    {
-      "name": "metal_direct_conv",
-      "gpu_acceleration": {
-        "enabled": true,
-        "backend": "metal",
-        "algorithm": "direct",
-        "batch_size": 1024
-      }
-    },
-    {
-      "name": "metal_fft_conv",
-      "gpu_acceleration": {
-        "enabled": true,
-        "backend": "metal",
-        "algorithm": "fft",
-        "batch_size": 1024
-      }
-    }
-  ],
-  "benchmark_metrics": {
-    "samples_per_second": true,
-    "speedup_factor": true,
-    "numerical_accuracy": true
-  }
-}
-```
-
-**验证点**：
-- GPU vs CPU数值一致性（最大误差<1e-6）
-- Metal直接卷积加速倍数 > 50x（L<512）
-- Metal FFT卷积加速倍数 > 200x（L≥512）
-- 批处理效率验证
-
-#### 4.6.7 场景7：LONG_TERM_STABILITY - 长期稳定性测试
-
-**测试目标**：验证长时间仿真的数值稳定性和能量守恒。
-
-**配置示例**：
-```json
-{
-  "scenario": "LONG_TERM_STABILITY",
-  "duration": 1e-3,
-  "timesteps": 1000000,
-  "stimulus": {
-    "type": "PRBS",
-    "prbs_order": 23
-  },
-  "monitoring": {
-    "energy_tracking": true,
-    "overflow_detection": true,
-    "passivity_check_interval": 10000
-  }
-}
-```
-
-**验证点**：
-- 1百万时间步无NaN/Inf
-- 输出能量 ≤ 输入能量（无源性）
-- 极点稳定性（无发散趋势）
-
----
-
-### 4.7 辅助工具与脚本
-
-#### 4.7.1 Python预处理工具
-
-**工具位置**：`tools/sparam_processor.py`
-
-**功能**：
-- 读取Touchstone文件
-- 执行向量拟合或IFFT处理
-- 生成配置文件供SystemC-AMS加载
-
-**使用示例**：
-```bash
-# 生成有理函数配置
-python tools/sparam_processor.py \
-  --input data/channel.s4p \
-  --method rational \
-  --order 8 \
-  --output config/channel_filters.json
-
-# 生成冲激响应配置
-python tools/sparam_processor.py \
-  --input data/channel.s4p \
-  --method impulse \
-  --samples 4096 \
-  --output config/channel_impulse.json
-```
-
-#### 4.7.2 Python后处理脚本
-
-**脚本位置**：`scripts/analyze_channel_response.py`
-
-**功能**：
-- 读取`.dat`波形文件
-- 计算频响、眼图、BER
-- 生成对比图表
-
-**使用示例**：
-```bash
-python scripts/analyze_channel_response.py \
-  --input_wave simple_link.dat \
-  --sparam data/channel.s4p \
-  --output results/channel_verification.png
-```
-
-#### 4.7.3 自动化测试脚本
-
-**脚本位置**：`scripts/run_channel_tests.sh`
-
-**功能**：
-- 批量运行多个测试场景
-- 收集日志和结果文件
-- 生成HTML测试报告
-
-**使用示例**：
-```bash
-bash scripts/run_channel_tests.sh \
-  --scenarios basic,freq_sweep,crosstalk \
-  --output results/channel_test_report.html
-```
-
----
-
-### 4.8 测试输出与结果格式
-
-#### 4.8.1 波形追踪文件
-
-**文件格式**：SystemC-AMS标准`.dat`格式（制表符分隔）
-
-**文件示例**（`channel_tran_basic.dat`）：
-```
-time          in_signal     out_signal    channel_state
-0.000000e+00  0.000000e+00  0.000000e+00  0
-1.000000e-11  5.000000e-01  4.243000e-01  0
-2.000000e-11  5.000000e-01  4.165000e-01  0
+time          wave_out      driver_out    channel_out   ctle_out      ...
+0.000000e+00  0.000000e+00  0.000000e+00  0.000000e+00  0.000000e+00  ...
+1.250000e-11  5.000000e-01  4.000000e-01  3.578000e-01  4.123000e-01  ...
 ...
 ```
 
-#### 4.8.2 频响验证报告
+**关键信号列**：
+- `channel_out`：信道模块输出（经一阶LPF衰减和带限后的信号）
+- `driver_out`：TX驱动器输出（信道输入参考信号）
+- `ctle_out`：CTLE输出（验证信道输出是否满足RX输入要求）
 
-**文件格式**：JSON
+#### 4.3.2 基本验证方法
 
-**文件示例**（`freq_response_result.json`）：
+**波形目视检查**：
+1. 使用Python脚本或波形查看器加载`simple_link.dat`
+2. 对比`driver_out`与`channel_out`波形
+3. 验证信道输出符合以下预期：
+   - 幅度约为输入的`10^(-10dB/20) ≈ 0.316倍`
+   - 高频分量被衰减（20 GHz带宽以上）
+   - 无数值异常（NaN/Inf）
+
+**终端日志检查**：
+```bash
+# 运行测试后查看输出
+cd build
+./bin/simple_link_tb
+
+# 预期输出：
+# Creating Channel module...
+# Connecting Channel...
+# Simulation completed successfully.
+```
+
+#### 4.3.3 一阶低通滤波器频响验证（简化方法）
+
+虽然集成测试仅运行时域仿真，可通过以下简化方法粗略验证频响：
+
+**方法1：阶跃响应分析**（手动操作）
+1. 修改`config/default.json`，将波形源改为阶跃信号
+2. 运行仿真，观察`channel_out`的上升时间
+3. 估算-3dB带宽：`BW ≈ 0.35 / t_rise`
+4. 与配置的20 GHz对比（预期t_rise ≈ 17.5 ps）
+
+**方法2：Python后处理FFT**（推荐）
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 加载波形数据
+data = np.loadtxt('simple_link.dat', skiprows=1)
+time = data[:, 0]
+driver_out = data[:, 2]
+channel_out = data[:, 3]
+
+# 计算FFT
+fs = 1.0 / (time[1] - time[0])
+freq = np.fft.rfftfreq(len(time), 1/fs)
+H_fft = np.fft.rfft(channel_out) / np.fft.rfft(driver_out)
+H_mag_db = 20 * np.log10(np.abs(H_fft))
+
+# 验证-3dB带宽
+idx_3db = np.where(H_mag_db < -3.0)[0][0]
+bw_measured = freq[idx_3db]
+print(f"测量带宽: {bw_measured/1e9:.2f} GHz（预期: 20 GHz）")
+
+# 绘图
+plt.semilogx(freq/1e9, H_mag_db)
+plt.axhline(-3, color='r', linestyle='--', label='-3dB线')
+plt.xlabel('Frequency (GHz)')
+plt.ylabel('Magnitude (dB)')
+plt.legend()
+plt.savefig('channel_freq_response.png')
+```
+
+**预期结果**：
+- DC增益：约-10 dB（与`attenuation_db`一致）
+- -3dB带宽：约20 GHz（与`bandwidth_hz`一致）
+- 高频滚降：-20 dB/decade（一阶系统特征）
+
+---
+
+### 4.4 运行指南
+
+#### 4.4.1 构建命令
+
+```bash
+# 创建构建目录
+mkdir -p build && cd build
+
+# 配置CMake
+cmake ..
+
+# 编译完整链路测试台
+make simple_link_tb
+```
+
+#### 4.4.2 运行命令
+
+```bash
+# 运行集成测试
+cd build
+./bin/simple_link_tb
+
+# 预期输出：
+# === SerDes SystemC-AMS Simple Link Testbench ===
+# Configuration loaded:
+#   Sampling rate: 80 GHz
+#   Data rate: 40 Gbps
+#   Simulation time: 1 us
+# 
+# Creating TX modules...
+# Creating Channel module...
+# Creating RX modules...
+# Connecting TX chain...
+# Connecting Channel...
+# Connecting RX chain...
+# 
+# Creating trace file...
+# SystemC: simulation stopped, sc_stop() called
+```
+
+**波形文件生成**：`simple_link.dat`（位于构建目录）
+
+#### 4.4.3 参数配置说明
+
+修改`config/default.json`中的信道参数：
+
 ```json
 {
-  "test_scenario": "FREQUENCY_SWEEP",
-  "sparam_file": "data/short_backplane.s2p",
-  "method": "rational",
-  "order": 8,
-  "passband": {
-    "frequency_range_hz": [1e8, 20e9],
-    "max_magnitude_error_db": 0.32,
-    "max_phase_error_deg": 3.8,
-    "pass": true
-  },
-  "stopband": {
-    "frequency_range_hz": [20e9, 50e9],
-    "average_attenuation_db": 45.2
+  "channel": {
+    "simple_model": {
+      "attenuation_db": 10.0,    // 衰减量（dB），建议范围：5-20
+      "bandwidth_hz": 20e9       // -3dB带宽（Hz），建议范围：10G-50G
+    }
   }
 }
 ```
 
-#### 4.8.3 眼图指标文件
+**参数影响**：
+- 增大`attenuation_db`：信道损耗增加，眼图闭合更严重
+- 减小`bandwidth_hz`：高频衰减加剧，符号间干扰（ISI）增强
 
-**文件格式**：JSON
+#### 4.4.4 结果查看方法
 
-**文件示例**（`eye_metrics.json`）：
-```json
-{
-  "eye_height_V": 0.342,
-  "eye_width_UI": 0.68,
-  "jitter_rms_ps": 1.2,
-  "SNR_dB": 18.5,
-  "BER_estimate": 1.3e-12
-}
+**方法1：使用Python绘图**
+```bash
+python scripts/plot_simple_link.py
+# 生成: simple_link_waveform.png
+```
+
+**方法2：使用GtkWave查看器**
+```bash
+# 转换为VCD格式（如果支持）
+# gtkwave simple_link.vcd
+```
+
+**方法3：文本编辑器直接查看**
+```bash
+head -n 100 simple_link.dat
 ```
 
 ---
 
-### 4.9 测试平台构建与运行
+### 4.5 与其他模块的测试集成
 
-#### 4.9.1 CMake配置
-
-**CMakeLists.txt添加**：
-```cmake
-# Channel测试台
-add_executable(channel_tran_tb 
-    tb/channel/channel_tran_tb.cpp
-    tb/channel/channel_helpers.h
-)
-target_link_libraries(channel_tran_tb serdes_lib ${SYSTEMC_LIBRARIES})
-
-add_executable(channel_freq_tb 
-    tb/channel/channel_freq_tb.cpp
-)
-target_link_libraries(channel_freq_tb serdes_lib ${SYSTEMC_LIBRARIES})
-```
-
-#### 4.9.2 运行命令
-
-**编译**：
-```bash
-mkdir -p build && cd build
-cmake .. && make
-```
-
-**运行单个测试**：
-```bash
-./build/bin/channel_tran_tb --scenario basic
-./build/bin/channel_freq_tb --sparam data/channel.s4p
-```
-
-**运行批量测试**：
-```bash
-bash scripts/run_channel_tests.sh --all
-```
-
----
-
-### 4.10 与其他模块的测试集成
-
-#### 4.10.1 与TX链路联合测试
-
-**测试目标**：验证TxDriver输出→Channel→接收端的端到端链路。
-
-**连接拓扑**：
-```
-TxDriver.out_p/out_n → Channel.in_p/in_n → EyeDiagramAnalyzer
-```
-
-#### 4.10.2 与RX链路联合测试
-
-**测试目标**：验证Channel输出是否满足RxCTLE输入要求。
-
-**连接拓扑**：
-```
-ChannelSignalSource → Channel → RxCTLE → RxVGA → RxSampler
-```
-
-#### 4.10.3 完整链路回归测试
+#### 4.5.1 完整链路回归测试
 
 **测试目标**：确保信道模块更新不破坏完整链路功能。
 
-**测试平台**：`tb/simple_link_tb.cpp`（现有集成测试）
+**测试流程**：
+1. 修改信道模块代码或参数
+2. 重新编译：`make simple_link_tb`
+3. 运行回归测试：`./bin/simple_link_tb`
+4. 比对波形文件：检查`channel_out`是否与基线版本一致
+5. 验证下游模块：检查`ctle_out`和`sampler_out`未受异常影响
+
+**基线保存**：
+```bash
+# 保存当前版本为基线
+cp simple_link.dat simple_link_baseline.dat
+
+# 修改代码后对比
+diff simple_link.dat simple_link_baseline.dat
+```
+
+#### 4.5.2 测试变更影响范围
+
+信道模块变更对链路的影响：
+
+| 变更类型 | 影响模块 | 验证重点 |
+|---------|---------|---------|
+| `attenuation_db`调整 | CTLE/VGA增益需求 | 检查RX链路是否饱和或信噪比下降 |
+| `bandwidth_hz`调整 | CTLE零点/极点配置 | 检查高频增强是否过度或不足 |
+| 算法实现修改 | 所有下游模块 | 完整波形对比，确保数值一致性 |
+
+**下游模块敏感性**：
+- **RxCTLE**：对信道高频衰减非常敏感，带宽不匹配会导致均衡失效
+- **RxSampler**：对信道引入的ISI敏感，可能导致采样错误
+- **RxCDR**：对信道相位失真敏感，可能影响锁定时间
+
+---
+
+### 4.6 未来扩展方向
+
+以下功能为设计规格，当前v0.4**未实现**：
+
+**独立测试平台**（`tb/channel/`目录）：
+- 时域瞬态测试：`channel_tran_tb.cpp`
+- 频域扫频验证：`channel_freq_tb.cpp`
+- 多端口串扰测试：`channel_crosstalk_tb.cpp`
+
+**测试辅助模块**：
+- 信号源：多音频测试、扫频正弦波、冲激/阶跃激励
+- 测量器：频响分析、眼图统计、串扰量化
+
+**自动化工具**：
+- Python预处理：S参数文件解析、向量拟合、IFFT预处理
+- Python后处理：频响对比、眼图绘制、性能基准报告
+- Bash脚本：批量测试、回归测试、HTML报告生成
 
 ---
 
