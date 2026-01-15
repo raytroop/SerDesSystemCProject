@@ -13,6 +13,8 @@ public:
 private:
     CdrParams m_params;
     double m_phase;
+    double m_prev_bit;  // 前一比特状态，用于边沿检测
+    double m_integral;  // PI控制器积分状态
 };
 }
 #endif
