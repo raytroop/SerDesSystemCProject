@@ -22,15 +22,19 @@ endif
 # Include directories
 INCLUDES := -Iinclude \
             -I$(SYSTEMC_HOME)/include \
-            -I$(SYSTEMC_AMS_HOME)/include
+            -I$(SYSTEMC_AMS_HOME)/include \
+            -I$(GTEST_HOME)/include
 
 # Library directories and libraries
 LDFLAGS := -L$(SYSTEMC_HOME)/lib-macosx64 \
            -L$(SYSTEMC_HOME)/lib \
            -L$(SYSTEMC_AMS_HOME)/lib-macosx64 \
-           -L$(SYSTEMC_AMS_HOME)/lib
+           -L$(SYSTEMC_AMS_HOME)/lib \
+           -L$(SYSTEMC_AMS_HOME)/lib-linux64 \
+           -L$(SYSTEMC_HOME)/objdir/src/.libs \
+           -L$(GTEST_HOME)/lib
 
-LIBS := -lsystemc-ams -lsystemc -lm
+LIBS := -lsystemc-ams -lsystemc -lgtest -lgtest_main -lm -lpthread
 
 # Source files
 AMS_SOURCES := $(wildcard src/ams/*.cpp)

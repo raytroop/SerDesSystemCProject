@@ -13,6 +13,7 @@ public:
 private:
     RxDfeParams m_params;
     std::vector<double> m_taps;
+    std::vector<double> m_history;
 };
 }
 #endif

@@ -46,7 +46,7 @@ if(NOT SYSTEMC_HOME)
 endif()
 
 set(SYSTEMC_INCLUDE_DIRS ${SYSTEMC_HOME}/include)
-set(SYSTEMC_LIBRARY_DIRS ${SYSTEMC_HOME}/lib-macosx64 ${SYSTEMC_HOME}/lib)
+set(SYSTEMC_LIBRARY_DIRS ${SYSTEMC_HOME}/lib-macosx64 ${SYSTEMC_HOME}/lib ${SYSTEMC_HOME}/objdir/src/.libs)
 
 find_library(SYSTEMC_LIBRARY
     NAMES systemc
@@ -91,7 +91,7 @@ if(NOT SYSTEMC_AMS_HOME)
 endif()
 
 set(SYSTEMC_AMS_INCLUDE_DIRS ${SYSTEMC_AMS_HOME}/include)
-set(SYSTEMC_AMS_LIBRARY_DIRS ${SYSTEMC_AMS_HOME}/lib-macosx64 ${SYSTEMC_AMS_HOME}/lib)
+set(SYSTEMC_AMS_LIBRARY_DIRS ${SYSTEMC_AMS_HOME}/lib-macosx64 ${SYSTEMC_AMS_HOME}/lib ${SYSTEMC_AMS_HOME}/lib-linux64)
 
 find_library(SYSTEMC_AMS_LIBRARY
     NAMES systemc-ams
@@ -171,6 +171,7 @@ set(ALL_SOURCES
     src/ams/rx_ctle.cpp
     src/ams/rx_vga.cpp
     src/ams/rx_sampler.cpp
+    src/ams/rx_cdr.cpp
     ${DE_SOURCES}
     ${SYSTEM_SOURCES}
 )

@@ -29,7 +29,7 @@ void RxSamplerTdf::set_attributes() {
     clk_sample.set_rate(1);
     phase_offset.set_rate(1);
     data_out.set_rate(1);
-    data_out_de.set_rate(1);  // DE domain output rate
+    // data_out_de is DE domain, no need to set rate
     
     // Set default timestep if needed
     set_timestep(1.0 / 100e9, sc_core::SC_SEC);  // 100 GHz sampling for high-speed SerDes

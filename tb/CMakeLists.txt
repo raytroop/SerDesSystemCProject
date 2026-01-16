@@ -58,3 +58,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/sampler/sampler_tran_tb.cpp)
         ${SYSTEMC_LIBRARY}
     )
 endif()
+
+# CDR transient testbench
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/cdr/cdr_tran_tb.cpp)
+    add_executable(cdr_tran_tb rx/cdr/cdr_tran_tb.cpp)
+    target_include_directories(cdr_tran_tb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/rx/cdr
+    )
+    target_link_libraries(cdr_tran_tb
+        serdes_lib
+        ${SYSTEMC_AMS_LIBRARY}
+        ${SYSTEMC_LIBRARY}
+    )
+endif()

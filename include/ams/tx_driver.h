@@ -12,6 +12,7 @@ public:
     void processing();
 private:
     TxDriverParams m_params;
+    double m_filter_state;
 };
 }
 #endif

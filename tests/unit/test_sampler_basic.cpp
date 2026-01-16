@@ -79,7 +79,7 @@ SC_MODULE(SamplerBasicTestbench) {
     sca_tdf::sca_signal<double> sig_clk;
     sca_tdf::sca_signal<double> sig_phase;
     sca_tdf::sca_signal<double> sig_out;
-    sca_util::sca_signal<bool> sig_out_de;
+    sc_core::sc_signal<bool> sig_out_de;
     
     RxSamplerParams params;
     double input_amplitude;
@@ -114,7 +114,7 @@ SC_MODULE(SamplerBasicTestbench) {
     }
     
     double get_output() {
-        return sig_out.read();
+        return sig_out.read(0);
     }
     
     bool get_output_de() {
