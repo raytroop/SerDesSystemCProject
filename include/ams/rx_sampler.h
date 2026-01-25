@@ -29,7 +29,7 @@ public:
     
     // Digital outputs
     sca_tdf::sca_out<double> data_out;      // TDF domain output (analog-compatible)
-    sc_core::sc_out<bool> data_out_de;      // DE domain output (discrete event)
+    sca_tdf::sca_de::sca_out<bool> data_out_de;  // TDF to DE domain bridge output
     
     /**
      * @brief Constructor
