@@ -127,6 +127,7 @@ void RxCdrTdf::processing()
     // Discrete-time implementation:
     //   I[n] = I[n-1] + Ki * e[n]
     //   output[n] = Kp * e[n] + I[n]
+    // Note: Kp and Ki are dimensionless gains, output is scaled by UI to get seconds
     
     // Update integral term (accumulate phase error)
     m_integral += m_params.pi.ki * phase_error;
@@ -134,8 +135,12 @@ void RxCdrTdf::processing()
     // Calculate proportional term (instantaneous response)
     double prop_term = m_params.pi.kp * phase_error;
     
-    // Total PI output
-    m_phase = prop_term + m_integral;
+    // Total PI output (dimensionless, in units of UI)
+    double pi_output = prop_term + m_integral;
+    
+    // Scale by UI to convert to seconds
+    // e.g., Kp=0.01, phase_error=1 → pi_output=0.01 → m_phase=0.01*100ps=1ps
+    m_phase = pi_output * m_params.ui;
     
     // ========================================================================
     // Step 5: Phase range limiting (clamp to ±range)
@@ -144,10 +149,13 @@ void RxCdrTdf::processing()
     double range = m_params.pai.range;
     m_phase = std::max(-range, std::min(range, m_phase));
     
-    // Anti-windup: also limit integral state when hitting range limits
+    // Anti-windup: limit integral state when hitting range limits
+    // Convert clamped phase back to dimensionless units for integral adjustment
     if (m_phase >= range || m_phase <= -range) {
         // Clamp integral to prevent further windup
-        m_integral = m_phase - prop_term;
+        // m_phase = (prop_term + m_integral) * ui, so:
+        // m_integral = m_phase / ui - prop_term
+        m_integral = m_phase / m_params.ui - prop_term;
     }
     
     // ========================================================================
