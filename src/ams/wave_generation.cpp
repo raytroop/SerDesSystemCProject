@@ -58,17 +58,27 @@ void WaveGenerationTdf::initialize() {
     
     // Initialize LFSR state based on PRBS type
     int prbs_index = static_cast<int>(m_params.type);
+    unsigned int default_state = 0;
+    unsigned int mask = 0;
+    
     if (prbs_index >= 0 && prbs_index < 5) {
-        m_lfsr_state = PRBS_CONFIGS[prbs_index].default_init;
+        default_state = PRBS_CONFIGS[prbs_index].default_init;
+        mask = PRBS_CONFIGS[prbs_index].mask;
     } else {
         // Default to PRBS31
-        m_lfsr_state = 0x7FFFFFFF;
+        default_state = 0x7FFFFFFF;
+        mask = 0x7FFFFFFF;
     }
+    
+    // Use seed to modify LFSR initial state for different sequences
+    // XOR the default state with the seed (masked to valid bits)
+    // This ensures different seeds produce different starting points in the PRBS sequence
+    m_lfsr_state = (default_state ^ (m_seed & mask)) & mask;
     
     // Check for all-zero state (would cause LFSR to lock up)
     if (m_lfsr_state == 0) {
-        std::cerr << "Warning: LFSR initial state is zero, using default value" << std::endl;
-        m_lfsr_state = PRBS_CONFIGS[prbs_index >= 0 && prbs_index < 5 ? prbs_index : 4].default_init;
+        // If XOR resulted in zero, use default state instead
+        m_lfsr_state = default_state;
     }
     
     // Warning for pulse width quantization
@@ -81,7 +91,7 @@ void WaveGenerationTdf::initialize() {
         }
     }
     
-    // Re-seed RNG for reproducibility
+    // Re-seed RNG for reproducibility (used for jitter)
     m_rng.seed(m_seed);
 }
 

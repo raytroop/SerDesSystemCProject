@@ -261,7 +261,8 @@ private:
     void initialize_state();
     
     /**
-     * @brief Write all outputs with current state
+     * @brief Write slow path outputs (AGC, DFE, CTLE)
+     * Does not write fast path outputs to avoid conflicts
      */
     void write_all_outputs();
 };

@@ -121,7 +121,8 @@ void AdaptionDe::initialize_state() {
 void AdaptionDe::reset_process() {
     if (reset.read()) {
         initialize_state();
-        write_all_outputs();
+        // Note: Do NOT write outputs here to avoid multiple driver conflict
+        // Outputs will be written by slow_path_process after reset
     }
 }
 
@@ -131,6 +132,13 @@ void AdaptionDe::reset_process() {
 void AdaptionDe::fast_path_process() {
     // Wait for reset to complete
     wait(sc_core::SC_ZERO_TIME);
+    
+    // Initialize fast path outputs
+    sampler_threshold.write(m_current_threshold);
+    sampler_hysteresis.write(m_current_hysteresis);
+    phase_cmd.write(m_current_phase_cmd);
+    update_count.write(m_update_count);
+    freeze_flag.write(m_freeze_flag);
     
     while (true) {
         // Wait for fast update period
@@ -188,7 +196,7 @@ void AdaptionDe::slow_path_process() {
     // Wait for reset to complete
     wait(sc_core::SC_ZERO_TIME);
     
-    // Write initial outputs
+    // Write slow path initial outputs only
     write_all_outputs();
     
     while (true) {
@@ -508,12 +516,14 @@ bool AdaptionDe::rollback_to_snapshot() {
             m_agc_integral = 0.0;
             m_cdr_integral = 0.0;
             
-            // Write restored outputs
+            // Write restored slow path outputs
             write_all_outputs();
             
-            // Clear freeze flag after short delay
+            // Note: Fast path outputs (threshold, phase_cmd, freeze_flag) 
+            // will be written by fast_path_process on next cycle
+            
+            // Clear freeze flag
             m_freeze_flag = false;
-            freeze_flag.write(false);
             
             return true;
         }
@@ -559,16 +569,10 @@ void AdaptionDe::write_all_outputs() {
     // Write DFE outputs
     write_dfe_outputs();
     
-    // Write threshold outputs
-    sampler_threshold.write(m_current_threshold);
-    sampler_hysteresis.write(m_current_hysteresis);
-    
-    // Write CDR output
-    phase_cmd.write(m_current_phase_cmd);
-    
-    // Write status outputs
-    update_count.write(m_update_count);
-    freeze_flag.write(m_freeze_flag);
+    // Note: The following are written by fast_path_process to avoid conflicts:
+    // - sampler_threshold, sampler_hysteresis (fast path)
+    // - phase_cmd (fast path)
+    // - update_count, freeze_flag (fast path)
 }
 
 } // namespace serdes
