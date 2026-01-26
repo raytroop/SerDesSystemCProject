@@ -137,9 +137,8 @@ SC_MODULE(VgaBasicTestbench) {
     }
     
     ~VgaBasicTestbench() {
-        delete src;
-        delete vdd_src;
-        delete vga;
+        // SystemC modules are automatically managed by the simulator
+        // Do not delete them manually
     }
     
     double get_output_diff() {
@@ -239,7 +238,7 @@ TEST(VgaBasicTest, AllBasicFunctionality) {
     double cm2 = tb->get_output_cm();
     EXPECT_DOUBLE_EQ(cm1, cm2) << "Common mode stability test";
     
-    delete tb;
+    sc_core::sc_stop();
 }
 
 // ============================================================================
