@@ -370,9 +370,12 @@ struct CdrPaiParams {
 struct CdrParams {
     CdrPiParams pi;
     CdrPaiParams pai;
-    bool debug_enable;            // Debug output enable
+    double ui;                        // Unit interval (s) for PI output scaling
+    bool debug_enable;                // Debug output enable
     
-    CdrParams() : debug_enable(false) {}
+    CdrParams() 
+        : ui(1e-10)                   // Default 100ps (10Gbps)
+        , debug_enable(false) {}
 };
 
 // ============================================================================

@@ -163,15 +163,13 @@ include_directories(
 # ============================================================================
 # Source files
 # ============================================================================
-# 暂时只编译测试所需的模块
+# 编译所有必要的模块以支持测试
 file(GLOB_RECURSE DE_SOURCES "src/de/*.cpp")
 file(GLOB_RECURSE SYSTEM_SOURCES "src/system/*.cpp")
+file(GLOB AMS_SOURCES "src/ams/*.cpp")
 
 set(ALL_SOURCES
-    src/ams/rx_ctle.cpp
-    src/ams/rx_vga.cpp
-    src/ams/rx_sampler.cpp
-    src/ams/rx_cdr.cpp
+    ${AMS_SOURCES}
     ${DE_SOURCES}
     ${SYSTEM_SOURCES}
 )

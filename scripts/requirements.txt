@@ -1,0 +1,6 @@
+# Python dependencies for S-parameter channel processing
+# Install with: pip install -r requirements.txt
+
+numpy>=1.20.0
+scipy>=1.7.0
+matplotlib>=3.4.0

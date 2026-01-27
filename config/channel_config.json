@@ -1,0 +1,45 @@
+{
+  "version": "1.0",
+  "fs": 100000000000.0,
+  "method": "rational",
+  "filters": {
+    "S21": {
+      "num": [
+        0.7943,
+        1.2e-10,
+        3.5e-21,
+        2.1e-32
+      ],
+      "den": [
+        1.0,
+        1.8e-10,
+        5.2e-21,
+        3.8e-32
+      ],
+      "order": 8,
+      "dc_gain": 0.7943,
+      "mse": 1.2e-4,
+      "max_error": 0.015
+    }
+  },
+  "impulse_responses": {
+    "S21": {
+      "time": [0, 1e-11, 2e-11, 3e-11, 4e-11, 5e-11],
+      "impulse": [0.001, 0.012, 0.045, 0.089, 0.123, 0.098],
+      "length": 2048,
+      "dt": 1e-11,
+      "energy": 0.9987,
+      "peak_time": 5.2e-10
+    }
+  },
+  "port_mapping": {
+    "forward": [[1, 2]],
+    "crosstalk": []
+  },
+  "metadata": {
+    "source_file": "example.s2p",
+    "n_ports": 2,
+    "freq_min_hz": 1000000.0,
+    "freq_max_hz": 50000000000.0
+  }
+}

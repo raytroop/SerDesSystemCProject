@@ -71,3 +71,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/cdr/cdr_tran_tb.cpp)
         ${SYSTEMC_LIBRARY}
     )
 endif()
+
+# Wave Generation transient testbench
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/periphery/wave_gen/wave_gen_tran_tb.cpp)
+    add_executable(wave_gen_tran_tb periphery/wave_gen/wave_gen_tran_tb.cpp)
+    target_include_directories(wave_gen_tran_tb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/periphery/wave_gen
+    )
+    target_link_libraries(wave_gen_tran_tb
+        serdes_lib
+        ${SYSTEMC_AMS_LIBRARY}
+        ${SYSTEMC_LIBRARY}
+    )
+endif()
