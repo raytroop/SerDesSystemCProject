@@ -335,15 +335,8 @@ struct RxDfeParams {
         , mu(1e-4) {}
 };
 
-struct RxParams {
-    RxCtleParams ctle;
-    RxVgaParams vga;
-    RxSamplerParams sampler;
-    RxDfeParams dfe;
-};
-
 // ============================================================================
-// CDR Parameters
+// CDR Parameters (moved before RxParams for dependency)
 // ============================================================================
 struct CdrPiParams {
     double kp;                    // Proportional gain
@@ -376,6 +369,17 @@ struct CdrParams {
     CdrParams() 
         : ui(1e-10)                   // Default 100ps (10Gbps)
         , debug_enable(false) {}
+};
+
+// ============================================================================
+// RX Top-Level Parameters
+// ============================================================================
+struct RxParams {
+    RxCtleParams ctle;
+    RxVgaParams vga;
+    RxSamplerParams sampler;
+    RxDfeParams dfe;
+    CdrParams cdr;  // CDR parameters for closed-loop operation
 };
 
 // ============================================================================

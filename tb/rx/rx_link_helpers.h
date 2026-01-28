@@ -69,39 +69,6 @@ private:
 };
 
 // ============================================================================
-// Differential-to-Single Converter
-// ============================================================================
-
-/**
- * @brief Converts differential pair to single-ended signal
- * 
- * out = in_p - in_n
- */
-class DiffToSingleConverter : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_in<double> in_p;
-    sca_tdf::sca_in<double> in_n;
-    sca_tdf::sca_out<double> out;
-    
-    DiffToSingleConverter(sc_core::sc_module_name nm)
-        : sca_tdf::sca_module(nm)
-        , in_p("in_p")
-        , in_n("in_n")
-        , out("out")
-    {}
-    
-    void set_attributes() override {
-        in_p.set_rate(1);
-        in_n.set_rate(1);
-        out.set_rate(1);
-    }
-    
-    void processing() override {
-        out.write(in_p.read() - in_n.read());
-    }
-};
-
-// ============================================================================
 // Constant VDD Source
 // ============================================================================
 
@@ -132,66 +99,6 @@ private:
 };
 
 // ============================================================================
-// Constant Phase Source (for CDR bypass testing)
-// ============================================================================
-
-/**
- * @brief Constant phase source for Sampler phase_offset port
- */
-class ConstPhaseSource : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_out<double> out;
-    
-    ConstPhaseSource(sc_core::sc_module_name nm, double phase = 0.0)
-        : sca_tdf::sca_module(nm)
-        , out("out")
-        , m_phase(phase)
-    {}
-    
-    void set_attributes() override {
-        out.set_rate(1);
-        out.set_timestep(1.0 / RX_LINK_DEFAULT_SAMPLE_RATE, sc_core::SC_SEC);
-    }
-    
-    void processing() override {
-        out.write(m_phase);
-    }
-    
-private:
-    double m_phase;
-};
-
-// ============================================================================
-// Constant Clock Source
-// ============================================================================
-
-/**
- * @brief Constant clock source for Sampler clk_sample port
- */
-class ConstClockSource : public sca_tdf::sca_module {
-public:
-    sca_tdf::sca_out<double> out;
-    
-    ConstClockSource(sc_core::sc_module_name nm, double value = 0.0)
-        : sca_tdf::sca_module(nm)
-        , out("out")
-        , m_value(value)
-    {}
-    
-    void set_attributes() override {
-        out.set_rate(1);
-        out.set_timestep(1.0 / RX_LINK_DEFAULT_SAMPLE_RATE, sc_core::SC_SEC);
-    }
-    
-    void processing() override {
-        out.write(m_value);
-    }
-    
-private:
-    double m_value;
-};
-
-// ============================================================================
 // Multi-Point Signal Recorder
 // ============================================================================
 
@@ -204,8 +111,9 @@ private:
  * - VGA output: vga_out_p, vga_out_n
  * - DFE output (Sampler input): dfe_out_p, dfe_out_n
  * - Sampler output: sampler_out
- * - CDR phase output: cdr_phase
  * - Timestamps
+ * 
+ * Note: CDR phase is accessed via RxTopModule debug interface, not signal port.
  */
 class MultiPointSignalRecorder : public sca_tdf::sca_module {
 public:
@@ -225,9 +133,8 @@ public:
     sca_tdf::sca_in<double> dfe_out_p;
     sca_tdf::sca_in<double> dfe_out_n;
     
-    // Input ports - Sampler and CDR
+    // Input ports - Sampler output
     sca_tdf::sca_in<double> sampler_out;
-    sca_tdf::sca_in<double> cdr_phase;
     
     MultiPointSignalRecorder(sc_core::sc_module_name nm)
         : sca_tdf::sca_module(nm)
@@ -240,7 +147,6 @@ public:
         , dfe_out_p("dfe_out_p")
         , dfe_out_n("dfe_out_n")
         , sampler_out("sampler_out")
-        , cdr_phase("cdr_phase")
     {}
     
     void set_attributes() override {
@@ -254,7 +160,6 @@ public:
         dfe_out_p.set_rate(1);
         dfe_out_n.set_rate(1);
         sampler_out.set_rate(1);
-        cdr_phase.set_rate(1);
     }
     
     void processing() override {
@@ -289,9 +194,8 @@ public:
         dfe_samples_n.push_back(dfe_n);
         dfe_samples_diff.push_back(dfe_p - dfe_n);
         
-        // Record Sampler and CDR
+        // Record Sampler output
         sampler_samples.push_back(sampler_out.read());
-        cdr_phase_samples.push_back(cdr_phase.read());
     }
     
     /**
@@ -311,7 +215,7 @@ public:
              << "ctle_out_p_V,ctle_out_n_V,ctle_out_diff_V,"
              << "vga_out_p_V,vga_out_n_V,vga_out_diff_V,"
              << "dfe_out_p_V,dfe_out_n_V,dfe_out_diff_V,"
-             << "sampler_out,cdr_phase_s\n";
+             << "sampler_out\n";
         
         file << std::scientific << std::setprecision(9);
         
@@ -321,7 +225,7 @@ public:
                  << ctle_samples_p[i] << "," << ctle_samples_n[i] << "," << ctle_samples_diff[i] << ","
                  << vga_samples_p[i] << "," << vga_samples_n[i] << "," << vga_samples_diff[i] << ","
                  << dfe_samples_p[i] << "," << dfe_samples_n[i] << "," << dfe_samples_diff[i] << ","
-                 << sampler_samples[i] << "," << cdr_phase_samples[i] << "\n";
+                 << sampler_samples[i] << "\n";
         }
         
         file.close();
@@ -403,7 +307,6 @@ public:
     std::vector<double> vga_samples_p, vga_samples_n, vga_samples_diff;
     std::vector<double> dfe_samples_p, dfe_samples_n, dfe_samples_diff;
     std::vector<double> sampler_samples;
-    std::vector<double> cdr_phase_samples;
 };
 
 // ============================================================================
