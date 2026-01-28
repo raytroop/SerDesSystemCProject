@@ -22,7 +22,8 @@ using namespace serdes::test;
 TEST(RxTopCtleTest, HighGainConfiguration) {
     // Setup with high gain CTLE
     RxParams params = get_high_gain_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.3, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.3, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -44,8 +45,9 @@ TEST(RxTopCtleTest, GainComparisonAffectsOutput) {
     // Run with default (low) gain first
     RxParams params_low = get_default_rx_params();
     params_low.ctle.dc_gain = 1.0;  // Low gain
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb_low(params_low, RxDifferentialSource::SQUARE, 0.2, 5e9);
+    RxTopTestbench tb_low(params_low, adaption_params, RxDifferentialSource::SQUARE, 0.2, 5e9);
     sc_core::sc_start(500, sc_core::SC_NS);
     
     size_t transitions_low = tb_low.monitor->count_transitions();
@@ -68,8 +70,9 @@ TEST(RxTopCtleTest, ZeroFrequencyConfiguration) {
     RxParams params = get_default_rx_params();
     params.ctle.zeros = {5e9};  // Higher zero frequency
     params.ctle.poles = {40e9};
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -92,8 +95,9 @@ TEST(RxTopCtleTest, UnityGainPassthrough) {
     params.ctle.dc_gain = 1.0;
     params.ctle.zeros.clear();  // No zeros
     params.ctle.poles = {50e9}; // High pole for minimal filtering
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.5, 3e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.5, 3e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -118,8 +122,9 @@ TEST(RxTopCtleTest, MultipleZerosAndPoles) {
     params.ctle.zeros = {1e9, 3e9};
     params.ctle.poles = {10e9, 30e9};
     params.ctle.dc_gain = 2.0;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);

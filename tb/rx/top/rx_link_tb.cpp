@@ -125,6 +125,7 @@ SC_MODULE(RxLinkTestbench) {
     WaveGenParams m_wave_params;
     ChannelParams m_channel_params;
     RxParams m_rx_params;
+    AdaptionParams m_adaption_params;
     
     double m_sim_duration;
     double m_sample_rate;
@@ -205,8 +206,13 @@ SC_MODULE(RxLinkTestbench) {
         m_rx_params.vga.dc_gain = 2.0;
         m_rx_params.vga.vcm_out = 0.0;
         
-        // DFE
-        m_rx_params.dfe.taps = {-0.05, -0.02, 0.01};
+        // DFE Summer (差分架构)
+        m_rx_params.dfe_summer.tap_coeffs = {-0.05, -0.02, 0.01};
+        m_rx_params.dfe_summer.ui = 100e-12;
+        m_rx_params.dfe_summer.vcm_out = 0.0;
+        m_rx_params.dfe_summer.vtap = 1.0;
+        m_rx_params.dfe_summer.map_mode = "pm1";
+        m_rx_params.dfe_summer.enable = true;
         
         // Sampler (phase-driven mode is forced by RxTopModule)
         m_rx_params.sampler.phase_source = "phase";
@@ -226,6 +232,27 @@ SC_MODULE(RxLinkTestbench) {
         m_sample_rate = 100e9;  // 100 GS/s
         m_ui = 100e-12;         // 100 ps (10 Gbps)
         m_sim_duration = 2000e-9;  // 2 us
+        
+        // Adaption parameters (disabled for testbench)
+        m_adaption_params = AdaptionParams();
+        m_adaption_params.Fs = 80e9;
+        m_adaption_params.UI = 100e-12;
+        m_adaption_params.seed = 12345;
+        m_adaption_params.update_mode = "multi-rate";
+        m_adaption_params.fast_update_period = 2.5e-10;
+        m_adaption_params.slow_update_period = 2.5e-7;
+        m_adaption_params.agc.enabled = false;
+        m_adaption_params.agc.initial_gain = 2.0;
+        m_adaption_params.dfe.enabled = false;
+        m_adaption_params.dfe.num_taps = 3;
+        m_adaption_params.dfe.algorithm = "sign-lms";
+        m_adaption_params.dfe.initial_taps = {-0.05, -0.02, 0.01};
+        m_adaption_params.threshold.enabled = false;
+        m_adaption_params.threshold.initial = 0.0;
+        m_adaption_params.threshold.hysteresis = 0.02;
+        m_adaption_params.cdr_pi.enabled = false;
+        m_adaption_params.safety.freeze_on_error = false;
+        m_adaption_params.safety.rollback_enable = false;
     }
     
     void configure_basic() {
@@ -275,8 +302,8 @@ SC_MODULE(RxLinkTestbench) {
         // Create VDD source
         vdd_src = new ConstVddSource("vdd_src", 1.0);
         
-        // Create RX Top Module (encapsulates CTLE, VGA, DFE, Sampler, CDR)
-        rx_top = new RxTopModule("rx_top", m_rx_params);
+        // Create RX Top Module (encapsulates CTLE, VGA, DFE Summer, Sampler, CDR)
+        rx_top = new RxTopModule("rx_top", m_rx_params, m_adaption_params);
         
         // Create Recorder (simplified - connects to RxTop debug signals)
         recorder = new MultiPointSignalRecorder("recorder");
@@ -382,13 +409,14 @@ SC_MODULE(RxLinkTestbench) {
         file << "    \"vga\": {\n";
         file << "      \"dc_gain\": " << m_rx_params.vga.dc_gain << "\n";
         file << "    },\n";
-        file << "    \"dfe\": {\n";
-        file << "      \"taps\": [";
-        for (size_t i = 0; i < m_rx_params.dfe.taps.size(); ++i) {
-            file << m_rx_params.dfe.taps[i];
-            if (i < m_rx_params.dfe.taps.size() - 1) file << ", ";
+        file << "    \"dfe_summer\": {\n";
+        file << "      \"tap_coeffs\": [";
+        for (size_t i = 0; i < m_rx_params.dfe_summer.tap_coeffs.size(); ++i) {
+            file << m_rx_params.dfe_summer.tap_coeffs[i];
+            if (i < m_rx_params.dfe_summer.tap_coeffs.size() - 1) file << ", ";
         }
-        file << "]\n";
+        file << "],\n";
+        file << "      \"enable\": " << (m_rx_params.dfe_summer.enable ? "true" : "false") << "\n";
         file << "    },\n";
         file << "    \"cdr\": {\n";
         file << "      \"kp\": " << m_rx_params.cdr.pi.kp << ",\n";

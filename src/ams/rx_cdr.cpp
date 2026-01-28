@@ -69,6 +69,7 @@ void RxCdrTdf::set_attributes()
     // Set port rates (1:1 processing)
     in.set_rate(1);
     phase_out.set_rate(1);
+    phase_out.set_delay(1);  // 添加延迟以打破 Sampler-CDR 反馈环路
 }
 
 // ============================================================================

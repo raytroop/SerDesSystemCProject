@@ -21,13 +21,22 @@ struct SerdesLinkParams {
     WaveGenParams wave;         ///< Wave generation parameters
     TxParams tx;                ///< TX parameters (FFE, Mux, Driver)
     ChannelParams channel;      ///< Channel parameters
-    RxParams rx;                ///< RX parameters (CTLE, VGA, DFE, Sampler, CDR)
+    RxParams rx;                ///< RX parameters (CTLE, VGA, DFE Summer, Sampler, CDR)
+    AdaptionParams adaption;    ///< Adaption parameters (AGC, DFE tap adaptation)
     double sample_rate;         ///< Sampling rate (Hz)
     unsigned int seed;          ///< Random seed for PRBS
     
     SerdesLinkParams()
         : sample_rate(100e9)
-        , seed(12345) {}
+        , seed(12345) {
+        // Default adaption parameters (disabled)
+        adaption.agc.enabled = false;
+        adaption.dfe.enabled = false;
+        adaption.threshold.enabled = false;
+        adaption.cdr_pi.enabled = false;
+        adaption.safety.freeze_on_error = false;
+        adaption.safety.rollback_enable = false;
+    }
 };
 
 /**

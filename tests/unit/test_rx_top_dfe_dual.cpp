@@ -22,9 +22,11 @@ using namespace serdes::test;
 TEST(RxTopDfeDualTest, DfeEnabledProcessing) {
     // Setup with DFE enabled (default taps)
     RxParams params = get_default_rx_params();
-    params.dfe.taps = {-0.1, -0.05, 0.02};  // Significant taps
+    params.dfe_summer.tap_coeffs = {-0.1, -0.05, 0.02};  // Significant taps
+    params.dfe_summer.enable = true;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -44,8 +46,9 @@ TEST(RxTopDfeDualTest, DfeEnabledProcessing) {
 TEST(RxTopDfeDualTest, DfeDisabledPassthrough) {
     // Setup with DFE disabled (empty taps)
     RxParams params = get_no_dfe_params();
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.5, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.5, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -65,9 +68,11 @@ TEST(RxTopDfeDualTest, DfeDisabledPassthrough) {
 TEST(RxTopDfeDualTest, SingleTapDfe) {
     // Setup with single tap DFE
     RxParams params = get_default_rx_params();
-    params.dfe.taps = {-0.1};  // Single tap
+    params.dfe_summer.tap_coeffs = {-0.1};  // Single tap
+    params.dfe_summer.enable = true;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -87,9 +92,11 @@ TEST(RxTopDfeDualTest, SingleTapDfe) {
 TEST(RxTopDfeDualTest, MultiTapDfe) {
     // Setup with 5 taps
     RxParams params = get_default_rx_params();
-    params.dfe.taps = {-0.08, -0.05, -0.03, 0.01, 0.005};
+    params.dfe_summer.tap_coeffs = {-0.08, -0.05, -0.03, 0.01, 0.005};
+    params.dfe_summer.enable = true;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -109,9 +116,11 @@ TEST(RxTopDfeDualTest, MultiTapDfe) {
 TEST(RxTopDfeDualTest, LargeTapValues) {
     // Setup with large tap values (more aggressive equalization)
     RxParams params = get_default_rx_params();
-    params.dfe.taps = {-0.2, -0.1, 0.05};  // Large taps
+    params.dfe_summer.tap_coeffs = {-0.2, -0.1, 0.05};  // Large taps
+    params.dfe_summer.enable = true;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.5, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.5, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -134,7 +143,8 @@ TEST(RxTopDfeDualTest, LargeTapValues) {
 TEST(RxTopDfeDualTest, DfeSignalPathIntegrity) {
     // Verify DFE signals are accessible via debug interface
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.4, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.4, 5e9);
     
     // Run brief simulation
     sc_core::sc_start(100, sc_core::SC_NS);

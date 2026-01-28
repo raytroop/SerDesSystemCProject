@@ -41,7 +41,7 @@ SerdesLinkTopModule::SerdesLinkTopModule(sc_core::sc_module_name nm,
     m_s2d = new SingleToDiffTdf("s2d");
     
     // RX Top Module
-    m_rx = new RxTopModule("rx", m_params.rx);
+    m_rx = new RxTopModule("rx", m_params.rx, m_params.adaption);
     
     // Pass-through for data_out port
     m_data_out_tap = new SignalPassThrough("data_out_tap");

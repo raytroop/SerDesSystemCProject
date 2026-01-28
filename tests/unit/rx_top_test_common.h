@@ -215,6 +215,7 @@ public:
     sca_tdf::sca_signal<double> sig_data_out;
     
     RxTopTestbench(const RxParams& params,
+                   const AdaptionParams& adaption_params,
                    RxDifferentialSource::WaveformType src_type = RxDifferentialSource::DC,
                    double src_amplitude = 0.5,
                    double src_frequency = 10e9,
@@ -230,8 +231,8 @@ public:
         // Create VDD source
         vdd_src = new RxConstantVddSource("vdd_src", vdd_nominal);
         
-        // Create DUT
-        dut = new RxTopModule("dut", params);
+        // Create DUT with adaption parameters
+        dut = new RxTopModule("dut", params, adaption_params);
         
         // Create monitor
         monitor = new RxDataMonitor("monitor");
@@ -293,13 +294,18 @@ inline RxParams get_default_rx_params() {
     params.vga.dc_gain = 2.0;
     params.vga.vcm_out = 0.0;
     
-    // DFE: 3 taps
-    params.dfe.taps = {-0.05, -0.02, 0.01};
+    // DFE Summer: 3 taps (差分架构)
+    params.dfe_summer.tap_coeffs = {-0.05, -0.02, 0.01};
+    params.dfe_summer.ui = 100e-12;
+    params.dfe_summer.vcm_out = 0.0;
+    params.dfe_summer.vtap = 1.0;
+    params.dfe_summer.map_mode = "pm1";
+    params.dfe_summer.enable = true;
     
     // Sampler: phase-driven mode (will be forced by RxTopModule)
     params.sampler.phase_source = "phase";
     params.sampler.threshold = 0.0;
-    params.sampler.hysteresis = 0.02;
+    params.sampler.hysteresis = 0.01;
     params.sampler.resolution = 0.02;
     
     // CDR: moderate gains
@@ -309,6 +315,46 @@ inline RxParams get_default_rx_params() {
     params.cdr.pai.resolution = 1e-12;
     params.cdr.pai.range = 5e-11;
     params.cdr.ui = 100e-12;  // 10 Gbps
+    
+    return params;
+}
+
+// ============================================================================
+// Default Adaption parameters factory
+// ============================================================================
+
+inline AdaptionParams get_default_adaption_params() {
+    AdaptionParams params;
+    
+    // 基本参数
+    params.Fs = 80e9;
+    params.UI = 100e-12;  // 10 Gbps
+    params.seed = 12345;
+    params.update_mode = "multi-rate";
+    params.fast_update_period = 2.5e-10;
+    params.slow_update_period = 2.5e-7;
+    
+    // AGC 参数（禁用，使用固定增益）
+    params.agc.enabled = false;
+    params.agc.initial_gain = 2.0;
+    
+    // DFE 自适应参数（禁用，使用静态抽头）
+    params.dfe.enabled = false;
+    params.dfe.num_taps = 3;
+    params.dfe.algorithm = "sign-lms";
+    params.dfe.initial_taps = {-0.05, -0.02, 0.01};
+    
+    // 阈值自适应参数（禁用）
+    params.threshold.enabled = false;
+    params.threshold.initial = 0.0;
+    params.threshold.hysteresis = 0.02;
+    
+    // CDR PI 参数（禁用，使用 RxCdrTdf 内部 PI）
+    params.cdr_pi.enabled = false;
+    
+    // 安全参数（禁用测试模式下的冻结功能）
+    params.safety.freeze_on_error = false;
+    params.safety.rollback_enable = false;
     
     return params;
 }
@@ -333,7 +379,8 @@ inline RxParams get_aggressive_cdr_params() {
 
 inline RxParams get_no_dfe_params() {
     RxParams params = get_default_rx_params();
-    params.dfe.taps.clear();  // Empty taps = passthrough
+    params.dfe_summer.tap_coeffs.clear();  // Empty taps = passthrough
+    params.dfe_summer.enable = false;
     return params;
 }
 

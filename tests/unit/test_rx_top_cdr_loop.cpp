@@ -23,7 +23,8 @@ using namespace serdes::test;
 TEST(RxTopCdrLoopTest, CdrPhaseOutputValid) {
     // Setup
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation long enough for CDR to start tracking
     sc_core::sc_start(1000, sc_core::SC_NS);
@@ -47,7 +48,8 @@ TEST(RxTopCdrLoopTest, CdrPhaseOutputValid) {
 TEST(RxTopCdrLoopTest, CdrIntegralStateEvolution) {
     // Setup
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Get initial integral state
     double initial_integral = tb.get_cdr_integral_state();
@@ -75,8 +77,9 @@ TEST(RxTopCdrLoopTest, CdrIntegralStateEvolution) {
 TEST(RxTopCdrLoopTest, AggressiveCdrGains) {
     // Setup with aggressive CDR gains (faster tracking)
     RxParams params = get_aggressive_cdr_params();
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -100,8 +103,9 @@ TEST(RxTopCdrLoopTest, ConservativeCdrGains) {
     RxParams params = get_default_rx_params();
     params.cdr.pi.kp = 0.001;   // 10x smaller
     params.cdr.pi.ki = 1e-5;    // 10x smaller
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -123,7 +127,8 @@ TEST(RxTopCdrLoopTest, ConservativeCdrGains) {
 TEST(RxTopCdrLoopTest, SquareWaveTracking) {
     // Setup with square wave input (regular transitions)
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.4, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(1000, sc_core::SC_NS);
@@ -148,8 +153,9 @@ TEST(RxTopCdrLoopTest, PhaseRangeLimiting) {
     // Setup with small PAI range
     RxParams params = get_default_rx_params();
     params.cdr.pai.range = 1e-11;  // Very small range
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);

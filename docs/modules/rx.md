@@ -15,11 +15,23 @@ SerDes接收端（RX）是高速串行链路的核心组成部分，负责将经
 RX接收端的核心设计思想是采用分级级联架构，每个子模块专注于特定的信号处理任务：
 
 ```
+╔════════════════════════════════════════════════════════════╗
+║                     DE域控制层 (Adaption)                      ║
+║  AGC控制 | DFE抽头更新 | 阈值自适应 | CDR控制接口 | 冻结/回退  ║
+╚════════════════════════════════════════════════════════════╝
+            │ vga_gain      │ dfe_taps      │ threshold     │
+            ▼               ▼               ▼               ▼
 信道输出 → CTLE → VGA → DFE Summer → Sampler → 数字输出
                                 ↑           ↓
                             历史判决    采样数据
                                 ↑           ↓
                             data_out  ←  CDR  ← phase_offset
+                                            ↑
+                                      phase_error
+                                            ↑
+                              ╔═══════════════╗
+                              ║  DE-TDF桥接层  ║
+                              ╚═══════════════╝
 ```
 
 **信号流处理逻辑**：
@@ -48,6 +60,13 @@ RX接收端的核心设计思想是采用分级级联架构，每个子模块专
   - DFE：1-8抽头可配置，后游标ISI抵消
 - **自适应优化**：支持LMS/Sign-LMS/NLMS等自适应算法动态优化均衡参数
 - **非理想效应建模**：集成偏移、噪声、PSRR、CMFB、CMRR、饱和等实际器件特性
+- **DE域自适应控制**（Adaption模块）：
+  - AGC自动增益控制：PI控制器动态调整VGA增益
+  - DFE抽头在线更新：LMS/Sign-LMS/NLMS算法优化抽头系数
+  - 阈值自适应：动态跟踪电平漂移，优化判决阈值
+  - CDR控制接口：提供对TDF域CDR的参数化配置与监控
+  - 安全机制：冻结/回退策略，防止算法发散
+- **多速率调度架构**：快路径（阈值调整，每10-100 UI）与慢路径（AGC/DFE，每1000-10000 UI）并行运行
 
 ### 1.3 子模块概览
 
@@ -58,13 +77,14 @@ RX接收端的核心设计思想是采用分级级联架构，每个子模块专
 | **DFE Summer** | `RxDfeSummerTdf` | 判决反馈均衡求和器 | tap_coeffs, vtap, map_mode | dfesummer.md |
 | **Sampler** | `RxSamplerTdf` | 采样器/判决器 | resolution, hysteresis, phase_source | sampler.md |
 | **CDR** | `RxCdrTdf` | 时钟数据恢复 | kp, ki, resolution, range | cdr.md |
+| **Adaption** | `AdaptionDe` | DE域自适应控制中枢 | agc, dfe, threshold, cdr_pi, safety | adaption.md |
 
 ### 1.4 版本历史
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
 | v1.0 | 2026-01-27 | 初始版本，整合五个子模块的顶层文档 |
-
+| v1.1 | 2026-01-28 | 增加 adaption模块 |
 ---
 
 ## 2. 模块接口
@@ -85,43 +105,80 @@ RX接收端的核心设计思想是采用分级级联架构，每个子模块专
 #### 2.1.2 内部模块级联关系
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              RX 接收端顶层模块                                    │
-│                                                                                  │
-│  ┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────┐                  │
-│  │  CTLE   │    │   VGA   │    │ DFE Summer  │    │ Sampler  │                  │
-│  │         │    │         │    │             │    │          │                  │
-│  │ in_p ←──┼────┼─ out_p  │    │             │    │          │                  │
-│  │ in_n ←──┼────┼─ out_n  │    │             │    │          │                  │
-│  │         │    │         │    │             │    │          │                  │
-│  │ out_p ──┼────┼→ in_p   │    │             │    │          │     data_out     │
-│  │ out_n ──┼────┼→ in_n   │    │ in_p ←──────┼────┼─ out_p   │    ──────────→   │
-│  │         │    │         │    │ in_n ←──────┼────┼─ out_n   │                  │
-│  │ vdd ←───┼────┼─ vdd    │    │             │    │          │                  │
-│  └─────────┘    │ out_p ──┼────┼→ in_p       │    │ inp ←────┼── out_p         │
-│       ↑         │ out_n ──┼────┼→ in_n       │    │ inn ←────┼── out_n         │
-│       │         │         │    │             │    │          │                  │
-│      VDD        │ vdd ←───┼────┼─────────────┼────┼──────────┼── vdd           │
-│                 └─────────┘    │             │    │          │                  │
-│                                │ data_in ←───┼────┼──────────┼── data_out      │
-│                                │ (历史判决)  │    │          │      │           │
-│                                │             │    │          │      │           │
-│                                └─────────────┘    │ phase ←──┼──────┼───┐       │
-│                                                   │ _offset  │      │   │       │
-│                                                   └──────────┘      │   │       │
-│                                                                     │   │       │
-│                                                        ┌────────────┘   │       │
-│                                                        ↓                │       │
-│                                                   ┌─────────┐           │       │
-│                                                   │   CDR   │           │       │
-│                                                   │         │           │       │
-│                                                   │ in ←────┼───────────┘       │
-│                                                   │         │                   │
-│                                                   │ phase ──┼→ phase_offset     │
-│                                                   │ _out    │                   │
-│                                                   └─────────┘                   │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
+╔══════════════════════════════════════════════════════════════════════════════════════╗
+║                                   RX 接收端顶层模块                                    ║
+║                                                                                      ║
+║  ┌─────────────────────────────────────────────────────────────────────────────────┐ ║
+║  │                              DE域 (Adaption)                                    │ ║
+║  │  ┌─────────┐  ┌────────┐  ┌─────────┐  ┌─────────┐  ┌────────┐                  │ ║
+║  │  │   AGC   │  │  DFE   │  │Threshold│  │ CDR PI  │  │Safety  │                  │ ║
+║  │  │   PI    │  │  LMS   │  │ Adapt   │  │ Ctrl    │  │Mechan  │                  │ ║
+║  │  └─────────┘  └────────┘  └─────────┘  └─────────┘  └────────┘                  │ ║
+║  └─────────────────────────────────────────────────────────────────────────────────┘ ║
+║                 │ vga_gain     │ dfe_taps    │ threshold    │ phase_cmd              ║
+║                 ▼              ▼             ▼              ▼                        ║
+║  ┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────┐    ┌─────────┐        ║
+║  │  CTLE   │───▶│   VGA   │───▶│ DFE Summer  │───▶│ Sampler  │───▶│  CDR    │        ║
+║  │         │    │         │    │             │    │          │    │         │        ║
+║  │ in_p ←──┼────┼─ out_p  │    │             │    │          │    │         │        ║
+║  │ in_n ←──┼────┼─ out_n  │    │             │    │          │    │         │        ║
+║  │         │    │         │    │             │    │          │    │         │        ║
+║  │ out_p ──┼───▶│ in_p    │    │             │    │          │    │         │        ║
+║  │ out_n ──┼───▶│ in_n    │    │ in_p ←──────┼───▶│ out_p    │    │ in      │        ║
+║  │         │    │         │    │ in_n ←──────┼───▶│ out_n    │    │         │        ║
+║  │ vdd ←───┼───▶│ vdd     │    │             │    │          │    │         │        ║
+║  └─────────┘    └─────────┘    │             │    │          │    │         │        ║
+║       │              │         │             │    │          │    │         │        ║
+║       │              │         │ data_in     │    │          │    │         │        ║
+║       │              │         │             │    │          │    │         │        ║
+║       │              │         └─────────────┘    │          │    │         │        ║
+║       │              │                            │ data_out │    │         │        ║
+║       │              │                            │          │    │         │        ║
+║       │              │                            └──────────┘    │ phase   │        ║
+║       │              │                                            │ _out    │        ║
+║       │              │                                            └─────────┘        ║
+║       │              │                                                               ║
+║       │              └──────────────────────────────────────────────────────────────-║
+║       │                                                                              ║
+║       └─────────────────────────────────────────────────────────────────────────────-║
+║                                                                                      ║
+║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
+║  │                              TDF域 (RX处理链)                                   │  ║
+║  │                                                                                │  ║
+║  │  ┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────┐    ┌─────────┐  │  ║
+║  │  │  CTLE   │───▶│   VGA   │───▶│ DFE Summer  │───▶│ Sampler  │───▶│  CDR    │  │  ║
+║  │  │         │    │         │    │             │    │          │    │         │  │  ║
+║  │  │ in_p ←──┼────┼─ out_p  │    │             │    │          │    │         │  │  ║
+║  │  │ in_n ←──┼────┼─ out_n  │    │             │    │          │    │         │  │  ║
+║  │  │         │    │         │    │             │    │          │    │         │  │  ║
+║  │  │ out_p ──┼────┼→ in_p   │    │             │    │          │    │         │  │  ║
+║  │  │ out_n ──┼────┼→ in_n   │    │ in_p ←──────┼────┼─ out_p   │    │ in      │  │  ║
+║  │  │         │    │         │    │ in_n ←──────┼────┼─ out_n   │    │         │  │  ║
+║  │  │ vdd ←───┼────┼─ vdd    │    │             │    │          │    │         │  │  ║
+║  │  └─────────┘    │ out_p ──┼────┼→ in_p       │    │ inp ←────┼────|───out_p │  │  ║
+║  │       │         │ out_n ──┼────┼→ in_n       │    │ inn ←────┼────|───out_n │  │  ║
+║  │       │         │         │    │             │    │          │    |         │  │  ║
+║  │      VDD        │ vdd ←───┼────┼─────────────┼────┼──────────┼────| vdd     │  │  ║
+║  │                 └─────────┘    │             │    │          │    |         │  │  ║
+║  │                                │ data_in ←───┼────┼──────────┼────|─data_out│  │  ║
+║  │                                │ (历史判决)   |    │          │    |         │  │  ║
+║  │                                │             │    │          │    |         │  │  ║
+║  │                                └─────────────┘    │ phase ←─┼─────|phase_o  │  │  ║
+║  │                                                   │ _offset │     │ offset  │  │  ║
+║  │                                                   └─────────┘     └─────────┘  │  ║
+║  │                                                                                │  ║
+║  └────────────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                                      ║
+║  ┌────────────────────────────────────────────────────────────────────────────────┐  ║
+║  │                           DE-TDF桥接层 (信号流)                                  │  ║
+║  │                                                                                │  ║
+║  │  phase_error ← CDR.phase_out    │    phase_cmd → CDR.phase_cmd                 │  ║
+║  │  amplitude_rms ← VGA.output     │    vga_gain → VGA.gain_setting               │  ║
+║  │  error_count ← Sampler.errors   │    threshold → Sampler.threshold             │  ║
+║  │  isi_metric ← DFE.isi           │    dfe_taps → DFE.tap_coeffs                 │  ║
+║  └────────────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                                      ║
+╚══════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
 **关键信号流**：
@@ -129,10 +186,68 @@ RX接收端的核心设计思想是采用分级级联架构，每个子模块专
 - **前向路径**：`in_p/in_n` → CTLE → VGA → DFE Summer → Sampler → `data_out`
 - **DFE反馈路径**：Sampler.data_out（历史判决）→ DFE.data_in（抽头输入）
 - **CDR闭环路径**：Sampler.data_out → CDR.in → CDR.phase_out → Sampler.phase_offset
+- **DE-TDF桥接路径**：Adaption ↔ VGA/DFE/Sampler/CDR（参数控制与反馈）
 
-### 2.2 参数配置（RxParams结构）
+### 2.2 端口定义（DE域 - Adaption模块）
 
-#### 2.2.1 总体参数结构
+Adaption模块作为DE域自适应控制中枢，通过DE-TDF桥接机制与TDF域模块交互。
+
+#### 2.2.1 Adaption输入端口
+
+| 端口名 | 类型 | 说明 |
+|-------|------|------|
+| `phase_error` | double | 来自CDR的相位误差（s或归一化UI） |
+| `amplitude_rms` | double | 来自RX幅度统计的RMS值 |
+| `error_count` | int | 来自Sampler的判决错误计数 |
+| `isi_metric` | double | ISI指标（可选，用于DFE策略） |
+| `mode` | int | 工作模式：0=init, 1=training, 2=data, 3=freeze |
+| `reset` | bool | 全局复位信号 |
+| `scenario_switch` | double | 场景切换事件（可选） |
+
+#### 2.2.2 Adaption输出端口
+
+| 端口名 | 类型 | 说明 | 目标模块 |
+|-------|------|------|----------|
+| `vga_gain` | double | VGA增益设定（线性） | VGA |
+| `ctle_zero` | double | CTLE零点频率（Hz，可选） | CTLE |
+| `ctle_pole` | double | CTLE极点频率（Hz，可选） | CTLE |
+| `ctle_dc_gain` | double | CTLE DC增益（线性，可选） | CTLE |
+| `dfe_tap1`~`dfe_tap8` | double | DFE抽头系数（固定8个独立端口） | DFE Summer |
+| `sampler_threshold` | double | 采样器阈值（V） | Sampler |
+| `sampler_hysteresis` | double | 采样器迟滞窗口（V） | Sampler |
+| `phase_cmd` | double | 相位插值器命令（s） | CDR |
+| `update_count` | int | 更新计数器（诊断用） | 外部监控 |
+| `freeze_flag` | bool | 冻结/回退状态标志 | 外部监控 |
+
+#### 2.2.3 DE-TDF桥接关系图
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    DE域 (Adaption)                    │
+│    ┌─────────┐ ┌────────┐ ┌─────────┐ ┌─────────┐    │
+│    │   AGC   │ │  DFE   │ │Threshold│ │ CDR PI  │    │
+│    │   PI    │ │  LMS   │ │ Adapt   │ │ Ctrl*   │    │
+│    └────┬────┘ └────┬───┘ └────┬────┘ └────┬────┘    │
+│         │         │          │          │            │
+└─────────┼─────────┼──────────┼──────────┼────────────┘
+          │         │          │          │  DE-TDF桥接
+          ▼         ▼          ▼          ▼
+┌─────────┼─────────┼──────────┼──────────┼────────────┐
+│       vga_gain dfe_taps  threshold  phase_cmd        │
+│         │         │          │          │            │
+│         ▼         ▼          ▼          ▼            │
+│      ┌─────┐ ┌───────┐ ┌─────────┐ ┌───────┐         │
+│      │ VGA │ │  DFE  │ │ Sampler │ │  CDR  │         │
+│      └─────┘ └───────┘ └─────────┘ └───────┘         │
+│                    TDF域                             │
+└──────────────────────────────────────────────────────┘
+
+* CDR PI Ctrl: 提供对TDF域CDR的参数化配置与监控，详细原理参见cdr.md
+```
+
+### 2.3 参数配置（RxParams结构）
+
+#### 2.3.1 总体参数结构
 
 ```cpp
 struct RxParams {
@@ -151,17 +266,39 @@ struct CdrParams {
 };
 ```
 
-#### 2.2.2 各子模块参数汇总
+#### 2.3.2 各子模块参数汇总
 
 | 子模块 | 关键参数 | 默认配置 | 调整目的 |
-|--------|---------|---------|---------|
+|--------|---------|---------|----------|
 | CTLE | `zeros=[2e9]`, `poles=[30e9]`, `dc_gain=1.5` | 单零点单极点 | 高频提升，带宽限制 |
 | VGA | `zeros=[1e9]`, `poles=[20e9]`, `dc_gain=2.0` | 可变增益 | AGC动态调整 |
 | DFE | `taps=[-0.05,-0.02,0.01]`, `mu=1e-4` | 3抽头 | 后游标ISI抵消 |
 | Sampler | `resolution=0.02`, `hysteresis=0.02` | 模糊判决 | 亚稳态建模 |
 | CDR | `kp=0.01`, `ki=1e-4`, `resolution=1e-12` | PI控制器 | 相位跟踪 |
+| Adaption | `agc.target=0.4`, `dfe.mu=1e-4`, `safety.freeze_threshold=1000` | 多速率调度 | 自适应优化 |
 
-#### 2.2.3 配置示例（JSON格式）
+#### 2.3.4 Adaption参数详解
+
+| 子结构 | 参数 | 默认值 | 说明 |
+|----------|------|--------|------|
+| **AGC** | `target_amplitude` | 0.4 | 目标输出幅度 (V) |
+| | `kp`, `ki` | 0.01, 1e-4 | PI控制器系数 |
+| | `gain_min`, `gain_max` | 0.5, 10.0 | 增益范围限制 |
+| **DFE** | `algorithm` | "sign-lms" | 更新算法: lms/sign-lms/nlms |
+| | `mu` | 1e-4 | 步长参数 |
+| | `tap_min`, `tap_max` | -0.5, 0.5 | 抽头系数范围 |
+| **Threshold** | `adaptation_rate` | 1e-3 | 阈值调整速率 |
+| | `threshold_min`, `threshold_max` | -0.2, 0.2 | 阈值范围 (V) |
+| **CDR PI*** | `enabled` | false | 是否启用DE域CDR控制接口 |
+| | `kp`, `ki` | 0.01, 1e-4 | PI控制器系数 |
+| **Safety** | `freeze_threshold` | 1000 | 触发冻结的错误计数阈值 |
+| | `snapshot_interval` | 10000 | 快照保存间隔 (UI) |
+| **Scheduling** | `fast_update_period` | 10-100 UI | 快路径更新周期 |
+| | `slow_update_period` | 1000-10000 UI | 慢路径更新周期 |
+
+> \* CDR PI控制接口：仅提供对TDF域CDR的参数化配置与监控，CDR完整技术文档参见[cdr.md](cdr.md)
+
+#### 2.3.5 配置示例（JSON格式）
 
 ```json
 {
@@ -197,6 +334,39 @@ struct CdrParams {
     "pi": {"kp": 0.01, "ki": 1e-4, "edge_threshold": 0.5},
     "pai": {"resolution": 1e-12, "range": 5e-11},
     "ui": 1e-10
+  },
+  "adaption": {
+    "agc": {
+      "target_amplitude": 0.4,
+      "kp": 0.01,
+      "ki": 1e-4,
+      "gain_min": 0.5,
+      "gain_max": 10.0
+    },
+    "dfe": {
+      "algorithm": "sign-lms",
+      "mu": 1e-4,
+      "tap_min": -0.5,
+      "tap_max": 0.5
+    },
+    "threshold": {
+      "adaptation_rate": 1e-3,
+      "threshold_min": -0.2,
+      "threshold_max": 0.2
+    },
+    "cdr_pi": {
+      "enabled": false,
+      "kp": 0.01,
+      "ki": 1e-4
+    },
+    "safety": {
+      "freeze_threshold": 1000,
+      "snapshot_interval": 10000
+    },
+    "scheduling": {
+      "fast_update_period_ui": 50,
+      "slow_update_period_ui": 5000
+    }
   }
 }
 ```
@@ -342,30 +512,187 @@ phase = pi_output * ui;  // 缩放到秒
 - 作用：跟踪低频抖动，抑制高频噪声
 - 调整方法：修改CDR的Kp/Ki参数
 
-### 3.5 自适应优化机制（可选）
+### 3.5 自适应优化机制（Adaption模块）
 
-#### 3.5.1 自适应目标
+Adaption模块作为DE域自适应控制中枢，通过DE-TDF桥接机制对TDF域模块进行在线参数更新。详细技术文档参见[adaption.md](adaption.md)。
 
-| 模块 | 自适应参数 | 算法 | 更新周期 |
-|------|-----------|------|---------|
-| VGA | dc_gain | AGC | 100-1000 UI |
-| DFE | tap_coeffs | LMS/Sign-LMS/NLMS | 每UI |
-| CDR | kp, ki | 可选自适应 | 慢速 |
-| Sampler | threshold | 阈值跟踪 | 1000 UI |
+#### 3.5.1 自适应算法概览
 
-#### 3.5.2 LMS算法实现
+| 算法 | 目标模块 | 自适应参数 | 更新周期 | 实现方法 |
+|------|----------|-----------|---------|----------|
+| AGC | VGA | dc_gain | 1000-10000 UI（慢路径） | PI控制器 |
+| DFE抽头更新 | DFE Summer | tap_coeffs | 1000-10000 UI（慢路径） | LMS/Sign-LMS/NLMS |
+| 阈值自适应 | Sampler | threshold | 10-100 UI（快路径） | 统计跟踪 |
+| CDR控制接口* | CDR | phase_cmd | 10-100 UI（快路径） | PI控制器 |
+
+> \* CDR控制接口：仅提供对TDF域CDR的参数化配置与监控，CDR本体功能由TDF域`RxCdrTdf`实现，详见[cdr.md](cdr.md)
+
+#### 3.5.2 AGC PI控制器
 
 ```cpp
-// DFE抽头自适应更新
-for (int i = 0; i < N_taps; i++) {
-    // error = 判决前信号 - 判决后信号（软判决误差）
-    // 或使用BER反馈
-    taps[i] += mu * error * history_bits[i];
+// AGC更新算法
+double agc_pi_update(double amplitude_rms) {
+    double error = target_amplitude - amplitude_rms;
     
-    // 抽头限幅
-    taps[i] = std::clamp(taps[i], tap_min, tap_max);
+    // PI控制器
+    m_agc_integral += ki * error;
+    m_agc_integral = clamp(m_agc_integral, integral_min, integral_max);
+    
+    double gain_adjust = kp * error + m_agc_integral;
+    m_current_gain = clamp(m_current_gain + gain_adjust, gain_min, gain_max);
+    
+    return m_current_gain;
 }
 ```
+
+#### 3.5.3 DFE抽头更新算法
+
+**LMS算法**：
+```cpp
+for (int i = 0; i < N_taps; i++) {
+    taps[i] += mu * error * history_bits[i];
+    taps[i] = clamp(taps[i], tap_min, tap_max);
+}
+```
+
+**Sign-LMS算法**（硬件友好）：
+```cpp
+for (int i = 0; i < N_taps; i++) {
+    taps[i] += mu * sign(error) * sign(history_bits[i]);
+    taps[i] = clamp(taps[i], tap_min, tap_max);
+}
+```
+
+**NLMS算法**（归一化步长）：
+```cpp
+double norm = epsilon;
+for (int i = 0; i < N_taps; i++) {
+    norm += history_bits[i] * history_bits[i];
+}
+for (int i = 0; i < N_taps; i++) {
+    taps[i] += (mu / norm) * error * history_bits[i];
+    taps[i] = clamp(taps[i], tap_min, tap_max);
+}
+```
+
+#### 3.5.4 阈值自适应
+
+```cpp
+// 阈值跟踪算法
+double threshold_adapt(int error_count) {
+    double error_rate = (double)error_count / symbol_count;
+    
+    // 基于错误率趾势调整阈值
+    if (error_rate > prev_error_rate) {
+        // 错误率上升，反向调整
+        m_current_threshold -= adaptation_rate * sign(m_current_threshold);
+    } else {
+        // 错误率下降，继续当前方向
+        m_current_threshold += adaptation_rate * threshold_direction;
+    }
+    
+    return clamp(m_current_threshold, threshold_min, threshold_max);
+}
+```
+
+#### 3.5.5 多速率调度架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Adaption模块调度架构                        │
+│                                                             │
+│  ┌─────────────────────────┐   ┌─────────────────────────┐  │
+│  │      快路径 (Fast Path)    │   │      慢路径 (Slow Path)   │  │
+│  │      每10-100 UI          │   │      每1000-10000 UI     │  │
+│  ├─────────────────────────┤   ├─────────────────────────┤  │
+│  │ • 阈值自适应 (Threshold)   │   │ • AGC PI控制器           │  │
+│  │ • CDR控制接口* (phase_cmd)│   │ • DFE抽头更新 (LMS)       │  │
+│  └─────────────────────────┘   └─────────────────────────┘  │
+│           │                           │                       │
+│           ▼                           ▼                       │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │               安全与回退机制 (Safety)                  │  │
+│  ├─────────────────────────────────────────────────────┤  │
+│  │ • 冻结条件：error_count > freeze_threshold              │  │
+│  │ • 快照保存：每 snapshot_interval UI保存一次参数快照     │  │
+│  │ • 回退策略：检测到算法发散时回退到上一个有效快照       │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 3.5.6 DE-TDF桥接机制
+
+DE域Adaption模块与TDF域模块之间通过SystemC信号端口进行桥接：
+
+| 桥接方向 | 信号类型 | 说明 |
+|----------|----------|------|
+| DE→TDF | `vga_gain` | 控制VGA增益 |
+| DE→TDF | `dfe_tap1`~`dfe_tap8` | 控制DFE抽头系数 |
+| DE→TDF | `sampler_threshold` | 控制采样阈值 |
+| DE→TDF | `phase_cmd` | 相位控制命令 |
+| TDF→DE | `amplitude_rms` | 幅度统计反馈 |
+| TDF→DE | `error_count` | 错误计数反馈 |
+| TDF→DE | `phase_error` | 相位误差反馈 |
+
+### 3.6 CDR与Adaption协同机制
+
+CDR模块（TDF域）与Adaption中CDR PI控制接口（DE域）具有不同的职责定位，支持三种使用模式。
+
+#### 3.6.1 职责划分
+
+| 维度 | CDR模块 (`RxCdrTdf`) | Adaption中CDR PI |
+|------|---------------------|------------------|
+| 域 | TDF域（模拟信号处理） | DE域（数字事件控制） |
+| 功能 | 完整闭环CDR：Bang-Bang PD + PI控制器 + 相位输出 | 对CDR的参数化配置、监控、增强控制 |
+| 详细文档 | [cdr.md](cdr.md)（完整技术文档） | [adaption.md](adaption.md)（控制接口说明） |
+
+#### 3.6.2 三种使用模式
+
+**模式A：标准模式**（推荐）
+```json
+{
+  "cdr": {"pi": {"kp": 0.01, "ki": 1e-4}},
+  "adaption": {"cdr_pi": {"enabled": false}}
+}
+```
+- 仅使用TDF域CDR完整闭环
+- Adaption的CDR PI控制接口禁用
+- 适用场景：大多数标准应用
+
+**模式B：增强模式**
+```json
+{
+  "cdr": {"pi": {"kp": 0.005, "ki": 5e-5}},
+  "adaption": {"cdr_pi": {"enabled": true, "kp": 0.005, "ki": 5e-5}}
+}
+```
+- TDF域CDR + DE域Adaption CDR PI双环协同
+- TDF域CDR提供快速相位跟踪
+- DE域提供慢速稳定性增强
+- 适用场景：高抗动要求应用
+
+**模式C：灵活模式**
+```json
+{
+  "cdr": {"pd_only": true},
+  "adaption": {"cdr_pi": {"enabled": true, "kp": 0.01, "ki": 1e-4}}
+}
+```
+- TDF域CDR仅做相位检测，输出`phase_error`
+- DE域Adaption完成PI控制，输出`phase_cmd`
+- 适用场景：需要与DE域其他算法深度集成
+
+#### 3.6.3 模式选择指南
+
+| 应用场景 | 推荐模式 | 理由 |
+|----------|----------|------|
+| 标准链路建立 | 模式A | 简单可靠，TDF域闭环足够 |
+| 高抗动要求 | 模式B | 双环提供额外稳定性 |
+| 全DE域调度 | 模式C | 便于统一管理 |
+| 调试/验证 | 模式A/C | 根据测试目标选择 |
+
+> **重要**：CDR完整技术文档（包括Bang-Bang PD原理、PI控制器设计、锁定过程分析、测试场景等）请参见[cdr.md](cdr.md)
 
 ---
 
@@ -421,6 +748,23 @@ RX测试平台需要闭环集成设计：
   - 收敛时间 < 50,000 UI
   - 稳态BER达到最优值
 
+#### ADAPTION_TEST详细测试场景
+
+Adaption模块支持多种测试场景（详细测试平台参见[adaption.md](adaption.md)）：
+
+| 场景名 | 测试目标 | 关键指标 |
+|--------|----------|----------|
+| `BASIC_AGC` | AGC基本收敛测试 | 收敛时间、稳态误差 |
+| `AGC_STEP_RESPONSE` | AGC阶跃响应测试 | 调节时间、超调量 |
+| `DFE_CONVERGENCE` | DFE抽头收敛测试 | 收敛时间、抽头稳定性 |
+| `DFE_ALGORITHM_COMPARE` | LMS/Sign-LMS/NLMS对比 | 算法性能对比 |
+| `THRESHOLD_TRACKING` | 阈值自适应测试 | 跟踪精度、响应速度 |
+| `FREEZE_ROLLBACK` | 冻结/回退机制测试 | 安全触发、恢复能力 |
+| `MULTI_RATE_SCHEDULING` | 多速率调度测试 | 快/慢路径协同 |
+| `FULL_ADAPTION` | 全算法联合测试 | 综合收敛性能 |
+
+> **注意**：CDR相关测试场景请参见[cdr.md](cdr.md)，包括锁定测试、抗动测试、频偏跟踪测试等
+
 #### JITTER_TOLERANCE - 系统级抖动容限
 
 - 与CDR单独测试的区别：包含CTLE/VGA/DFE的影响
@@ -471,6 +815,22 @@ RX测试平台需要闭环集成设计：
 | **Q-factor** | √2 × erfc⁻¹(2×BER) | 信噪比等效指标 |
 | **锁定时间** | CDR相位误差 < 5ps的时刻 | 链路建立速度 |
 
+#### 5.1.2 Adaption特定指标
+
+| 指标类别 | 指标名 | 计算方法 | 意义 |
+|----------|--------|----------|------|
+| **收敛性** | `convergence_time` | 稳态误差 < 阈值的UI数 | 算法收敛速度 |
+| | `steady_state_error` | 稳态时目标-实际值 | 收敛精度 |
+| | `convergence_stability` | 稳态误差方差 | 收敛稳定性 |
+| **AGC** | `agc_gain` | 当前VGA增益值 | 增益调节效果 |
+| | `amplitude_error` | 目标-实际幅度 | AGC精度 |
+| **DFE** | `tap_coeffs[]` | 当前抽头系数 | DFE均衡效果 |
+| | `isi_residual` | 残ISI能量 | 均衡质量 |
+| **阈值** | `threshold_value` | 当前判决阈值 | 阈值跟踪效果 |
+| | `threshold_drift` | 阈值漂移量 | DC漂移补偿 |
+| **安全** | `freeze_count` | 冻结触发次数 | 安全机制激活情况 |
+| | `rollback_count` | 回退执行次数 | 恢复机制使用情况 |
+
 ### 5.2 典型测试结果解读
 
 #### BASIC_PRBS测试结果示例
@@ -512,6 +872,51 @@ DFE Tap Coeffs:       [-0.08, -0.03, 0.01] (自适应收敛值)
 - DFE在高损耗信道（>15dB）中效果显著
 - 20dB损耗接近系统极限，需要配合更强的CTLE/VGA
 - 25dB损耗可能需要启用更多DFE抽头（5-7抽头）
+
+#### ADAPTION_TEST结果解读
+
+**配置**：10Gbps, 中等信道, AGC+DFE+阈值自适应全启用
+
+**期望结果**：
+```
+=== Adaption Performance Summary ===
+--- AGC Convergence ---
+Convergence Time:     12,500 UI
+Target Amplitude:     0.400 V
+Actual Amplitude:     0.398 V
+Steady-State Error:   0.002 V (0.5%)
+VGA Gain (final):     3.25
+
+--- DFE Tap Convergence ---
+Algorithm:            Sign-LMS
+Step Size (mu):       1e-4
+Convergence Time:     35,000 UI
+Tap Coeffs (final):   [-0.082, -0.031, 0.012, 0.002]
+ISI Residual:         0.015 V (3.8%)
+
+--- Threshold Adaptation ---
+Initial Threshold:    0.000 V
+Final Threshold:      0.008 V
+Drift Compensation:   OK
+
+--- Safety Mechanism ---
+Freeze Events:        0
+Rollback Events:      0
+Update Count:         1,250,000
+```
+
+**收敛曲线特征**：
+- **AGC收敛**：快速调节阶段（0-5000 UI）+ 稳态精调阶段（5000-12500 UI）
+- **DFE收敛**：抽头系数由零逐渐逼近最优值，无明显振荡
+- **阈值跟踪**：平稳跟踪DC漂移，无突变
+
+**异常结果诊断**：
+
+| 现象 | 可能原因 | 建议调整 |
+|------|----------|----------|
+| AGC不收敛 | PI参数不当或增益范围不足 | 调整kp/ki或扩展gain_max |
+| DFE抽头振荡 | 步长μ过大 | 降低步长至1e-5 |
+| 频繁冻结 | freeze_threshold过低 | 提高阈值或检查链路质量 |
 
 ### 5.3 波形数据文件格式
 
@@ -709,6 +1114,115 @@ cdr.set_timestep(Ts);
 - 最小采样率 = 2 × 最高频率分量（Nyquist准则）
 - 推荐采样率 = 5-10 × 符号速率（保证波形保真度）
 
+### 7.7 DE-TDF桥接的时序对齐与延迟处理
+
+DE域Adaption模块与TDF域模块之间存在时序差异，需要注意：
+
+**时序对齐机制**：
+- DE域使用`SC_METHOD`的事件驱动或`SC_THREAD`的周期等待
+- TDF域使用固定时间步的`processing()`函数
+- 参数传递通过`sc_signal`端口，带有夹值同步
+
+**延迟影响**：
+- DE域参数更新到TDF域生效有1个时间步延迟
+- 对于慢路径算法（AGC/DFE）影响可忽略
+- 对于快路径算法（阈值/CDR PI）需考虑延迟補偿
+
+### 7.8 多速率调度架构的实现细节
+
+**快路径与慢路径分离**：
+
+```cpp
+// 快路径进程 - 每10-100 UI触发
+void AdaptionDe::fast_path_process() {
+    // 阈值自适应
+    double new_threshold = threshold_adapt(error_count.read());
+    sampler_threshold.write(new_threshold);
+    
+    // CDR PI控制接口（如果启用）
+    if (m_params.cdr_pi.enabled) {
+        double cmd = cdr_pi_update(phase_error.read());
+        phase_cmd.write(cmd);
+    }
+}
+
+// 慢路径进程 - 每1000-10000 UI触发
+void AdaptionDe::slow_path_process() {
+    // AGC更新
+    double gain = agc_pi_update(amplitude_rms.read());
+    vga_gain.write(gain);
+    
+    // DFE抽头更新
+    dfe_lms_update(isi_metric.read());
+    write_dfe_outputs();
+}
+```
+
+### 7.9 AGC PI控制器的收敛性与稳定性
+
+**收敛条件**：
+- PI参数需满足稳定性条件：`kp + ki*T < 2`（T为更新周期）
+- 增益范围限制防止过冲：`gain_min ≤ gain ≤ gain_max`
+- 积分项限幅防止積分饱和
+
+**参数调整指南**：
+| 性能目标 | kp调整 | ki调整 |
+|----------|--------|--------|
+| 加快收敛 | 增大 | 增大 |
+| 减小超调 | 减小 | - |
+| 提高精度 | - | 增大 |
+| 提高稳定性 | 减小 | 减小 |
+
+### 7.10 DFE Sign-LMS算法的收敛性与稳定性
+
+**Sign-LMS优势**：
+- 仅需符号运算，硬件实现简单
+- 对异常值不敏感，鲁棒性好
+
+**收敛速度比较**：
+- 标准LMS > NLMS > Sign-LMS
+- Sign-LMS收敛时间约为LMS的1.5-2倍
+
+**步长选择指南**：
+- 初始训练阶段：μ = 1e-3 ~ 1e-4
+- 稳态跟踪阶段：μ = 1e-4 ~ 1e-5
+
+### 7.11 阈值自适应算法的鲁棒性设计
+
+**防止振荡的策略**：
+- 死区设计：误差在设定范围内不调整
+- 低通滤波：对误差计数进行平滑
+- 率限幅：单次调整量不超过设定最大值
+
+### 7.12 安全机制的触发条件与恢复策略
+
+**冻结触发条件**：
+- `error_count > freeze_threshold`：错误计数超阈值
+- `|gain - prev_gain| > delta_threshold`：参数变化过大
+- `mode == 3`：外部强制冻结信号
+
+**回退策略**：
+1. 检测到异常时停止参数更新
+2. 加载上一个有效快照
+3. 重置积分器状态
+4. 等待外部恢复信号或超时后自动恢复
+
+### 7.13 CDR与Adaption CDR PI协同机制
+
+**三种使用模式对比**：
+
+| 模式 | TDF域CDR | DE域Adaption CDR PI | 适用场景 |
+|------|----------|---------------------|----------|
+| A(标准) | 完整闭环 | 禁用 | 大多数应用 |
+| B(增强) | 快速环 | 慢速环 | 高稳定性要求 |
+| C(灵活) | 仅PD | PI控制 | DE域集成 |
+
+**参数配置原则**：
+- 模式B中两环带宽需拉开：TDF环 > 10× DE环
+- 模式C中TDF域CDR仅输出`phase_error`，不维护PI状态
+
+> **重要**：CDR本体完整技术文档（包括Bang-Bang PD原理、PI控制器设计、锁定过程分析、测试场景等）请参见[cdr.md](cdr.md)
+
 ---
 
 ## 8. 参考信息
@@ -727,13 +1241,17 @@ cdr.set_timestep(Ts);
 | Sampler实现 | `/src/ams/rx_sampler.cpp` | RxSamplerTdf类实现 |
 | CDR头文件 | `/include/ams/rx_cdr.h` | RxCdrTdf类声明 |
 | CDR实现 | `/src/ams/rx_cdr.cpp` | RxCdrTdf类实现 |
-| 参数定义 | `/include/common/parameters.h` | RxParams/CdrParams结构体 |
+| **Adaption头文件** | `/include/ams/adaption.h` | AdaptionDe类声明 |
+| **Adaption实现** | `/src/ams/adaption.cpp` | AdaptionDe类实现 |
+| **Adaption测试平台** | `/tb/rx/adaption/adaption_tran_tb.cpp` | Adaption仿真测试平台 |
+| **Adaption单元测试** | `/tests/unit/test_adaption_*.cpp` | Adaption单元测试集 |
+| 参数定义 | `/include/common/parameters.h` | RxParams/CdrParams/AdaptionParams结构体 |
 | CTLE文档 | `/docs/modules/ctle.md` | CTLE详细技术文档 |
 | VGA文档 | `/docs/modules/vga.md` | VGA详细技术文档 |
 | DFE文档 | `/docs/modules/dfesummer.md` | DFE Summer详细技术文档 |
 | Sampler文档 | `/docs/modules/sampler.md` | Sampler详细技术文档 |
-| CDR文档 | `/docs/modules/cdr.md` | CDR详细技术文档 |
-| 自适应文档 | `/docs/modules/adaption.md` | 自适应控制器文档 |
+| **CDR文档** | `/docs/modules/cdr.md` | CDR完整技术文档（CDR原理与测试） |
+| **Adaption文档** | `/docs/modules/adaption.md` | Adaption详细技术文档（自适应算法与控制接口） |
 
 ### 8.2 依赖项
 

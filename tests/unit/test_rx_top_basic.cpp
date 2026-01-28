@@ -22,7 +22,8 @@ using namespace serdes::test;
 TEST(RxTopBasicTest, PortConnectionAndSignalFlow) {
     // Setup
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.5, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.5, 5e9);
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -48,7 +49,8 @@ TEST(RxTopBasicTest, PortConnectionAndSignalFlow) {
 TEST(RxTopBasicTest, DcInputResponse) {
     // Setup with positive DC input
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::DC, 0.5, 10e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::DC, 0.5, 10e9);
     
     // Run simulation
     sc_core::sc_start(200, sc_core::SC_NS);
@@ -74,7 +76,8 @@ TEST(RxTopBasicTest, DcInputResponse) {
 TEST(RxTopBasicTest, NegativeDcInputResponse) {
     // Setup with negative DC input
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::DC, -0.5, 10e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::DC, -0.5, 10e9);
     
     // Run simulation
     sc_core::sc_start(200, sc_core::SC_NS);
@@ -99,7 +102,8 @@ TEST(RxTopBasicTest, NegativeDcInputResponse) {
 TEST(RxTopBasicTest, DebugInterfaceAccessible) {
     // Setup
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.5, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.5, 5e9);
     
     // Run brief simulation
     sc_core::sc_start(100, sc_core::SC_NS);
@@ -132,7 +136,8 @@ TEST(RxTopBasicTest, DebugInterfaceAccessible) {
 TEST(RxTopBasicTest, PrbsInputProcessing) {
     // Setup with PRBS input
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.5, 10e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.5, 10e9);
     
     // Run longer simulation for PRBS
     sc_core::sc_start(1000, sc_core::SC_NS);

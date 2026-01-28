@@ -75,8 +75,13 @@ SystemParams ConfigLoader::load_default() {
     params.rx.sampler.threshold = 0.0;
     params.rx.sampler.hysteresis = 0.02;
     
-    // RX DFE
-    params.rx.dfe.taps = {-0.05, -0.02, 0.01};
+    // RX DFE Summer
+    params.rx.dfe_summer.tap_coeffs = {-0.05, -0.02, 0.01};
+    params.rx.dfe_summer.ui = 2.5e-11;
+    params.rx.dfe_summer.vcm_out = 0.0;
+    params.rx.dfe_summer.vtap = 1.0;
+    params.rx.dfe_summer.map_mode = "pm1";
+    params.rx.dfe_summer.enable = true;
     
     // CDR
     params.cdr.pi.kp = 0.05;

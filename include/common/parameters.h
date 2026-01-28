@@ -336,6 +336,34 @@ struct RxDfeParams {
 };
 
 // ============================================================================
+// RX DFE Summer Parameters (差分 DFE 求和器)
+// ============================================================================
+struct RxDfeSummerParams {
+    std::vector<double> tap_coeffs;  // 后游抽头系数
+    double ui;                       // 单位间隔 (s)
+    double vcm_out;                  // 输出共模电压 (V)
+    double vtap;                     // 比特映射电压缩放
+    std::string map_mode;            // "pm1" 或 "01"
+    bool enable;                     // 模块使能
+    
+    // 饱和限幅参数
+    bool sat_enable;
+    double sat_min;
+    double sat_max;
+    
+    RxDfeSummerParams()
+        : tap_coeffs({-0.05, -0.02, 0.01})
+        , ui(100e-12)
+        , vcm_out(0.0)
+        , vtap(1.0)
+        , map_mode("pm1")
+        , enable(true)
+        , sat_enable(false)
+        , sat_min(-0.5)
+        , sat_max(0.5) {}
+};
+
+// ============================================================================
 // CDR Parameters (moved before RxParams for dependency)
 // ============================================================================
 struct CdrPiParams {
@@ -378,8 +406,9 @@ struct RxParams {
     RxCtleParams ctle;
     RxVgaParams vga;
     RxSamplerParams sampler;
-    RxDfeParams dfe;
-    CdrParams cdr;  // CDR parameters for closed-loop operation
+    RxDfeSummerParams dfe_summer;    // 差分 DFE Summer (替代双 RxDfeTdf)
+    CdrParams cdr;                    // CDR parameters for closed-loop operation
+    // AdaptionParams 通过 RxTopModule 构造函数单独传入
 };
 
 // ============================================================================

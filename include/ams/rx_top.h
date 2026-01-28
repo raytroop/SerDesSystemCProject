@@ -5,9 +5,10 @@
 #include "common/parameters.h"
 #include "ams/rx_ctle.h"
 #include "ams/rx_vga.h"
-#include "ams/rx_dfe.h"
+#include "ams/rx_dfe_summer.h"
 #include "ams/rx_sampler.h"
 #include "ams/rx_cdr.h"
+#include "ams/adaption.h"
 
 namespace serdes {
 
@@ -15,20 +16,23 @@ namespace serdes {
  * @brief RX Top-level Module
  * 
  * Integrates the complete RX signal chain:
- *   Differential Input → CTLE → VGA → DFE_P/DFE_N → Sampler ↔ CDR → Digital Output
+ *   Differential Input → CTLE → VGA → DFE Summer → Sampler ↔ CDR → Digital Output
+ *                                          ↑                    ↓
+ *                                     Adaption (DE domain) ←───┘
  * 
  * Signal Flow:
  * - External differential input (from Channel or test source)
  * - CTLE: Continuous-Time Linear Equalizer for high-frequency boost
  * - VGA: Variable Gain Amplifier for amplitude adjustment
- * - DFE: Decision Feedback Equalizer (dual instances for differential)
- *   - DFE_P: Positive path with normal taps
- *   - DFE_N: Negative path with negated taps (for differential symmetry)
+ * - DFE Summer: Decision Feedback Equalizer (差分架构，单实例)
  * - Sampler: Decision circuit with hysteresis
  * - CDR: Clock and Data Recovery (closed-loop with Sampler)
+ * - Adaption: DE domain adaptive control (AGC, DFE tap update, threshold adaptation)
  * 
  * Key Features:
- * - Dual DFE architecture for differential processing
+ * - 差分 DFE Summer 架构替代双 DFE 实例
+ * - Adaption 模块集成 (DE 域自适应控制)
+ * - DE-TDF 桥接使用 sca_tdf::sca_de::sca_in/out
  * - CDR closed-loop: Sampler.phase_offset ← CDR.phase_out
  * - Phase-driven sampling mode (CDR controls sampling phase)
  * 
@@ -58,9 +62,12 @@ public:
     /**
      * @brief Construct RX top module
      * @param nm Module name
-     * @param rx_params RX parameters (CTLE, VGA, DFE, Sampler, CDR)
+     * @param rx_params RX parameters (CTLE, VGA, DFE Summer, Sampler, CDR)
+     * @param adaption_params Adaption parameters (DE 域自适应控制)
      */
-    RxTopModule(sc_core::sc_module_name nm, const RxParams& rx_params);
+    RxTopModule(sc_core::sc_module_name nm, 
+                const RxParams& rx_params,
+                const AdaptionParams& adaption_params);
     
     /**
      * @brief Destructor - clean up sub-modules
@@ -127,37 +134,80 @@ public:
 
 private:
     // ========================================================================
-    // Sub-modules
+    // Sub-modules (TDF domain)
     // ========================================================================
-    RxCtleTdf* m_ctle;              ///< Continuous-Time Linear Equalizer
-    RxVgaTdf* m_vga;                ///< Variable Gain Amplifier
-    RxDfeTdf* m_dfe_p;              ///< DFE for P path (normal taps)
-    RxDfeTdf* m_dfe_n;              ///< DFE for N path (negated taps)
-    RxSamplerTdf* m_sampler;        ///< Decision circuit
-    RxCdrTdf* m_cdr;                ///< Clock and Data Recovery
+    RxCtleTdf* m_ctle;                  ///< Continuous-Time Linear Equalizer
+    RxVgaTdf* m_vga;                    ///< Variable Gain Amplifier
+    RxDfeSummerTdf* m_dfe_summer;       ///< 差分 DFE Summer (替代双 DFE)
+    RxSamplerTdf* m_sampler;            ///< Decision circuit
+    RxCdrTdf* m_cdr;                    ///< Clock and Data Recovery
     
     // ========================================================================
-    // Internal Signals
+    // Sub-modules (DE domain)
+    // ========================================================================
+    AdaptionDe* m_adaption;             ///< DE 域自适应控制模块
+    
+    // ========================================================================
+    // Internal TDF Signals
     // ========================================================================
     
     // CTLE output → VGA input
     sca_tdf::sca_signal<double> m_sig_ctle_out_p;   ///< CTLE positive output
     sca_tdf::sca_signal<double> m_sig_ctle_out_n;   ///< CTLE negative output
     
-    // VGA output → DFE input
+    // VGA output → DFE Summer input
     sca_tdf::sca_signal<double> m_sig_vga_out_p;    ///< VGA positive output
     sca_tdf::sca_signal<double> m_sig_vga_out_n;    ///< VGA negative output
     
-    // DFE output → Sampler input
-    sca_tdf::sca_signal<double> m_sig_dfe_out_p;    ///< DFE_P output
-    sca_tdf::sca_signal<double> m_sig_dfe_out_n;    ///< DFE_N output
+    // DFE Summer output → Sampler input
+    sca_tdf::sca_signal<double> m_sig_dfe_out_p;    ///< DFE Summer positive output
+    sca_tdf::sca_signal<double> m_sig_dfe_out_n;    ///< DFE Summer negative output
     
     // Sampler → CDR → Sampler (closed loop)
     sca_tdf::sca_signal<double> m_sig_sampler_out;  ///< Sampler decision output
     sca_tdf::sca_signal<double> m_sig_cdr_phase;    ///< CDR phase output → Sampler
+    sca_tdf::sca_signal<double> m_sig_cdr_in;       ///< CDR input (from splitter)
+    
+    // Sampler → DFE Summer (历史判决反馈)
+    sca_tdf::sca_signal<double> m_sig_data_feedback; ///< Data feedback for DFE
     
     // Dummy clock for Sampler (unused in phase-driven mode but required)
     sca_tdf::sca_signal<double> m_sig_clk;
+    
+    // ========================================================================
+    // DE-TDF Bridge Signals (Adaption ↔ TDF modules)
+    // ========================================================================
+    
+    // Adaption outputs (DE domain) → TDF modules
+    sc_core::sc_signal<double> m_sig_vga_gain_de;       ///< VGA gain control
+    sc_core::sc_signal<double> m_sig_dfe_tap1_de;       ///< DFE tap 1
+    sc_core::sc_signal<double> m_sig_dfe_tap2_de;       ///< DFE tap 2
+    sc_core::sc_signal<double> m_sig_dfe_tap3_de;       ///< DFE tap 3
+    sc_core::sc_signal<double> m_sig_dfe_tap4_de;       ///< DFE tap 4
+    sc_core::sc_signal<double> m_sig_dfe_tap5_de;       ///< DFE tap 5
+    sc_core::sc_signal<double> m_sig_sampler_threshold_de;  ///< Sampler threshold
+    sc_core::sc_signal<double> m_sig_sampler_hysteresis_de; ///< Sampler hysteresis
+    sc_core::sc_signal<double> m_sig_phase_cmd_de;      ///< Phase command
+    
+    // TDF modules → Adaption inputs (DE domain)
+    sc_core::sc_signal<double> m_sig_phase_error_de;    ///< Phase error from CDR
+    sc_core::sc_signal<double> m_sig_amplitude_rms_de;  ///< Amplitude RMS
+    sc_core::sc_signal<int> m_sig_error_count_de;       ///< Error count
+    sc_core::sc_signal<double> m_sig_isi_metric_de;     ///< ISI metric
+    sc_core::sc_signal<int> m_sig_mode_de;              ///< Operating mode
+    sc_core::sc_signal<bool> m_sig_reset_de;            ///< Reset signal
+    sc_core::sc_signal<double> m_sig_scenario_switch_de; ///< Scenario switch
+    sc_core::sc_signal<bool> m_sig_sampler_data_out_de; ///< Sampler DE output
+    
+    // Adaption 其他输出信号
+    sc_core::sc_signal<double> m_sig_ctle_zero_de;
+    sc_core::sc_signal<double> m_sig_ctle_pole_de;
+    sc_core::sc_signal<double> m_sig_ctle_dc_gain_de;
+    sc_core::sc_signal<double> m_sig_dfe_tap6_de;
+    sc_core::sc_signal<double> m_sig_dfe_tap7_de;
+    sc_core::sc_signal<double> m_sig_dfe_tap8_de;
+    sc_core::sc_signal<int> m_sig_update_count_de;
+    sc_core::sc_signal<bool> m_sig_freeze_flag_de;
     
     // ========================================================================
     // Internal Helper Modules
@@ -196,24 +246,40 @@ private:
         void processing() override { out.write(in.read()); }
     };
     
-    ConstClockSource* m_clk_src;        ///< Dummy clock source
-    SignalPassThrough* m_data_out_tap;  ///< Pass-through for external data_out
+    /**
+     * @brief Signal splitter - reads one signal and writes to two outputs
+     * Used to split sampler output to CDR and data feedback
+     */
+    class SignalSplitter : public sca_tdf::sca_module {
+    public:
+        sca_tdf::sca_in<double> in;
+        sca_tdf::sca_out<double> out1;
+        sca_tdf::sca_out<double> out2;
+        
+        SignalSplitter(sc_core::sc_module_name nm)
+            : sca_tdf::sca_module(nm), in("in"), out1("out1"), out2("out2") {}
+        
+        void set_attributes() override { 
+            in.set_rate(1); 
+            out1.set_rate(1); 
+            out2.set_rate(1);
+        }
+        void processing() override { 
+            double val = in.read();
+            out1.write(val); 
+            out2.write(val);
+        }
+    };
+    
+    ConstClockSource* m_clk_src;            ///< Dummy clock source
+    SignalPassThrough* m_data_out_tap;      ///< Pass-through for external data_out
+    SignalSplitter* m_sampler_splitter;     ///< Splitter for sampler output
     
     // ========================================================================
     // Parameters
     // ========================================================================
     RxParams m_params;
-    RxDfeParams m_dfe_params_n;     ///< Negated taps for DFE_N path
-    
-    // ========================================================================
-    // Private Methods
-    // ========================================================================
-    
-    /**
-     * @brief Setup negated DFE taps for N path
-     * For differential symmetry: taps_n[i] = -taps_p[i]
-     */
-    void setup_dfe_negated_taps();
+    AdaptionParams m_adaption_params;
 };
 
 } // namespace serdes

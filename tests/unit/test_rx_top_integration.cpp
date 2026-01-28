@@ -36,13 +36,19 @@ TEST(RxTopIntegrationTest, FullChainWithRealisticParams) {
     params.vga.dc_gain = 2.0;
     params.vga.vcm_out = 0.0;
     
-    // DFE: typical 3-tap configuration
-    params.dfe.taps = {-0.05, -0.02, 0.01};
+    // DFE Summer: typical 3-tap configuration
+    params.dfe_summer.tap_coeffs = {-0.05, -0.02, 0.01};
+    params.dfe_summer.ui = 100e-12;
+    params.dfe_summer.vcm_out = 0.0;
+    params.dfe_summer.vtap = 1.0;
+    params.dfe_summer.map_mode = "pm1";
+    params.dfe_summer.enable = true;
     
     // Sampler: phase-driven
     params.sampler.phase_source = "phase";
     params.sampler.threshold = 0.0;
-    params.sampler.hysteresis = 0.02;
+    params.sampler.hysteresis = 0.01;
+    params.sampler.resolution = 0.02;
     
     // CDR: balanced gains for 10 Gbps
     params.cdr.pi.kp = 0.01;
@@ -51,7 +57,8 @@ TEST(RxTopIntegrationTest, FullChainWithRealisticParams) {
     params.cdr.pai.range = 5e-11;
     params.cdr.ui = 100e-12;
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.3, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.3, 5e9);
     
     // Run simulation for 2000 ns
     sc_core::sc_start(2000, sc_core::SC_NS);
@@ -79,8 +86,9 @@ TEST(RxTopIntegrationTest, FullChainWithRealisticParams) {
 TEST(RxTopIntegrationTest, LowSignalAmplitude) {
     // Test with low input signal amplitude
     RxParams params = get_high_gain_rx_params();  // Use high gain to compensate
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.1, 3e9);  // 100mV pp
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.1, 3e9);  // 100mV pp
     
     // Run simulation
     sc_core::sc_start(1000, sc_core::SC_NS);
@@ -106,8 +114,9 @@ TEST(RxTopIntegrationTest, HighFrequencyInput) {
     // Higher CTLE boost for high frequency
     params.ctle.dc_gain = 2.0;
     params.ctle.zeros = {5e9};
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::SQUARE, 0.4, 10e9);  // 10 GHz
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::SQUARE, 0.4, 10e9);  // 10 GHz
     
     // Run simulation
     sc_core::sc_start(500, sc_core::SC_NS);
@@ -129,7 +138,8 @@ TEST(RxTopIntegrationTest, HighFrequencyInput) {
 TEST(RxTopIntegrationTest, LongRunningStability) {
     // Test for long-running stability
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.3, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.3, 5e9);
     
     // Run for extended period (5000 ns)
     sc_core::sc_start(5000, sc_core::SC_NS);
@@ -160,11 +170,13 @@ TEST(RxTopIntegrationTest, ParameterVariationRobustness) {
     // Apply some parameter variations
     params.ctle.dc_gain = 1.8;
     params.vga.dc_gain = 2.5;
-    params.dfe.taps = {-0.06, -0.03, 0.015, 0.005};
+    params.dfe_summer.tap_coeffs = {-0.06, -0.03, 0.015, 0.005};
+    params.dfe_summer.enable = true;
     params.cdr.pi.kp = 0.015;
     params.cdr.pi.ki = 1.5e-4;
+    AdaptionParams adaption_params = get_default_adaption_params();
     
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.35, 5e9);
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.35, 5e9);
     
     // Run simulation
     sc_core::sc_start(1000, sc_core::SC_NS);
@@ -184,7 +196,8 @@ TEST(RxTopIntegrationTest, ParameterVariationRobustness) {
 TEST(RxTopIntegrationTest, DataRecoveryQuality) {
     // Test data recovery with PRBS pattern
     RxParams params = get_default_rx_params();
-    RxTopTestbench tb(params, RxDifferentialSource::PRBS, 0.4, 5e9);
+    AdaptionParams adaption_params = get_default_adaption_params();
+    RxTopTestbench tb(params, adaption_params, RxDifferentialSource::PRBS, 0.4, 5e9);
     
     // Run simulation
     sc_core::sc_start(2000, sc_core::SC_NS);
