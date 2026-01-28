@@ -97,3 +97,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tx/tx_tran_tb.cpp)
         ${SYSTEMC_LIBRARY}
     )
 endif()
+
+# RX Link transient testbench (complete RX chain)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/rx/rx_link_tb.cpp)
+    add_executable(rx_link_tb rx/rx_link_tb.cpp)
+    target_include_directories(rx_link_tb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/rx
+    )
+    target_link_libraries(rx_link_tb
+        serdes_lib
+        ${SYSTEMC_AMS_LIBRARY}
+        ${SYSTEMC_LIBRARY}
+    )
+endif()
