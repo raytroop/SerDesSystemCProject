@@ -1,198 +1,94 @@
-cmake_minimum_required(VERSION 3.15)
-project(SerDes VERSION 1.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.14)
+project(serdes)
 
-# Set C++ standard to match SystemC library (C++11)
+# Set C++ standard globally - SystemC is built with C++11
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build type
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
-
-# Compiler flags
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+# Add cmake modules path
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # ============================================================================
-# Find SystemC Library
+# Find SystemC and SystemC-AMS
 # ============================================================================
-if(DEFINED SYSTEMC_HOME)
-    message(STATUS "Using SYSTEMC_HOME: ${SYSTEMC_HOME}")
-elseif(DEFINED ENV{SYSTEMC_HOME})
-    set(SYSTEMC_HOME $ENV{SYSTEMC_HOME})
-    message(STATUS "Using SYSTEMC_HOME from environment: ${SYSTEMC_HOME}")
-else()
-    # Try common installation paths
-    set(SYSTEMC_SEARCH_PATHS
-        /usr/local/systemc-2.3.4
-        /usr/local/systemc
-        /opt/systemc-2.3.4
-        /opt/systemc
-    )
-    foreach(path ${SYSTEMC_SEARCH_PATHS})
-        if(EXISTS ${path})
-            set(SYSTEMC_HOME ${path})
-            message(STATUS "Found SystemC at: ${SYSTEMC_HOME}")
-            break()
-        endif()
-    endforeach()
-endif()
-
-if(NOT SYSTEMC_HOME)
-    message(FATAL_ERROR "SystemC not found. Please set SYSTEMC_HOME")
-endif()
-
-set(SYSTEMC_INCLUDE_DIRS ${SYSTEMC_HOME}/include)
-set(SYSTEMC_LIBRARY_DIRS ${SYSTEMC_HOME}/lib-macosx64 ${SYSTEMC_HOME}/lib ${SYSTEMC_HOME}/objdir/src/.libs)
-
-find_library(SYSTEMC_LIBRARY
-    NAMES systemc
-    PATHS ${SYSTEMC_LIBRARY_DIRS}
-    NO_DEFAULT_PATH
-)
-
-if(NOT SYSTEMC_LIBRARY)
-    message(FATAL_ERROR "SystemC library not found in ${SYSTEMC_LIBRARY_DIRS}")
-endif()
-
-message(STATUS "SystemC include: ${SYSTEMC_INCLUDE_DIRS}")
-message(STATUS "SystemC library: ${SYSTEMC_LIBRARY}")
-
-# ============================================================================
-# Find SystemC-AMS Library
-# ============================================================================
-if(DEFINED SYSTEMC_AMS_HOME)
-    message(STATUS "Using SYSTEMC_AMS_HOME: ${SYSTEMC_AMS_HOME}")
-elseif(DEFINED ENV{SYSTEMC_AMS_HOME})
-    set(SYSTEMC_AMS_HOME $ENV{SYSTEMC_AMS_HOME})
-    message(STATUS "Using SYSTEMC_AMS_HOME from environment: ${SYSTEMC_AMS_HOME}")
-else()
-    # Try common installation paths
-    set(SYSTEMC_AMS_SEARCH_PATHS
-        /usr/local/systemc-ams-2.3.4
-        /usr/local/systemc-ams
-        /opt/systemc-ams-2.3.4
-        /opt/systemc-ams
-    )
-    foreach(path ${SYSTEMC_AMS_SEARCH_PATHS})
-        if(EXISTS ${path})
-            set(SYSTEMC_AMS_HOME ${path})
-            message(STATUS "Found SystemC-AMS at: ${SYSTEMC_AMS_HOME}")
-            break()
-        endif()
-    endforeach()
-endif()
-
-if(NOT SYSTEMC_AMS_HOME)
-    message(FATAL_ERROR "SystemC-AMS not found. Please set SYSTEMC_AMS_HOME")
-endif()
-
-set(SYSTEMC_AMS_INCLUDE_DIRS ${SYSTEMC_AMS_HOME}/include)
-set(SYSTEMC_AMS_LIBRARY_DIRS ${SYSTEMC_AMS_HOME}/lib-macosx64 ${SYSTEMC_AMS_HOME}/lib ${SYSTEMC_AMS_HOME}/lib-linux64)
-
-find_library(SYSTEMC_AMS_LIBRARY
-    NAMES systemc-ams
-    PATHS ${SYSTEMC_AMS_LIBRARY_DIRS}
-    NO_DEFAULT_PATH
-)
-
-if(NOT SYSTEMC_AMS_LIBRARY)
-    message(FATAL_ERROR "SystemC-AMS library not found in ${SYSTEMC_AMS_LIBRARY_DIRS}")
-endif()
-
-message(STATUS "SystemC-AMS include: ${SYSTEMC_AMS_INCLUDE_DIRS}")
-message(STATUS "SystemC-AMS library: ${SYSTEMC_AMS_LIBRARY}")
-
-# ============================================================================
-# Third-party Libraries
+# Usage:
+#   1. Set environment variables:
+#      export SYSTEMC_HOME=/path/to/systemc-2.3.4
+#      export SYSTEMC_AMS_HOME=/path/to/systemc-ams-2.3.4
+#
+#   2. Or use CMake options:
+#      cmake -DSYSTEMC_HOME=/path/to/systemc -DSYSTEMC_AMS_HOME=/path/to/systemc-ams ..
+#
+#   3. Or install to standard location:
+#      - /usr/local/systemc-2.3.4
+#      - /opt/systemc-2.3.4
+#      - macOS Homebrew: /opt/homebrew/opt/systemc
 # ============================================================================
 
-# JSON library (header-only)
-include(FetchContent)
-FetchContent_Declare(
-    json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-set(JSON_BuildTests OFF CACHE INTERNAL "")
-FetchContent_MakeAvailable(json)
+find_package(SystemC REQUIRED)
 
-# YAML library
-find_package(yaml-cpp QUIET)
-if(NOT yaml-cpp_FOUND)
-    message(STATUS "yaml-cpp not found, will fetch from source")
-    FetchContent_Declare(
-        yaml-cpp
-        GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-        GIT_TAG 0.8.0
-    )
-    set(YAML_CPP_BUILD_TESTS OFF CACHE INTERNAL "")
-    set(YAML_CPP_BUILD_TOOLS OFF CACHE INTERNAL "")
-    set(YAML_CPP_BUILD_CONTRIB OFF CACHE INTERNAL "")
-    FetchContent_MakeAvailable(yaml-cpp)
-endif()
+if(NOT SystemC_FOUND OR NOT SystemCAMS_FOUND)
+    message(FATAL_ERROR "
+SystemC or SystemC-AMS not found!
 
-# GoogleTest (for testing)
-option(BUILD_TESTING "Build tests" ON)
-if(BUILD_TESTING)
-    # 使用GitHub官方release包
-    FetchContent_Declare(
-        googletest
-        URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.tar.gz
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-    enable_testing()
+Please install SystemC/SystemC-AMS and set one of:
+
+1. Environment variables (recommended):
+   export SYSTEMC_HOME=/path/to/systemc-2.3.4
+   export SYSTEMC_AMS_HOME=/path/to/systemc-ams-2.3.4
+
+2. CMake options:
+   cmake -DSYSTEMC_HOME=/path/to/systemc -DSYSTEMC_AMS_HOME=/path/to/systemc-ams ..
+
+3. Install to standard location:
+   - /usr/local/systemc-2.3.4
+   - /opt/systemc-2.3.4
+   - macOS Homebrew: /opt/homebrew/opt/systemc
+
+See README.md for installation instructions.
+")
 endif()
 
 # ============================================================================
 # Include directories
 # ============================================================================
 include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${SYSTEMC_INCLUDE_DIRS}
-    ${SYSTEMC_AMS_INCLUDE_DIRS}
+    ${SystemC_INCLUDE_DIRS}
+    ${SystemCAMS_INCLUDE_DIRS}
+    include
+    include/ams
+    include/common
+    include/de
+    tb/top
+    tb/periphery
 )
 
 # ============================================================================
 # Source files
 # ============================================================================
-# 编译所有必要的模块以支持测试
-file(GLOB_RECURSE DE_SOURCES "src/de/*.cpp")
-file(GLOB_RECURSE SYSTEM_SOURCES "src/system/*.cpp")
-file(GLOB AMS_SOURCES "src/ams/*.cpp")
-
-set(ALL_SOURCES
-    ${AMS_SOURCES}
-    ${DE_SOURCES}
-    ${SYSTEM_SOURCES}
-)
+file(GLOB_RECURSE AMS_SOURCES src/ams/*.cpp)
+file(GLOB_RECURSE DE_SOURCES src/de/*.cpp)
 
 # ============================================================================
-# SerDes static library
+# Create library
 # ============================================================================
-add_library(serdes_lib STATIC ${ALL_SOURCES})
+add_library(serdes_lib STATIC ${AMS_SOURCES} ${DE_SOURCES})
+
+# Link SystemC libraries
 target_link_libraries(serdes_lib
-    ${SYSTEMC_AMS_LIBRARY}
-    ${SYSTEMC_LIBRARY}
-    nlohmann_json::nlohmann_json
+    SystemC::systemc
+    SystemC::systemc-ams
 )
 
 # ============================================================================
-# Testbenches
+# Add subdirectories
 # ============================================================================
 add_subdirectory(tb)
 
-# ============================================================================
-# Tests
-# ============================================================================
+# Optionally build tests if BUILD_TESTING is enabled
+option(BUILD_TESTING "Build unit tests" OFF)
 if(BUILD_TESTING)
+    enable_testing()
     add_subdirectory(tests)
 endif()
 
@@ -213,10 +109,14 @@ install(DIRECTORY include/
 # Print summary
 # ============================================================================
 message(STATUS "")
-message(STATUS "Configuration Summary:")
-message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "  SystemC: ${SYSTEMC_LIBRARY}")
-message(STATUS "  SystemC-AMS: ${SYSTEMC_AMS_LIBRARY}")
-message(STATUS "  Build testing: ${BUILD_TESTING}")
+message(STATUS "========================================================================")
+message(STATUS "SerDes Project Configuration Summary")
+message(STATUS "========================================================================")
+message(STATUS "C++ Standard:      ${CMAKE_CXX_STANDARD}")
+message(STATUS "Build Type:        ${CMAKE_BUILD_TYPE}")
+message(STATUS "Install Prefix:    ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "SystemC_HOME:      ${SYSTEMC_HOME}")
+message(STATUS "SystemC-AMS_HOME:  ${SYSTEMC_AMS_HOME}")
+message(STATUS "Build Tests:       ${BUILD_TESTING}")
+message(STATUS "========================================================================")
 message(STATUS "")

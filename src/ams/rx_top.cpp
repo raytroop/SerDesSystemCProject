@@ -128,8 +128,8 @@ RxTopModule::RxTopModule(sc_core::sc_module_name nm,
     
     // Sampler control signals
     m_clk_src->out(m_sig_clk);
-    m_sampler->clk_sample(m_sig_clk);       // Dummy clock (unused)
-    m_sampler->phase_offset(m_sig_cdr_phase);  // CDR → Sampler (closed loop)
+    m_sampler->clk_sample(m_sig_clk);       // Dummy clock (unused in phase mode)
+    // Note: sampling_trigger comes from CDR below
     m_sampler->data_out_de(m_sig_sampler_data_out_de);  // DE domain output
     
     // Sampler output → Splitter → CDR and data feedback
@@ -144,8 +144,12 @@ RxTopModule::RxTopModule(sc_core::sc_module_name nm,
     // CDR input from splitter output
     m_cdr->in(m_sig_cdr_in);
     
-    // CDR phase output → Sampler (closed loop)
-    m_cdr->phase_out(m_sig_cdr_phase);
+    // CDR outputs: phase_out (for monitoring) and sampling_trigger (controls sampler)
+    m_cdr->phase_out(m_sig_cdr_phase);          // For debug/monitoring only
+    m_cdr->sampling_trigger(m_sig_sampling_trigger);  // Controls when sampler captures
+    
+    // Connect CDR's sampling trigger to sampler
+    m_sampler->sampling_trigger(m_sig_sampling_trigger);
     
     // External data_out: pass-through from sampler output
     m_data_out_tap->in(m_sig_sampler_out);

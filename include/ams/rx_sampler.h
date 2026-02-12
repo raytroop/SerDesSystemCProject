@@ -23,9 +23,9 @@ public:
     sca_tdf::sca_in<double> in_p;
     sca_tdf::sca_in<double> in_n;
     
-    // Clock or phase inputs (select based on phase_source parameter)
-    sca_tdf::sca_in<double> clk_sample;  // Clock input for clock-driven mode
-    sca_tdf::sca_in<double> phase_offset;  // Phase offset for phase-driven mode
+    // Clock or sampling trigger inputs (select based on phase_source parameter)
+    sca_tdf::sca_in<double> clk_sample;      // Clock input for clock-driven mode
+    sca_tdf::sca_in<bool> sampling_trigger;  // Sampling trigger from CDR (phase-driven mode)
     
     // Digital outputs
     sca_tdf::sca_out<double> data_out;      // TDF domain output (analog-compatible)
@@ -38,6 +38,12 @@ public:
      * @note Initializes data_out_de port
      */
     RxSamplerTdf(sc_core::sc_module_name nm, const RxSamplerParams& params);
+    
+    /**
+     * @brief Get last sampled bit value
+     * @return Last sampled bit (true=1, false=0)
+     */
+    bool get_last_sampled_bit() const { return m_last_sampled_bit; }
     
     /**
      * @brief Set TDF module attributes
@@ -59,6 +65,7 @@ private:
     
     // Internal states
     bool m_prev_bit;
+    bool m_last_sampled_bit;      ///< Last sampled bit value (held between triggers)
     
     // Random number generator for noise and fuzzy decision
     std::mt19937 m_rng;

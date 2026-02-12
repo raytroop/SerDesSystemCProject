@@ -9,11 +9,12 @@ RxSamplerTdf::RxSamplerTdf(sc_core::sc_module_name nm, const RxSamplerParams& pa
     , in_p("in_p")
     , in_n("in_n")
     , clk_sample("clk_sample")
-    , phase_offset("phase_offset")
+    , sampling_trigger("sampling_trigger")
     , data_out("data_out")
     , data_out_de("data_out_de")
     , m_params(params)
     , m_prev_bit(false)
+    , m_last_sampled_bit(false)
     , m_rng(params.noise_seed)
     , m_noise_dist(0.0, params.noise_sigma)
     , m_decision_dist(0.0, 1.0)
@@ -27,17 +28,16 @@ void RxSamplerTdf::set_attributes() {
     in_p.set_rate(1);
     in_n.set_rate(1);
     clk_sample.set_rate(1);
-    phase_offset.set_rate(1);
+    sampling_trigger.set_rate(1);
     data_out.set_rate(1);
     // data_out_de is DE domain, no need to set rate
-    
-    // Set default timestep if needed
-    set_timestep(1.0 / 100e9, sc_core::SC_SEC);  // 100 GHz sampling for high-speed SerDes
+    // Inherit timestep from upstream modules
 }
 
 void RxSamplerTdf::initialize() {
     // Initialize previous bit state
     m_prev_bit = false;
+    m_last_sampled_bit = false;
     
     // Reset random number generator with configured seed
     m_rng.seed(m_params.noise_seed);
@@ -45,35 +45,40 @@ void RxSamplerTdf::initialize() {
 }
 
 void RxSamplerTdf::processing() {
-    // Step 1: Read differential inputs
-    double v_in_p = in_p.read();
-    double v_in_n = in_n.read();
+    // Pure passive sampler: sample on trigger, hold otherwise
+    // CDR generates triggers - Sampler just samples and holds
     
-    // Step 2: Calculate differential voltage
-    double v_diff = v_in_p - v_in_n;
+    bool trigger = sampling_trigger.read();
     
-    // Step 3: Apply offset if enabled
-    if (m_params.offset_enable) {
-        v_diff += m_params.offset_value;
+    if (trigger) {
+        // Read differential inputs
+        double v_in_p = in_p.read();
+        double v_in_n = in_n.read();
+        
+        // Calculate differential voltage
+        double v_diff = v_in_p - v_in_n;
+        
+        // Apply offset if enabled
+        if (m_params.offset_enable) {
+            v_diff += m_params.offset_value;
+        }
+        
+        // Inject noise if enabled
+        if (m_params.noise_enable) {
+            v_diff += m_noise_dist(m_rng);
+        }
+        
+        // Make decision and save
+        m_last_sampled_bit = make_decision(v_diff);
     }
+    // else: no trigger, keep previous value (sample-and-hold)
     
-    // Step 4: Inject noise if enabled
-    if (m_params.noise_enable) {
-        v_diff += m_noise_dist(m_rng);
-    }
+    // Update previous bit state (for hysteresis in decision)
+    m_prev_bit = m_last_sampled_bit;
     
-    // Step 5: Make decision based on v_diff
-    bool bit_out = make_decision(v_diff);
-    
-    // Step 6: Update previous bit state
-    m_prev_bit = bit_out;
-    
-    // Step 7: Write outputs
-    // TDF domain output (analog-compatible): convert bool to double: 0.0 for false, 1.0 for true
-    data_out.write(bit_out ? 1.0 : 0.0);
-    
-    // DE domain output (discrete event): direct bool output
-    data_out_de.write(bit_out);
+    // Write outputs (always the last sampled value)
+    data_out.write(m_last_sampled_bit ? 1.0 : 0.0);
+    data_out_de.write(m_last_sampled_bit);
 }
 
 void RxSamplerTdf::validate_parameters() {

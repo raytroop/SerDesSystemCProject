@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+cmake-build-*/
 *.o
 *.a
 *.so
@@ -8,7 +9,7 @@ build/
 *.exe
 
 # IDE configurations
-.qoder/
+# .qoder/ 保留AI编辑器配置
 .vscode/
 .idea/
 .venv/
@@ -28,9 +29,22 @@ Thumbs.db
 *.dat
 *.vcd
 *.wdb
+*.csv          # 仿真生成的CSV数据文件
+
+# Generated plots (root directory only)
+/*.png
+/*.jpg
+/*.jpeg
+/*.svg
+
+# Output directories
+output_eye/    # 眼图分析输出目录
 
 # Cache directories
 .cache/
+__pycache__/
+*.pyc
+*.pyo
 
 # CMake generated files
 CMakeFiles/
@@ -50,6 +64,10 @@ tmp/
 temp/
 tests/workspace.code-workspace
 
+# Office temporary files
+~$*
+*.tmp
+
 # Documentation framework files (generated 2025-12-19)
 docs/claude-progress-docs.txt
 docs/feature_list.json
@@ -59,11 +77,6 @@ scripts/init_docs.sh
 scripts/run_serdes_expert.sh
 scripts/verify_docs.py
 
-# Python cache (generated 2025-12-19)
-scripts/__pycache__/
-*.pyc
-*.pyo
-
 # Agent session files
 init.sh
 qodercli-progress.txt
@@ -71,6 +84,8 @@ feature_list.json
 serdes-doc-writer.md
 AGENTS.md
 docs/docs-init.sh
-.gitignore
-.gitignore
 docs/workflow.md
+
+# Local environment setup
+scripts/setup_env_local.sh
+*.local.sh

@@ -74,18 +74,20 @@ def load_waveform_from_dat(dat_path: str, signal_column: int = 1) -> Tuple[np.nd
         raise ValueError(f"Failed to load .dat file: {e}")
 
 
-def load_waveform_from_csv(csv_path: str, time_col: str = 'time',
-                           signal_col: str = 'diff') -> Tuple[np.ndarray, np.ndarray]:
+def load_waveform_from_csv(csv_path: str, time_col: str = None,
+                           signal_col: str = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load waveform data from CSV format file.
 
     The CSV file format is a standard comma-separated file with headers.
-    Common columns include: 'time', 'diff', 'cm', etc.
+    Supports automatic column detection for common formats:
+    - serdes_link_tb.cpp format: 'time_s', 'voltage_v'
+    - Generic format: 'time', 'diff' or 'value' or 'voltage'
 
     Args:
         csv_path: Path to the .csv file
-        time_col: Name of the time column (default: 'time')
-        signal_col: Name of the signal column (default: 'diff')
+        time_col: Name of the time column (default: auto-detect)
+        signal_col: Name of the signal column (default: auto-detect)
 
     Returns:
         Tuple of (time_array, value_array) as numpy arrays
@@ -107,12 +109,34 @@ def load_waveform_from_csv(csv_path: str, time_col: str = 'time',
     try:
         # Read CSV file
         df = pd.read_csv(csv_path)
+        
+        # Auto-detect time column if not specified
+        if time_col is None:
+            time_candidates = ['time_s', 'time', 'Time', 'TIME', 't']
+            for candidate in time_candidates:
+                if candidate in df.columns:
+                    time_col = candidate
+                    break
+            if time_col is None:
+                # Fall back to first column
+                time_col = df.columns[0]
+        
+        # Auto-detect signal column if not specified
+        if signal_col is None:
+            signal_candidates = ['voltage_v', 'voltage', 'diff', 'value', 'signal', 'v', 'V']
+            for candidate in signal_candidates:
+                if candidate in df.columns:
+                    signal_col = candidate
+                    break
+            if signal_col is None:
+                # Fall back to second column
+                signal_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
 
         # Validate required columns
         if time_col not in df.columns:
-            raise ValueError(f"Column '{time_col}' not found in CSV file")
+            raise ValueError(f"Column '{time_col}' not found in CSV file. Available: {list(df.columns)}")
         if signal_col not in df.columns:
-            raise ValueError(f"Column '{signal_col}' not found in CSV file")
+            raise ValueError(f"Column '{signal_col}' not found in CSV file. Available: {list(df.columns)}")
 
         # Extract arrays
         time_array = df[time_col].values

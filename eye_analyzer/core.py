@@ -48,7 +48,10 @@ class EyeAnalyzer:
                  output_image_format: str = 'png',
                  output_image_dpi: int = 300,
                  save_csv_data: bool = False,
-                 csv_data_path: str = 'eye_analysis_data'):
+                 csv_data_path: str = 'eye_analysis_data',
+                 n_ui_display: float = 2.0,
+                 center_eye: bool = True,
+                 interpolate_factor: int = 0):
         """
         Initialize the EyeAnalyzer.
 
@@ -72,6 +75,14 @@ class EyeAnalyzer:
             output_image_dpi: Output image resolution in DPI (default: 300)
             save_csv_data: Whether to save CSV auxiliary data (default: False)
             csv_data_path: Directory path for CSV data output (default: 'eye_analysis_data')
+            n_ui_display: Number of UI to display in eye diagram (default: 2.0)
+            center_eye: If True, center the complete eye pattern in display window
+                       (e.g., display from -0.5 UI to 1.5 UI for 2 UI window)
+                       If False, display from 0 to n_ui_display UI. (default: True)
+            interpolate_factor: Interpolation factor for upsampling waveform (default: 0)
+                               0 = auto (ensure samples_per_ui >= ui_bins)
+                               1 = no interpolation
+                               >1 = use specified factor (e.g., 8 for 8x upsampling)
 
         Raises:
             ValueError: If parameters are invalid
@@ -103,6 +114,18 @@ class EyeAnalyzer:
         self.output_image_dpi = output_image_dpi
         self.save_csv_data = save_csv_data
         self.csv_data_path = csv_data_path
+        self.n_ui_display = n_ui_display
+        self.center_eye = center_eye
+        self.interpolate_factor = interpolate_factor
+        
+        # Calculate phase display range for centered eye
+        # For 2 UI display with centered eye: -0.5 UI to 1.5 UI
+        if self.center_eye:
+            self.phase_min = -0.5  # Start at -0.5 UI
+            self.phase_max = self.n_ui_display - 0.5  # End at 1.5 UI for 2 UI display
+        else:
+            self.phase_min = 0.0
+            self.phase_max = self.n_ui_display
         
         # Data provenance tracking
         self._total_samples = 0
@@ -164,6 +187,9 @@ class EyeAnalyzer:
         # Step 0: Truncate waveform if measure_length is specified
         time_array, value_array = self._truncate_waveform(time_array, value_array)
         self._analyzed_samples = len(time_array)
+
+        # Step 0.5: Interpolate waveform for sufficient phase resolution
+        time_array, value_array = self._interpolate_waveform(time_array, value_array)
 
         print(f"  Processing {len(time_array)} samples...")
 
@@ -261,22 +287,30 @@ class EyeAnalyzer:
 
     def _normalize_phase(self, time_array: np.ndarray) -> np.ndarray:
         """
-        Normalize time to phase in [0, 1) range.
+        Normalize time to phase for eye diagram display.
 
         Phase is computed as: phi = (t % UI) / UI
+        
+        For centered eye display (2 UI window), phase is extended to [-0.5, 1.5)
+        by duplicating edge samples to create a complete centered eye pattern.
 
         Args:
             time_array: Time array in seconds
 
         Returns:
-            Phase array normalized to [0, 1)
+            Phase array for eye diagram construction
         """
         return (time_array % self.ui) / self.ui
 
     def _build_eye_diagram(self, phase_array: np.ndarray,
                           amplitude_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Build 2D histogram eye diagram.
+        Build 2D histogram eye diagram with support for multi-UI display.
+
+        For centered eye display (2 UI window from -0.5 to 1.5 UI):
+        - Samples with phase in [0.5, 1) are duplicated to [-0.5, 0)
+        - Samples with phase in [0, 0.5) are duplicated to [1, 1.5)
+        This creates a complete eye pattern centered in the display window.
 
         Args:
             phase_array: Phase array in [0, 1)
@@ -288,10 +322,41 @@ class EyeAnalyzer:
             - xedges: Phase bin edges (length: ui_bins + 1)
             - yedges: Amplitude bin edges (length: amp_bins + 1)
         """
+        # For centered eye display, extend phase data to cover full display range
+        if self.center_eye and self.n_ui_display >= 2.0:
+            # Create extended phase and amplitude arrays
+            phase_extended = []
+            amp_extended = []
+            
+            for p, v in zip(phase_array, amplitude_array):
+                # Original point (0 to 1 UI)
+                phase_extended.append(p)
+                amp_extended.append(v)
+                
+                # Duplicate [0.5, 1) to [-0.5, 0) for left side of centered eye
+                if p >= 0.5:
+                    phase_extended.append(p - 1.0)
+                    amp_extended.append(v)
+                
+                # Duplicate [0, 0.5) to [1, 1.5) for right side of centered eye
+                if p < 0.5:
+                    phase_extended.append(p + 1.0)
+                    amp_extended.append(v)
+            
+            phase_array = np.array(phase_extended)
+            amplitude_array = np.array(amp_extended)
+        
+        # Determine amplitude range
+        v_max = np.max(np.abs(amplitude_array))
+        v_margin = v_max * 0.1  # 10% margin
+        v_range = [-v_max - v_margin, v_max + v_margin]
+        
+        # Build histogram with configured phase range
         hist2d, xedges, yedges = np.histogram2d(
             phase_array,
             amplitude_array,
             bins=[self.ui_bins, self.amp_bins],
+            range=[[self.phase_min, self.phase_max], v_range],
             density=self.hist2d_normalize
         )
 
@@ -371,47 +436,114 @@ class EyeAnalyzer:
 
     def _plot_eye_diagram(self, metrics: Dict[str, Any], output_path: str) -> None:
         """
-        Plot and save eye diagram visualization.
+        Plot and save eye diagram visualization using imshow with MATLAB-style colormap.
+
+        Generates a statistical eye diagram with:
+        - imshow for consistent rendering
+        - MATLAB-style colormap (Blue -> Green -> Yellow -> Red)
+        - White background
+        - 2-UI centered display
 
         Args:
             metrics: Analysis metrics dictionary
             output_path: Path to save the image file
         """
-        # Create figure
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Plot 2D histogram as heatmap
+        from matplotlib.colors import LinearSegmentedColormap
+        from scipy.ndimage import gaussian_filter
+        
+        # Create MATLAB-style colormap
+        def create_matlab_cmap():
+            n_colors = 256
+            colors = []
+            for i in range(n_colors):
+                pd = i / (n_colors - 1)
+                if pd == 0:
+                    r, g, b = 1.0, 1.0, 1.0
+                else:
+                    r = max(2 * pd - 1, 0)
+                    g = min(2 * pd, 2 - 2 * pd)
+                    b = max(1 - 2 * pd, 0)
+                colors.append((r, g, b))
+            return LinearSegmentedColormap.from_list('matlab_eye', colors, N=n_colors)
+        
+        # Create figure with white background
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        
+        # Prepare histogram data
+        hist_display = self._hist2d.T.copy()
+        hist_display = gaussian_filter(hist_display, sigma=0.5)
+        
+        # Normalize to [0, 1] for colormap
+        hist_max = hist_display.max()
+        if hist_max > 0:
+            hist_normalized = hist_display / hist_max
+        else:
+            hist_normalized = hist_display
+        
+        # Convert phase axis to time (ps)
+        ui_ps = self.ui * 1e12
+        xedges_ps = self._xedges * ui_ps
+        yedges_v = self._yedges
+        
+        # Plot using imshow with MATLAB colormap
+        cmap = create_matlab_cmap()
+        
         im = ax.imshow(
-            self._hist2d.T,
+            hist_normalized,
             origin='lower',
             aspect='auto',
-            extent=[self._xedges[0], self._xedges[-1], self._yedges[0], self._yedges[-1]],
-            cmap='hot'
+            extent=[xedges_ps[0], xedges_ps[-1], yedges_v[0], yedges_v[-1]],
+            cmap=cmap,
+            vmin=0,
+            vmax=1,
+            interpolation='bilinear'
         )
-
-        # Add colorbar
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('Density', rotation=270, labelpad=20)
+        
+        # Add UI boundary lines (2-UI centered)
+        for i_ui in [self.phase_min, 0, 0.5, 1.0, self.phase_max]:
+            x_line = i_ui * ui_ps
+            if i_ui == 0.5:
+                # Eye center at 0.5 UI - red solid line
+                ax.axvline(x=x_line, color='red', linestyle='-', 
+                          alpha=0.8, linewidth=1.5)
+            elif i_ui == 0 or i_ui == 1.0:
+                # UI boundaries - gray solid
+                ax.axvline(x=x_line, color='gray', linestyle='-', 
+                          alpha=0.6, linewidth=1.0)
+            else:
+                # Window edges - gray dashed
+                ax.axvline(x=x_line, color='gray', linestyle='--', 
+                          alpha=0.4, linewidth=0.8)
+        
+        # Add zero voltage line
+        ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5, linewidth=0.8)
 
         # Set labels and title
-        ax.set_xlabel('Phase (UI)')
-        ax.set_ylabel('Amplitude (V)')
-        ax.set_title('Eye Diagram')
+        ax.set_xlabel('Phase [ps]', fontsize=12)
+        ax.set_ylabel('Voltage [V]', fontsize=12)
+        ax.set_title('Statistical Eye (MATLAB Style)', fontsize=14)
+        
+        # Add grid
+        ax.grid(True, alpha=0.3, linestyle='--')
 
         # Add metrics annotation
+        data_rate = 1 / self.ui / 1e9
         textstr = (
-            f"UI: {self.ui:.2e} s\n"
+            f"Data Rate: {data_rate:.1f} Gbps\n"
+            f"UI: {ui_ps:.1f} ps\n"
             f"Eye Height: {metrics['eye_height']*1000:.2f} mV\n"
             f"Eye Width: {metrics['eye_width']:.3f} UI\n"
-            f"Eye Area: {metrics.get('eye_area', 0)*1000:.2f} mV*UI"
+            f"Display: {self.n_ui_display:.0f} UI (centered)"
         )
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-        ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', bbox=props)
+        props = dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8)
+        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props, family='monospace')
 
         # Save figure with configured DPI
         plt.tight_layout()
-        plt.savefig(output_path, dpi=self.output_image_dpi, bbox_inches='tight')
+        plt.savefig(output_path, dpi=self.output_image_dpi, bbox_inches='tight', facecolor='white')
         plt.close()
 
     # ========================================================================
@@ -450,6 +582,52 @@ class EyeAnalyzer:
         start_idx = np.searchsorted(time_array, t_start)
         
         return time_array[start_idx:], value_array[start_idx:]
+
+    def _interpolate_waveform(self, time_array: np.ndarray,
+                               value_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Interpolate waveform using cubic spline for sufficient phase resolution.
+        
+        When simulation timestep has an integer relationship with UI, the number
+        of unique phase values may be less than ui_bins, causing discrete banding
+        in the eye diagram. This method upsamples the waveform to ensure
+        samples_per_ui >= ui_bins.
+        
+        Args:
+            time_array: Time array in seconds
+            value_array: Signal value array in volts
+            
+        Returns:
+            Tuple of (interpolated_time, interpolated_value)
+        """
+        from scipy.interpolate import CubicSpline
+        
+        dt = time_array[1] - time_array[0]
+        samples_per_ui = int(round(self.ui / dt))
+        
+        # Calculate interpolation factor
+        if self.interpolate_factor > 1:
+            factor = self.interpolate_factor
+        elif self.interpolate_factor == 1:
+            # No interpolation requested
+            return time_array, value_array
+        else:
+            # Auto mode: ensure samples_per_ui >= ui_bins
+            if samples_per_ui >= self.ui_bins:
+                return time_array, value_array
+            factor = int(np.ceil(self.ui_bins / samples_per_ui))
+        
+        print(f"  Interpolating: {samples_per_ui} -> {samples_per_ui * factor} samples/UI (factor={factor}x, method=cubic_spline)")
+        
+        # Create new time array with finer resolution
+        dt_new = dt / factor
+        time_new = np.arange(time_array[0], time_array[-1], dt_new)
+        
+        # Cubic spline interpolation
+        cs = CubicSpline(time_array, value_array)
+        value_new = cs(time_new)
+        
+        return time_new, value_new
 
     def _estimate_sampling_phase(self, phase_array: np.ndarray, 
                                   value_array: np.ndarray) -> float:

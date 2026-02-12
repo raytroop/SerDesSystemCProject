@@ -39,9 +39,7 @@ void TxDriverTdf::set_attributes() {
     vdd.set_rate(1);
     out_p.set_rate(1);
     out_n.set_rate(1);
-    
-    // Set default timestep (100 GHz sampling for high-speed SerDes)
-    set_timestep(1.0 / 100e9, sc_core::SC_SEC);
+    // Inherit timestep from upstream modules
 }
 
 void TxDriverTdf::initialize() {

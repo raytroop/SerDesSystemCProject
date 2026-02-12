@@ -131,6 +131,30 @@ public:
      * @return Integral accumulator value
      */
     double get_cdr_integral_state() const;
+    
+    /**
+     * @brief Get CDR phase output signal (for monitoring)
+     * @return Reference to CDR phase signal
+     */
+    const sca_tdf::sca_signal<double>& get_cdr_phase_signal() const {
+        return m_sig_cdr_phase;
+    }
+    
+    /**
+     * @brief Get DFE tap coefficient signals (for monitoring)
+     * @param tap_index Tap index (1-5)
+     * @return Reference to DFE tap signal
+     */
+    sc_core::sc_signal<double>& get_dfe_tap_signal(int tap_index) {
+        switch (tap_index) {
+            case 1: return m_sig_dfe_tap1_de;
+            case 2: return m_sig_dfe_tap2_de;
+            case 3: return m_sig_dfe_tap3_de;
+            case 4: return m_sig_dfe_tap4_de;
+            case 5: return m_sig_dfe_tap5_de;
+            default: return m_sig_dfe_tap1_de;
+        }
+    }
 
 private:
     // ========================================================================
@@ -165,8 +189,9 @@ private:
     
     // Sampler → CDR → Sampler (closed loop)
     sca_tdf::sca_signal<double> m_sig_sampler_out;  ///< Sampler decision output
-    sca_tdf::sca_signal<double> m_sig_cdr_phase;    ///< CDR phase output → Sampler
+    sca_tdf::sca_signal<double> m_sig_cdr_phase;    ///< CDR phase output (for monitoring)
     sca_tdf::sca_signal<double> m_sig_cdr_in;       ///< CDR input (from splitter)
+    sca_tdf::sca_signal<bool> m_sig_sampling_trigger; ///< CDR sampling trigger → Sampler
     
     // Sampler → DFE Summer (历史判决反馈)
     sca_tdf::sca_signal<double> m_sig_data_feedback; ///< Data feedback for DFE

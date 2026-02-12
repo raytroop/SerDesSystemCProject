@@ -25,12 +25,14 @@ public:
      * @brief Constructor
      * @param nm Module name
      * @param params Wave generation parameters
-     * @param sample_rate Sampling rate in Hz (default: 80 GHz)
+     * @param sample_rate Sampling rate in Hz (default: 640 GHz)
+     * @param ui Unit interval in seconds (default: 100ps for 10Gbps)
      * @param seed Random seed for RNG (default: 12345)
      */
     WaveGenerationTdf(sc_core::sc_module_name nm, 
                       const WaveGenParams& params,
-                      double sample_rate = 80e9,
+                      double sample_rate = 640e9,
+                      double ui = 100e-12,
                       unsigned int seed = 12345);
     
     // TDF callback methods
@@ -43,6 +45,8 @@ public:
     double get_current_time() const { return m_time; }
     bool is_pulse_mode() const { return m_params.single_pulse > 0.0; }
     double get_sample_rate() const { return m_sample_rate; }
+    double get_ui() const { return m_ui; }
+    int get_samples_per_ui() const { return m_samples_per_ui; }
     
 private:
     /**
@@ -54,6 +58,10 @@ private:
     WaveGenParams m_params;
     unsigned int m_lfsr_state;
     double m_sample_rate;
+    double m_ui;                    // Unit interval (seconds)
+    int m_samples_per_ui;           // Oversampling ratio
+    int m_sample_counter;           // Counter within current UI
+    double m_current_bit_value;     // Current bit value held during UI
     double m_time;
     unsigned int m_seed;
     std::mt19937 m_rng;

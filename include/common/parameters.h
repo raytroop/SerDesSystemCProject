@@ -392,10 +392,12 @@ struct CdrParams {
     CdrPiParams pi;
     CdrPaiParams pai;
     double ui;                        // Unit interval (s) for PI output scaling
+    double sample_point;              // Sampling point within UI (0~1, default 0.5 = center)
     bool debug_enable;                // Debug output enable
     
     CdrParams() 
         : ui(1e-10)                   // Default 100ps (10Gbps)
+        , sample_point(0.5)           // Default sample at UI center
         , debug_enable(false) {}
 };
 

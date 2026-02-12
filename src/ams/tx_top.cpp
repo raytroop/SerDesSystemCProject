@@ -19,15 +19,19 @@ TxTopModule::TxTopModule(sc_core::sc_module_name nm, const TxParams& tx_params)
     // Instantiate sub-modules
     // ========================================================================
     
+    std::cout << "      [TX] Creating FFE..." << std::endl;
     // FFE: Feed-Forward Equalizer
     m_ffe = new TxFfeTdf("ffe", m_params.ffe);
     
+    std::cout << "      [TX] Creating Mux..." << std::endl;
     // Mux: Lane selection
     m_mux = new TxMuxTdf("mux", m_params.mux_lane);
     
+    std::cout << "      [TX] Creating S2D..." << std::endl;
     // S2D: Single-ended to Differential converter
     m_s2d = new SingleToDiffTdf("s2d");
     
+    std::cout << "      [TX] Creating Driver..." << std::endl;
     // Driver: Output driver
     m_driver = new TxDriverTdf("driver", m_params.driver);
     

@@ -21,8 +21,8 @@ function(create_test_executables test_list)
         target_link_libraries(test_${test_name}
             GTest::gtest
             serdes_lib
-            ${SYSTEMC_AMS_LIBRARY}
-            ${SYSTEMC_LIBRARY}
+            SystemC::systemc
+            SystemC::systemc-ams
         )
         
         add_test(NAME ${test_name} COMMAND test_${test_name})
@@ -302,8 +302,8 @@ if(INTEGRATION_TEST_SOURCES)
     
     target_link_libraries(integration_tests
         serdes_lib
-        ${SYSTEMC_AMS_LIBRARY}
-        ${SYSTEMC_LIBRARY}
+        SystemC::systemc
+        SystemC::systemc-ams
         GTest::gtest
         GTest::gtest_main
     )

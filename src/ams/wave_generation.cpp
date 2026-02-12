@@ -26,35 +26,60 @@ static const PRBSConfig PRBS_CONFIGS[] = {
 WaveGenerationTdf::WaveGenerationTdf(sc_core::sc_module_name nm, 
                                      const WaveGenParams& params,
                                      double sample_rate,
+                                     double ui,
                                      unsigned int seed)
     : sca_tdf::sca_module(nm)
     , out("out")
     , m_params(params)
     , m_lfsr_state(0)
     , m_sample_rate(sample_rate)
+    , m_ui(ui)
+    , m_samples_per_ui(0)
+    , m_sample_counter(0)
+    , m_current_bit_value(0.0)
     , m_time(0.0)
     , m_seed(seed)
+    , m_rng(seed)
 {
     // Parameter validation
     if (sample_rate <= 0.0) {
         throw std::invalid_argument("Sample rate must be positive");
     }
+    if (ui <= 0.0) {
+        throw std::invalid_argument("UI must be positive");
+    }
     if (params.single_pulse < 0.0) {
         throw std::invalid_argument("Single pulse width cannot be negative");
     }
     
-    // Initialize random number generator
-    m_rng.seed(m_seed);
+    // Calculate oversampling ratio
+    double exact_samples = ui * sample_rate;
+    m_samples_per_ui = static_cast<int>(std::round(exact_samples));
+    
+    if (m_samples_per_ui < 1) {
+        throw std::invalid_argument("Sample rate must be at least 1/UI");
+    }
+    
+    std::cout << "  [WaveGen] Data rate: " << (1.0/ui)/1e9 << " Gbps" << std::endl;
+    std::cout << "  [WaveGen] Sample rate: " << sample_rate/1e9 << " GHz" << std::endl;
+    std::cout << "  [WaveGen] UI: " << ui*1e12 << " ps" << std::endl;
+    std::cout << "  [WaveGen] Samples per UI: " << m_samples_per_ui << std::endl;
 }
 
 void WaveGenerationTdf::set_attributes() {
     out.set_rate(1);
-    out.set_timestep(1.0 / m_sample_rate, sc_core::SC_SEC);
+    // Use timestep that aligns with UI: 2 ps for 50 samples/UI at 10Gbps
+    // This ensures integer samples per UI for clean eye diagram
+    double ui = m_ui;
+    int samples_per_ui = m_samples_per_ui;
+    double timestep = ui / samples_per_ui;  // Should be 2 ps for 100ps UI / 50 samples
+    out.set_timestep(timestep, sc_core::SC_SEC);
 }
 
 void WaveGenerationTdf::initialize() {
-    // Reset time
+    // Reset time and counter
     m_time = 0.0;
+    m_sample_counter = 0;
     
     // Initialize LFSR state based on PRBS type
     int prbs_index = static_cast<int>(m_params.type);
@@ -70,29 +95,32 @@ void WaveGenerationTdf::initialize() {
         mask = 0x7FFFFFFF;
     }
     
-    // Use seed to modify LFSR initial state for different sequences
-    // XOR the default state with the seed (masked to valid bits)
-    // This ensures different seeds produce different starting points in the PRBS sequence
+    // Use seed to modify LFSR initial state
     m_lfsr_state = (default_state ^ (m_seed & mask)) & mask;
     
-    // Check for all-zero state (would cause LFSR to lock up)
+    // Check for all-zero state
     if (m_lfsr_state == 0) {
-        // If XOR resulted in zero, use default state instead
         m_lfsr_state = default_state;
     }
     
-    // Warning for pulse width quantization
+    // Generate first bit
     if (m_params.single_pulse > 0.0) {
-        double timestep = 1.0 / m_sample_rate;
-        double ratio = m_params.single_pulse / timestep;
-        if (std::abs(ratio - std::round(ratio)) > 1e-9) {
-            std::cerr << "Warning: single_pulse is not an integer multiple of timestep, "
-                      << "actual pulse width may differ slightly" << std::endl;
-        }
+        m_current_bit_value = 1.0;  // Pulse starts high
+    } else {
+        bool bit = generate_prbs_bit();
+        m_current_bit_value = bit ? 1.0 : -1.0;
     }
     
-    // Re-seed RNG for reproducibility (used for jitter)
+    // Re-seed RNG for jitter
     m_rng.seed(m_seed);
+    
+    // Warning for pulse width quantization
+    if (m_params.single_pulse > 0.0) {
+        double ui_count = m_params.single_pulse / m_ui;
+        if (std::abs(ui_count - std::round(ui_count)) > 1e-9) {
+            std::cerr << "Warning: single_pulse is not an integer multiple of UI" << std::endl;
+        }
+    }
 }
 
 bool WaveGenerationTdf::generate_prbs_bit() {
@@ -101,66 +129,42 @@ bool WaveGenerationTdf::generate_prbs_bit() {
     
     if (prbs_index >= 0 && prbs_index < 5) {
         const PRBSConfig& config = PRBS_CONFIGS[prbs_index];
-        // Calculate feedback bit (XOR of two taps)
         feedback = ((m_lfsr_state >> config.tap1) ^ (m_lfsr_state >> config.tap2)) & 0x1;
-        // Shift left and insert feedback
         m_lfsr_state = ((m_lfsr_state << 1) | feedback) & config.mask;
     } else {
-        // Default to PRBS31
         feedback = ((m_lfsr_state >> 30) ^ (m_lfsr_state >> 27)) & 0x1;
         m_lfsr_state = ((m_lfsr_state << 1) | feedback) & 0x7FFFFFFF;
     }
     
-    // Return LSB as output bit
     return (m_lfsr_state & 0x1) != 0;
 }
 
 void WaveGenerationTdf::processing() {
-    double bit_value = 0.0;
-    
-    // Mode selection: Single-bit pulse vs PRBS
-    if (m_params.single_pulse > 0.0) {
-        // Single-bit pulse mode
-        // Output +1.0V during pulse, -1.0V after
-        if (m_time < m_params.single_pulse) {
-            bit_value = 1.0;   // Pulse high level
+    // Only generate new bit at UI boundary (every samples_per_ui samples)
+    if (m_sample_counter == 0) {
+        // Mode selection: Single-bit pulse vs PRBS
+        if (m_params.single_pulse > 0.0) {
+            // Single-bit pulse mode: output high during pulse, then low
+            if (m_time < m_params.single_pulse) {
+                m_current_bit_value = 1.0;
+            } else {
+                m_current_bit_value = -1.0;
+            }
         } else {
-            bit_value = -1.0;  // Pulse low level (settled)
+            // PRBS mode - generate next bit using LFSR
+            bool bit = generate_prbs_bit();
+            m_current_bit_value = bit ? 1.0 : -1.0;
         }
-    } else {
-        // PRBS mode - generate next bit using LFSR
-        bool bit = generate_prbs_bit();
-        // NRZ modulation: bit 0 -> -1.0V, bit 1 -> +1.0V
-        bit_value = bit ? 1.0 : -1.0;
     }
     
-    // Jitter injection (simplified implementation)
-    // Note: This is a demonstration implementation that calculates jitter
-    // but doesn't truly modify sampling timestamps (TDF limitation)
-    double jitter_offset = 0.0;
+    // Write output (held constant during UI for oversampling)
+    out.write(m_current_bit_value);
     
-    // Random Jitter (RJ) - Gaussian distribution
-    if (m_params.jitter.RJ_sigma > 0.0) {
-        std::normal_distribution<double> dist(0.0, m_params.jitter.RJ_sigma);
-        jitter_offset += dist(m_rng);
+    // Update counter and time
+    m_sample_counter++;
+    if (m_sample_counter >= m_samples_per_ui) {
+        m_sample_counter = 0;
     }
-    
-    // Sinusoidal Jitter (SJ) - Multi-tone superposition
-    for (size_t i = 0; i < m_params.jitter.SJ_freq.size() && 
-                       i < m_params.jitter.SJ_pp.size(); ++i) {
-        double sj_phase = 2.0 * M_PI * m_params.jitter.SJ_freq[i] * m_time;
-        jitter_offset += m_params.jitter.SJ_pp[i] * std::sin(sj_phase);
-    }
-    
-    // Note: jitter_offset is calculated for demonstration but not applied
-    // to the output. True jitter modeling would require DE-TDF bridging
-    // or dynamic timestep adjustment, which is not supported in pure TDF.
-    (void)jitter_offset;  // Suppress unused variable warning
-    
-    // Write output
-    out.write(bit_value);
-    
-    // Update time
     m_time += 1.0 / m_sample_rate;
 }
 

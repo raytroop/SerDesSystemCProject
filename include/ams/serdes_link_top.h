@@ -24,10 +24,12 @@ struct SerdesLinkParams {
     RxParams rx;                ///< RX parameters (CTLE, VGA, DFE Summer, Sampler, CDR)
     AdaptionParams adaption;    ///< Adaption parameters (AGC, DFE tap adaptation)
     double sample_rate;         ///< Sampling rate (Hz)
+    double data_rate;           ///< Data rate (bps), determines UI
     unsigned int seed;          ///< Random seed for PRBS
     
     SerdesLinkParams()
-        : sample_rate(100e9)
+        : sample_rate(640e9)    ///< 640 GHz sampling (64x oversampling for 10G)
+        , data_rate(10e9)       ///< 10 Gbps default
         , seed(12345) {
         // Default adaption parameters (disabled)
         adaption.agc.enabled = false;
@@ -65,8 +67,65 @@ public:
     // Power supply input - for PSRR modeling in TX/RX
     sca_tdf::sca_in<double> vdd;
     
-    // Output port - recovered data from RX
+    // Output port - recovered data from RX (digital)
     sca_tdf::sca_out<double> data_out;
+    
+    // ========================================================================
+    // Monitoring Ports - DFE Output (Sampler Input)
+    // ========================================================================
+    
+    /**
+     * @brief TX Driver differential output positive (analog)
+     * Use this for transmitter eye diagram analysis
+     */
+    sca_tdf::sca_out<double> mon_tx_out_p;
+    
+    /**
+     * @brief TX Driver differential output negative (analog)
+     * Use this for transmitter eye diagram analysis
+     */
+    sca_tdf::sca_out<double> mon_tx_out_n;
+    
+    /**
+     * @brief DFE Summer differential output positive (Sampler input)
+     * Use this for receiver eye diagram analysis
+     */
+    sca_tdf::sca_out<double> mon_dfe_out_p;
+    
+    /**
+     * @brief DFE Summer differential output negative (Sampler input)
+     * Use this for receiver eye diagram analysis
+     */
+    sca_tdf::sca_out<double> mon_dfe_out_n;
+    
+    /**
+     * @brief VGA differential output positive (before DFE, analog)
+     * Use this for receiver eye diagram before DFE compensation
+     */
+    sca_tdf::sca_out<double> mon_vga_out_p;
+    
+    /**
+     * @brief VGA differential output negative (before DFE, analog)
+     * Use this for receiver eye diagram before DFE compensation
+     */
+    sca_tdf::sca_out<double> mon_vga_out_n;
+    
+    /**
+     * @brief CDR phase adjustment output (seconds)
+     * Use this for CDR phase tracking analysis
+     */
+    sca_tdf::sca_out<double> mon_cdr_phase;
+    
+    // ========================================================================
+    // DFE Tap Monitoring Interface
+    // ========================================================================
+    
+    /**
+     * @brief Get DFE tap coefficient (for monitoring)
+     * @param tap_index Tap index (1-5)
+     * @return Current DFE tap value
+     */
+    double get_dfe_tap(int tap_index) const;
     
     // ========================================================================
     // Constructor & Destructor
@@ -254,6 +313,13 @@ private:
     };
     
     SignalPassThrough* m_data_out_tap;  ///< Pass-through for external data_out
+    SignalPassThrough* m_tx_tap_p;      ///< Tap for TX output positive monitoring
+    SignalPassThrough* m_tx_tap_n;      ///< Tap for TX output negative monitoring
+    SignalPassThrough* m_dfe_tap_p;     ///< Tap for DFE output positive monitoring
+    SignalPassThrough* m_dfe_tap_n;     ///< Tap for DFE output negative monitoring
+    SignalPassThrough* m_vga_tap_p;     ///< Tap for VGA output positive monitoring
+    SignalPassThrough* m_vga_tap_n;     ///< Tap for VGA output negative monitoring
+    SignalPassThrough* m_cdr_tap;       ///< Tap for CDR phase output monitoring
     
     // ========================================================================
     // Internal Signals

@@ -37,7 +37,8 @@ int sc_main(int argc, char* argv[]) {
     sca_tdf::sca_signal<double> sig_vga_out;
     sca_tdf::sca_signal<double> sig_sampler_out;
     sca_tdf::sca_signal<double> sig_dfe_out;
-    sca_tdf::sca_signal<double> sig_cdr_out;
+    sca_tdf::sca_signal<double> sig_cdr_phase_out;
+    sca_tdf::sca_signal<double> sig_zero;  // 用于差分输入的0V
     
     // 创建 TX 模块
     std::cout << "\nCreating TX modules..." << std::endl;
@@ -75,16 +76,18 @@ int sc_main(int argc, char* argv[]) {
     
     // 连接 RX 链路
     std::cout << "Connecting RX chain..." << std::endl;
-    rx_ctle.in(sig_channel_out);
-    rx_ctle.out(sig_ctle_out);
+    rx_ctle.in_p(sig_channel_out);
+    rx_ctle.in_n(sig_zero);  // 单端转差分
+    rx_ctle.out_p(sig_ctle_out);
     rx_vga.in(sig_ctle_out);
     rx_vga.out(sig_vga_out);
-    rx_sampler.in(sig_vga_out);
-    rx_sampler.out(sig_sampler_out);
+    rx_sampler.in_p(sig_vga_out);
+    rx_sampler.in_n(sig_zero);
+    rx_sampler.data_out(sig_sampler_out);
     rx_dfe.in(sig_sampler_out);
     rx_dfe.out(sig_dfe_out);
     rx_cdr.in(sig_dfe_out);
-    rx_cdr.out(sig_cdr_out);
+    rx_cdr.phase_out(sig_cdr_phase_out);
     
     // 创建 trace 文件
     std::cout << "\nCreating trace file..." << std::endl;
@@ -98,7 +101,8 @@ int sc_main(int argc, char* argv[]) {
     sca_util::sca_trace(tf, sig_ctle_out, "ctle_out");
     sca_util::sca_trace(tf, sig_vga_out, "vga_out");
     sca_util::sca_trace(tf, sig_sampler_out, "sampler_out");
-    sca_util::sca_trace(tf, sig_cdr_out, "cdr_out");
+    sca_util::sca_trace(tf, sig_cdr_phase_out, "cdr_phase_out");
+    sca_util::sca_trace(tf, sig_zero, "zero");
     
     // 运行仿真
     std::cout << "\nStarting simulation..." << std::endl;

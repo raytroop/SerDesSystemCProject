@@ -35,9 +35,7 @@ void RxVgaTdf::set_attributes() {
     vdd.set_rate(1);
     out_p.set_rate(1);
     out_n.set_rate(1);
-    
-    // Set default timestep if needed
-    set_timestep(1.0 / 100e9, sc_core::SC_SEC);  // 100 GHz sampling for high-speed SerDes
+    // Inherit timestep from upstream modules
 }
 
 void RxVgaTdf::initialize() {

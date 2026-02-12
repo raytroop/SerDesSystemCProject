@@ -56,12 +56,19 @@ public:
     sca_tdf::sca_in<double> in;
     
     /**
-     * @brief Phase adjustment output port
+     * @brief Phase adjustment output port (for monitoring/debug)
      * Outputs phase offset in seconds (s)
      * - Positive value: delay sampling (clock late)
      * - Negative value: advance sampling (clock early)
      */
     sca_tdf::sca_out<double> phase_out;
+    
+    /**
+     * @brief Sampling trigger output port
+     * Outputs true for one timestep when sampling should occur
+     * Connected to sampler's sampling_trigger input
+     */
+    sca_tdf::sca_out<bool> sampling_trigger;
 
     // ========================================================================
     // Constructor
@@ -117,14 +124,42 @@ public:
 
 private:
     // ========================================================================
+    // Sampling State Machine
+    // ========================================================================
+    
+    /**
+     * @brief Sampling state for double-sampling BBPD
+     * 
+     * Within each UI, CDR generates two triggers:
+     * 1. EDGE: At UI boundary (phase = 0 or UI)
+     * 2. DATA: At UI center (phase = UI/2)
+     * 
+     * State machine tracks which sample is expected next
+     */
+    enum class SampleState {
+        WAIT_EDGE,   ///< Waiting for edge sample (at UI boundary)
+        WAIT_DATA    ///< Waiting for data sample (at UI/2), then compare
+    };
+    
+    SampleState m_sample_state;    ///< Current sampling state
+    
+    // ========================================================================
+    // Sample Storage for BBPD
+    // ========================================================================
+    
+    bool m_edge_sample;            ///< Edge sample value (at UI boundary)
+    bool m_data_sample;            ///< Data sample value (at UI/2)
+    bool m_prev_data_sample;       ///< Previous UI's data sample for transition detection
+    
+    // ========================================================================
     // Member Variables
     // ========================================================================
     
     CdrParams m_params;           ///< CDR configuration parameters
     double m_phase;               ///< Current phase accumulation (s)
-    double m_prev_bit;            ///< Previous bit value for edge detection
     double m_integral;            ///< PI controller integral state
     double m_last_phase_error;    ///< Last phase error from BB-PD
+    double m_free_running_phase;  ///< Free-running phase accumulator for sampling trigger generation
 
     // ========================================================================
     // Private Methods

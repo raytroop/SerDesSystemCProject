@@ -1,6 +1,6 @@
 {
   "global": {
-    "Fs": 80e9,
+    "Fs": 2.56e12,
     "UI": 2.5e-11,
     "duration": 1e-6,
     "seed": 12345
