@@ -5,103 +5,102 @@
 [![CMake](https://img.shields.io/badge/CMake-3.15+-green.svg)](https://cmake.org/)
 [![Python](https://img.shields.io/badge/Python-3.8+-yellow.svg)](https://www.python.org/)
 
-🌐 **Languages**: [中文](README.md) | [English](README_EN.md)
+🌐 **Languages**: [English](README.md) | [中文](README_ZH.md)
 
-基于 **SystemC-AMS** 的高速串行链路（SerDes）行为级建模与仿真平台，支持从 TX → Channel → RX 的完整信号链仿真，包含 PRBS 生成、抖动注入、均衡、时钟恢复及 Python 眼图分析。
-
+A high-speed serial link (SerDes) behavioral modeling and simulation platform based on **SystemC-AMS**, supporting complete signal chain simulation from TX → Channel → RX, including PRBS generation, jitter injection, equalization, clock recovery, and Python eye diagram analysis.
 
 ---
 
-## 📋 功能特性
+## 📋 Features
 
-### TX 发送端
-- **FFE (前馈均衡)**：可配置抽头系数的 FIR 滤波器
-- **Mux (复用器)**：Lane 选择与通道复用
-- **Driver (驱动器)**：支持非线性饱和、带宽限制、差分输出
+### TX Transmitter
+- **FFE (Feed-Forward Equalization)**: FIR filter with configurable tap coefficients
+- **Mux (Multiplexer)**: Lane selection and channel multiplexing
+- **Driver**: Supports nonlinear saturation, bandwidth limiting, differential output
 
-### Channel 信道
-- **S 参数模型**：基于 Touchstone (.sNp) 文件
-- **向量拟合**：离线有理函数拟合，确保因果稳定性
-- **串扰与双向传输**：支持多端口耦合与反射
+### Channel
+- **S-Parameter Model**: Based on Touchstone (.sNp) files
+- **Vector Fitting**: Offline rational function fitting ensuring causal stability
+- **Crosstalk & Bidirectional Transmission**: Supports multi-port coupling and reflection
 
-### RX 接收端
-- **CTLE (连续时间线性均衡器)**：可配置零极点，支持噪声/偏移/饱和建模
-- **VGA (可变增益放大器)**：可编程增益，支持 AGC
-- **Sampler (采样器)**：相位可配置，支持阈值/迟滞
-- **DFE (判决反馈均衡)**：FIR 结构，支持 LMS/Sign-LMS 自适应
-- **CDR (时钟数据恢复)**：PI 控制环路，支持 Bang-Bang/线性相位检测
+### RX Receiver
+- **CTLE (Continuous-Time Linear Equalizer)**: Configurable zero-pole locations, supports noise/offset/saturation modeling
+- **VGA (Variable Gain Amplifier)**: Programmable gain with AGC support
+- **Sampler**: Phase-configurable, supports threshold/hysteresis
+- **DFE (Decision Feedback Equalization)**: FIR structure with LMS/Sign-LMS adaptation
+- **CDR (Clock and Data Recovery)**: PI control loop with Bang-Bang/linear phase detection
 
-### 时钟与波形
-- **Clock Generation**：理想时钟 / PLL / ADPLL 可选
-- **Wave Generation**：PRBS7/9/15/23/31 与自定义多项式，支持 RJ/SJ/DJ 抖动注入
+### Clock & Waveform
+- **Clock Generation**: Ideal clock / PLL / ADPLL options
+- **Wave Generation**: PRBS7/9/15/23/31 and custom polynomials with RJ/SJ/DJ jitter injection
 
 ### Python EyeAnalyzer
-- 眼图生成与度量（眼高、眼宽、开口面积）
-- 抖动分解（RJ/DJ/TJ）
-- PSD/PDF 分析与可视化
+- Eye diagram generation and metrics (eye height, eye width, opening area)
+- Jitter decomposition (RJ/DJ/TJ)
+- PSD/PDF analysis and visualization
 
 ---
 
-## 🏗️ 项目结构
+## 🏗️ Project Structure
 
 ```
 serdes/
-├── include/                    # 头文件
-│   ├── ams/                    # AMS 模块 (TDF域)
+├── include/                    # Header files
+│   ├── ams/                    # AMS modules (TDF domain)
 │   │   ├── tx_*.h              # TX: FFE, Mux, Driver
-│   │   ├── channel_sparam.h    # Channel S参数模型
+│   │   ├── channel_sparam.h    # Channel S-parameter model
 │   │   ├── rx_ctle.h           # RX: CTLE, VGA, Sampler
 │   │   ├── rx_dfe*.h           # DFE Summer, DAC
-│   │   ├── rx_cdr.h            # CDR (PI控制器)
-│   │   ├── wave_generation.h   # PRBS/波形生成
-│   │   └── clock_generation.h  # 时钟生成
-│   ├── common/                 # 公共类型、参数、常量
-│   └── de/                     # DE 域模块
-│       └── config_loader.h     # JSON/YAML 配置加载
-├── src/                        # 实现文件
-│   ├── ams/                    # AMS 模块实现
-│   └── de/                     # DE 模块实现
+│   │   ├── rx_cdr.h            # CDR (PI controller)
+│   │   ├── wave_generation.h   # PRBS/waveform generation
+│   │   └── clock_generation.h  # Clock generation
+│   ├── common/                 # Common types, parameters, constants
+│   └── de/                     # DE domain modules
+│       └── config_loader.h     # JSON/YAML config loader
+├── src/                        # Implementation files
+│   ├── ams/                    # AMS module implementations
+│   └── de/                     # DE module implementations
 ├── tb/                         # Testbenches
-│   ├── top/                    # 全链路仿真
-│   ├── rx/, tx/, periphery/    # 子系统测试
-├── tests/                      # 单元测试 (GoogleTest)
-│   └── unit/                   # 139+ 测试用例
-├── eye_analyzer/               # Python 眼图分析包
-│   ├── core.py                 # 核心分析引擎
-│   ├── jitter.py               # 抖动分解
-│   └── visualization.py        # 可视化
-├── scripts/                    # 脚本工具
-│   ├── run_*.sh                # 测试运行脚本
-│   ├── analyze_serdes_link.py  # 链路结果分析
-│   └── vector_fitting.py       # S参数向量拟合
-├── config/                     # 配置模板
-│   ├── default.json            # 默认配置
+│   ├── top/                    # Full-link simulation
+│   ├── rx/, tx/, periphery/    # Subsystem tests
+├── tests/                      # Unit tests (GoogleTest)
+│   └── unit/                   # 139+ test cases
+├── eye_analyzer/               # Python eye analysis package
+│   ├── core.py                 # Core analysis engine
+│   ├── jitter.py               # Jitter decomposition
+│   └── visualization.py        # Visualization
+├── scripts/                    # Script tools
+│   ├── run_*.sh                # Test run scripts
+│   ├── analyze_serdes_link.py  # Link result analysis
+│   └── vector_fitting.py       # S-parameter vector fitting
+├── config/                     # Configuration templates
+│   ├── default.json            # Default configuration
 │   └── default.yaml
-└── docs/modules/               # 模块文档
+└── docs/modules/               # Module documentation
 ```
 
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 环境要求
+### Requirements
 
-| 组件 | 版本 |
-|------|------|
-| C++ 标准 | C++14 |
+| Component | Version |
+|-----------|---------|
+| C++ Standard | C++14 |
 | SystemC | 2.3.4 |
 | SystemC-AMS | 2.3.4 |
 | CMake | ≥3.15 |
 | Python | ≥3.8 |
 
-依赖库：`numpy`, `scipy`, `matplotlib`
+Dependencies: `numpy`, `scipy`, `matplotlib`
 
-### 前提条件
+### Prerequisites
 
-#### 1. 安装 SystemC 和 SystemC-AMS
+#### 1. Install SystemC and SystemC-AMS
 
 ```bash
-# 下载并编译 SystemC 2.3.4
+# Download and compile SystemC 2.3.4
 wget https://www.accellera.org/images/downloads/standards/systemc/systemc-2.3.4.tar.gz
 tar xzf systemc-2.3.4.tar.gz
 cd systemc-2.3.4
@@ -110,7 +109,7 @@ cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/install
 make -j4
 make install
 
-# 下载并编译 SystemC-AMS 2.3.4
+# Download and compile SystemC-AMS 2.3.4
 cd ../..
 wget https://www.accellera.org/images/downloads/standards/systemc/systemc-ams-2.3.4.tar.gz
 tar xzf systemc-ams-2.3.4.tar.gz
@@ -121,80 +120,80 @@ make -j4
 make install
 ```
 
-#### 2. 设置环境变量（推荐）
+#### 2. Set Environment Variables (Recommended)
 
 ```bash
-# 添加到 ~/.bashrc 或 ~/.zshrc
+# Add to ~/.bashrc or ~/.zshrc
 export SYSTEMC_HOME=/path/to/systemc-2.3.4
 export SYSTEMC_AMS_HOME=/path/to/systemc-ams-2.3.4
 
-# 或者临时设置
+# Or temporarily
 export SYSTEMC_HOME=~/systemc-2.3.4
 export SYSTEMC_AMS_HOME=~/systemc-ams-2.3.4
 ```
 
-> **注意**: 项目支持以下方式指定 SystemC 路径（按优先级）：
-> 1. CMake 选项: `-DSYSTEMC_HOME=path -DSYSTEMC_AMS_HOME=path`
-> 2. 环境变量: `SYSTEMC_HOME`, `SYSTEMC_AMS_HOME`
-> 3. 自动查找标准安装路径
+> **Note**: The project supports the following methods for specifying SystemC paths (in order of priority):
+> 1. CMake options: `-DSYSTEMC_HOME=path -DSYSTEMC_AMS_HOME=path`
+> 2. Environment variables: `SYSTEMC_HOME`, `SYSTEMC_AMS_HOME`
+> 3. Auto-detection of standard installation paths
 
-### 构建项目
+### Build Project
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/yourusername/serdes.git
+# 1. Clone repository
+git clone https://github.com/LewisLiuLiuLiu/SerDesSystemCProject.git
 cd serdes
 
-# 2. 创建构建目录
+# 2. Create build directory
 mkdir build && cd build
 
-# 3. 配置（自动检测 SystemC 路径）
+# 3. Configure (auto-detect SystemC paths)
 cmake ..
 
-# 或手动指定路径（如果不使用环境变量）
+# Or manually specify paths (if not using environment variables)
 # cmake -DSYSTEMC_HOME=/path/to/systemc -DSYSTEMC_AMS_HOME=/path/to/systemc-ams ..
 
-# 4. 编译
+# 4. Compile
 make -j4
 
-# 5. 运行测试（可选）
+# 5. Run tests (optional)
 ctest
 ```
 
-### 运行全链路仿真
+### Run Full-Link Simulation
 
 ```bash
-# 使用脚本运行
+# Run using script
 ./scripts/run_serdes_link.sh basic yes
 
-# 或手动运行
+# Or run manually
 cd build
 ./tb/serdes_link_tb basic
 
-# Python 后处理分析
+# Python post-processing analysis
 cd ..
 python3 scripts/analyze_serdes_link.py basic
 python3 scripts/plot_dfe_taps.py build/serdes_link_basic_dfe_taps.csv
 ```
 
-### 运行单元测试
+### Run Unit Tests
 
 ```bash
-# 运行所有测试
+# Run all tests
 ./scripts/run_unit_tests.sh
 
-# 或运行特定模块测试
+# Or run specific module tests
 ./scripts/run_cdr_tests.sh
 ./scripts/run_adaption_tests.sh
 ```
 
 ---
 
-## 📊 使用示例
+## 📊 Usage Examples
 
-### 配置仿真参数
+### Configure Simulation Parameters
 
-编辑 `config/default.json`：
+Edit `config/default.json`:
 
 ```json
 {
@@ -230,13 +229,13 @@ python3 scripts/plot_dfe_taps.py build/serdes_link_basic_dfe_taps.csv
 }
 ```
 
-### Python 眼图分析
+### Python Eye Diagram Analysis
 
 ```python
 from eye_analyzer import EyeAnalyzer
 import numpy as np
 
-# 初始化分析器
+# Initialize analyzer
 analyzer = EyeAnalyzer(
     ui=2.5e-11,      # 10Gbps
     ui_bins=128,
@@ -244,11 +243,11 @@ analyzer = EyeAnalyzer(
     jitter_method='dual-dirac'
 )
 
-# 加载波形并分析
+# Load waveform and analyze
 time, voltage = analyzer.load_waveform('waveform.csv')
 metrics = analyzer.analyze(time, voltage)
 
-# 输出结果
+# Output results
 print(f"Eye Height: {metrics['eye_height']:.3f} V")
 print(f"Eye Width: {metrics['eye_width']:.3f} UI")
 print(f"TJ @ 1e-12: {metrics['tj_at_ber']:.3e} s")
@@ -256,18 +255,18 @@ print(f"TJ @ 1e-12: {metrics['tj_at_ber']:.3e} s")
 
 ---
 
-## 📚 文档索引
+## 📚 Documentation Index
 
-### AMS 模块文档
+### AMS Module Documentation
 
-| 模块 | 文档 |
-|------|------|
-| **TX** | [TX 系统](docs/modules/tx.md) |
+| Module | Document |
+|--------|----------|
+| **TX** | [TX System](docs/modules/tx.md) |
 | └ FFE | [FFE](docs/modules/ffe.md) |
 | └ Mux | [Mux](docs/modules/mux.md) |
 | └ Driver | [Driver](docs/modules/driver.md) |
-| **Channel** | [Channel S参数](docs/modules/channel.md) |
-| **RX** | [RX 系统](docs/modules/rx.md) |
+| **Channel** | [Channel S-Parameter](docs/modules/channel.md) |
+| **RX** | [RX System](docs/modules/rx.md) |
 | └ CTLE | [CTLE](docs/modules/ctle.md) |
 | └ VGA | [VGA](docs/modules/vga.md) |
 | └ Sampler | [Sampler](docs/modules/sampler.md) |
@@ -276,44 +275,44 @@ print(f"TJ @ 1e-12: {metrics['tj_at_ber']:.3e} s")
 | **Periphery** | WaveGen / [ClockGen](docs/modules/clkGen.md) |
 | **Adaption** | [Adaption](docs/modules/adaption.md) |
 
-### Python 组件
+### Python Components
 
-| 组件 | 文档 |
-|------|------|
+| Component | Document |
+|-----------|----------|
 | EyeAnalyzer | [EyeAnalyzer](docs/modules/EyeAnalyzer.md) |
 
 ---
 
-## 🧪 测试覆盖
+## 🧪 Test Coverage
 
-项目包含 **139+** 个单元测试，覆盖：
+The project includes **139+** unit tests covering:
 
-| 模块 | 测试数 | 测试内容 |
-|------|--------|----------|
-| Adaption | 18 | AGC、DFE LMS、CDR PI、阈值自适应 |
-| CDR | 20 | PI控制器、PAI、边沿检测、模式识别 |
-| ClockGen | 18 | 理想/PLL/ADPLL时钟、频率/相位测试 |
-| FFE | 10 | 抽头系数、卷积、预/去加重 |
-| Sampler | 16 | 判决、迟滞、噪声、偏移 |
-| TX Driver | 8 | DC增益、饱和、带宽、PSRR |
-| WaveGen | 21 | PRBS模式、抖动、脉冲、稳定性 |
-| DFE | 3 | 抽头反馈、历史更新 |
-| Channel | 3 | S参数、VF/IR一致性 |
-| Top Level | 13 | TX/RX集成测试 |
+| Module | Test Count | Test Content |
+|--------|------------|--------------|
+| Adaption | 18 | AGC, DFE LMS, CDR PI, threshold adaptation |
+| CDR | 20 | PI controller, PAI, edge detection, pattern recognition |
+| ClockGen | 18 | Ideal/PLL/ADPLL clock, frequency/phase tests |
+| FFE | 10 | Tap coefficients, convolution, pre/de-emphasis |
+| Sampler | 16 | Decision, hysteresis, noise, offset |
+| TX Driver | 8 | DC gain, saturation, bandwidth, PSRR |
+| WaveGen | 21 | PRBS patterns, jitter, pulses, stability |
+| DFE | 3 | Tap feedback, history update |
+| Channel | 3 | S-parameter, VF/IR consistency |
+| Top Level | 13 | TX/RX integration tests |
 
 ---
 
-## 🔧 技术细节
+## 🔧 Technical Details
 
-### 建模域
+### Modeling Domains
 
-- **TDF (Timed Data Flow)**：主要建模域，用于模拟/混合信号模块
-- **DE (Discrete Event)**：控制/算法模块，与 AMS 域通过 `sca_de::sca_in/out` 桥接
+- **TDF (Timed Data Flow)**: Primary modeling domain for analog/mixed-signal modules
+- **DE (Discrete Event)**: Control/algorithm modules, bridged to AMS via `sca_de::sca_in/out`
 
-### 关键设计模式
+### Key Design Patterns
 
 ```cpp
-// TDF 模块标准结构
+// Standard TDF module structure
 class RxCtleTdf : public sca_tdf::sca_module {
 public:
     sca_tdf::sca_in<double> in_p, in_n;
@@ -325,9 +324,9 @@ public:
 };
 ```
 
-### 传递函数实现
+### Transfer Function Implementation
 
-CTLE/VGA 使用零极点配置，通过 `sca_tdf::sca_ltf_nd` 实现：
+CTLE/VGA uses zero-pole configuration, implemented via `sca_tdf::sca_ltf_nd`:
 
 ```cpp
 // H(s) = dc_gain * prod(1 + s/wz_i) / prod(1 + s/wp_j)
@@ -338,18 +337,18 @@ double output = m_ltf(m_num, m_den, input);
 
 ---
 
-## 📄 许可证
+## 📄 License
 
 [LICENSE](LICENSE)
 
 ---
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
 
 ---
 
-## 📧 联系
+## 📧 Contact
 
-如有问题或建议，请通过 GitHub Issues 联系。
+For questions or suggestions, please use GitHub Issues.

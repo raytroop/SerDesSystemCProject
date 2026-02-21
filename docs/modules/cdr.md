@@ -1,159 +1,159 @@
-# CDR 模块技术文档
+# CDR Module Technical Documentation
 
-🌐 **Languages**: [中文](cdr.md) | [English](../en/modules/cdr.md)
+🌐 **Languages**: [中文](../../modules/cdr.md) | [English](cdr.md)
 
-**级别**：AMS 子模块（RX）  
-**类名**：`RxCdrTdf`  
-**当前版本**：v0.2 (2026-01-20)  
-**状态**：生产就绪
-
----
-
-## 1. 概述
-
-时钟数据恢复（CDR，Clock and Data Recovery）是SerDes接收端的核心模块，主要功能是从接收到的数据流中恢复时钟信息，并生成最佳采样相位，确保采样器在眼图最佳位置采样数据，从而最大化系统的误码容限。
-
-### 1.1 设计原理
-
-CDR的核心设计思想是利用数据跃变边沿携带的时钟信息，通过闭环反馈机制动态调整采样相位：
-
-- **相位检测**：检测数据跃变边沿与当前采样时钟的相位关系，提取相位误差信息
-- **环路滤波**：通过比例-积分（PI）控制器处理相位误差，抑制高频抖动，稳定环路
-- **相位调整**：将滤波后的相位校正信号输出给采样器，实现动态相位跟踪
-
-本模块采用经典的Bang-Bang相位检测器（BBPD）+ PI数字环路滤波器架构：
-
-```
-数据输入 → 边沿检测 → Bang-Bang相位检测器 → PI控制器 → 相位输出
-           ↑                                              ↓
-           └──────────────────相位反馈──────────────────────┘
-```
-
-相位检测器输出离散的早/晚（Early/Late）信号，经过PI控制器积分平均后转换为连续的相位调整量，输出给采样器的`phase_offset`端口。
-
-### 1.2 核心特性
-
-- **Bang-Bang相位检测**：基于数据跃变边沿的二值相位误差检测
-- **数字PI环路滤波器**：可配置的比例增益（Kp）和积分增益（Ki）
-- **相位范围限制**：可配置的相位调整范围和分辨率
-- **与采样器协同**：输出相位调整信号（单位：秒），直接驱动采样器相位偏移
-- **行为级模型**：适用于系统级仿真和算法验证
-
-### 1.3 版本历史
-
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.1 | 2026-01-07 | 初始版本，Bang-Bang PD + PI控制器 |
-| v0.2 | 2026-01-20 | 修复所有已知问题，代码与文档同步，达到生产就绪状态 |
+**Level**: AMS Submodule (RX)  
+**Class Name**: `RxCdrTdf`  
+**Current Version**: v0.2 (2026-01-20)  
+**Status**: Production Ready
 
 ---
 
-## 2. 模块接口
+## 1. Overview
 
-### 2.1 端口定义（TDF域）
+Clock and Data Recovery (CDR) is the core module of the SerDes receiver. Its main function is to recover clock information from the received data stream and generate the optimal sampling phase, ensuring that the sampler samples data at the optimal position of the eye diagram, thereby maximizing the system's error margin.
 
-| 端口名 | 方向 | 类型 | 说明 |
-|-------|------|------|------|
-| `in` | 输入 | double | 接收数据输入（模拟信号，来自DFE或采样器） |
-| `phase_out` | 输出 | double | 相位调整输出（单位：秒s） |
+### 1.1 Design Principles
 
-> **端口说明**：
-> - `in`端口接收连续的模拟信号，CDR从数据跃变中提取时钟信息
-> - `phase_out`端口输出相位偏移量（单位：秒），连接到采样器的`phase_offset`输入端口
-> - 正值表示延迟采样（时钟晚），负值表示提前采样（时钟早）
+The core design concept of CDR utilizes the clock information carried by data transition edges and dynamically adjusts the sampling phase through a closed-loop feedback mechanism:
 
-### 2.2 参数配置
+- **Phase Detection**: Detects the phase relationship between data transition edges and the current sampling clock, extracting phase error information
+- **Loop Filtering**: Processes phase errors through a Proportional-Integral (PI) controller to suppress high-frequency jitter and stabilize the loop
+- **Phase Adjustment**: Outputs the filtered phase correction signal to the sampler to achieve dynamic phase tracking
 
-CDR模块的参数通过`CdrParams`结构体配置，包含两个子结构：PI控制器参数和相位插值器参数。
+This module adopts the classic Bang-Bang Phase Detector (BBPD) + PI Digital Loop Filter architecture:
 
-#### 2.2.1 PI控制器参数（CdrPiParams）
-
-| 参数名 | 类型 | 默认值 | 说明 |
-|-------|------|--------|------|
-| `kp` | double | 0.01 | 比例增益（Proportional Gain） |
-| `ki` | double | 1e-4 | 积分增益（Integral Gain） |
-
-**工作原理**：
-
-PI控制器是二阶数字环路滤波器，标准的离散时间公式为：
 ```
-积分状态: I[n] = I[n-1] + Ki × e[n]
-PI输出:    φ[n] = Kp × e[n] + I[n]
+Data Input → Edge Detection → Bang-Bang Phase Detector → PI Controller → Phase Output
+              ↑                                               ↓
+              └──────────────────Phase Feedback──────────────────────┘
 ```
-其中：
-- `φ[n]`：第n个采样时刻的输出相位
-- `e[n]`：相位误差（Bang-Bang PD输出±1）
-- `I[n]`：积分状态（历史误差累积）
-- `Kp`：比例增益，控制瞬态响应速度
-- `Ki`：积分增益，消除稳态相位误差
 
-**参数调节指南**：
+The phase detector outputs discrete Early/Late signals, which are integrated and averaged by the PI controller and converted into continuous phase adjustment values, output to the sampler's `phase_offset` port.
 
-- **Kp（比例增益）**：
-  - 增大Kp加快相位锁定速度，但过大会导致振荡
-  - 典型范围：0.001 ~ 0.1
-  - 默认值0.01适用于10Gbps系统
+### 1.2 Core Features
 
-- **Ki（积分增益）**：
-  - 增大Ki提升跟踪精度，但过大会降低环路稳定性
-  - 典型关系：Ki ≈ Kp/10 ~ Kp/100
-  - 默认值1e-4与Kp=0.01匹配
+- **Bang-Bang Phase Detection**: Binary phase error detection based on data transition edges
+- **Digital PI Loop Filter**: Configurable proportional gain (Kp) and integral gain (Ki)
+- **Phase Range Limiting**: Configurable phase adjustment range and resolution
+- **Sampler Coordination**: Outputs phase adjustment signal (unit: seconds) to directly drive the sampler's phase offset
+- **Behavioral Model**: Suitable for system-level simulation and algorithm verification
 
-**环路特性**：
+### 1.3 Version History
 
-二阶PI环路的自然频率ωn和阻尼系数ζ由Kp和Ki决定（基于线性化分析）：
+| Version | Date | Major Changes |
+|---------|------|---------------|
+| v0.1 | 2026-01-07 | Initial version, Bang-Bang PD + PI controller |
+| v0.2 | 2026-01-20 | Fixed all known issues, code and documentation synchronized, production ready |
+
+---
+
+## 2. Module Interface
+
+### 2.1 Port Definitions (TDF Domain)
+
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `in` | Input | double | Received data input (analog signal, from DFE or sampler) |
+| `phase_out` | Output | double | Phase adjustment output (unit: seconds s) |
+
+> **Port Notes**:
+> - The `in` port receives continuous analog signals; CDR extracts clock information from data transitions
+> - The `phase_out` port outputs phase offset (unit: seconds), connected to the sampler's `phase_offset` input port
+> - Positive values indicate delayed sampling (late clock), negative values indicate early sampling (early clock)
+
+### 2.2 Parameter Configuration
+
+The CDR module's parameters are configured through the `CdrParams` structure, which contains two sub-structures: PI controller parameters and phase interpolator parameters.
+
+#### 2.2.1 PI Controller Parameters (CdrPiParams)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `kp` | double | 0.01 | Proportional Gain |
+| `ki` | double | 1e-4 | Integral Gain |
+
+**Working Principle**:
+
+The PI controller is a second-order digital loop filter with the standard discrete-time formula:
+```
+Integral State: I[n] = I[n-1] + Ki × e[n]
+PI Output:      φ[n] = Kp × e[n] + I[n]
+```
+Where:
+- `φ[n]`: Output phase at the nth sampling moment
+- `e[n]`: Phase error (Bang-Bang PD outputs ±1)
+- `I[n]`: Integral state (accumulation of historical errors)
+- `Kp`: Proportional gain, controls transient response speed
+- `Ki`: Integral gain, eliminates steady-state phase error
+
+**Parameter Tuning Guide**:
+
+- **Kp (Proportional Gain)**:
+  - Increasing Kp speeds up phase lock, but too large values cause oscillation
+  - Typical range: 0.001 ~ 0.1
+  - Default value 0.01 is suitable for 10 Gbps systems
+
+- **Ki (Integral Gain)**:
+  - Increasing Ki improves tracking accuracy, but too large values reduce loop stability
+  - Typical relationship: Ki ≈ Kp/10 ~ Kp/100
+  - Default value 1e-4 matches Kp=0.01
+
+**Loop Characteristics**:
+
+The natural frequency ωn and damping coefficient ζ of a second-order PI loop are determined by Kp and Ki (based on linearized analysis):
 ```
 ωn = √(Ki × Fs)
 ζ = Kp / (2 × ωn)
 ```
-其中Fs为采样率。推荐ζ在0.7~1.0之间以获得最佳阶跃响应。
+Where Fs is the sampling rate. It is recommended to keep ζ between 0.7~1.0 for optimal step response.
 
-> ⚠️ **重要提示**：上述公式基于**线性相位检测器**的假设，通过连续时间域的线性化推导得出。但本模块采用的是**Bang-Bang相位检测器**（输出离散的±1），其非线性特性导致实际环路行为与线性理论有偏差：
-> - Bang-Bang PD缺乏线性区间，无法提供连续的相位误差信息
-> - 实际的环路带宽和阻尼系数会偏离理论计算值
-> - 离散二值输出会引入额外的相位抖动（参见7.2节）
+> ⚠️ **Important Note**: The above formulas are derived based on the assumption of a **linear phase detector**, through continuous-time domain linearization. However, this module uses a **Bang-Bang Phase Detector** (outputs discrete ±1), and its nonlinear characteristics cause actual loop behavior to deviate from linear theory:
+> - Bang-Bang PD lacks a linear region and cannot provide continuous phase error information
+> - Actual loop bandwidth and damping coefficient will deviate from theoretical calculations
+> - Discrete binary output introduces additional phase jitter (see Section 7.2)
 > 
-> 因此，这些公式仅作为**初步设计的近似估算**，实际参数需通过仿真验证和调优。
+> Therefore, these formulas are only for **preliminary design approximation**, and actual parameters require simulation verification and tuning.
 
-#### 2.2.2 相位插值器参数（CdrPaiParams）
+#### 2.2.2 Phase Interpolator Parameters (CdrPaiParams)
 
-| 参数名 | 类型 | 默认值 | 说明 |
-|-------|------|--------|------|
-| `resolution` | double | 1e-12 | 相位调整分辨率（单位：秒s） |
-| `range` | double | 5e-11 | 相位调整范围（单位：秒s） |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `resolution` | double | 1e-12 | Phase adjustment resolution (unit: seconds s) |
+| `range` | double | 5e-11 | Phase adjustment range (unit: seconds s) |
 
-**工作原理**：
+**Working Principle**:
 
-相位插值器（Phase Interpolator）将数字环路滤波器输出的相位控制字转换为实际的时间偏移。
+The Phase Interpolator (PI) converts the phase control word output by the digital loop filter into actual time offset.
 
-- **分辨率（resolution）**：
-  - 定义相位调整的最小步进
-  - 默认1ps（1e-12秒）对应高精度硬件实现
-  - 物理意义：硬件相位插值器的DNL（微分非线性度）
-  - 更粗的分辨率（如5ps）可模拟低成本实现
+- **Resolution**:
+  - Defines the minimum step of phase adjustment
+  - Default 1 ps (1e-12 seconds) corresponds to high-precision hardware implementation
+  - Physical meaning: DNL (Differential Nonlinearity) of the hardware phase interpolator
+  - Coarser resolution (e.g., 5 ps) can simulate low-cost implementations
 
-- **范围（range）**：
-  - 定义相位调整的最大偏移量（±range）
-  - 默认50ps（±25ps）足以覆盖典型频偏和抖动
-  - 物理意义：相位插值器的线性范围
-  - 应大于预期的最大频率偏移 × UI
+- **Range**:
+  - Defines the maximum offset of phase adjustment (±range)
+  - Default 50 ps (±25 ps) is sufficient to cover typical frequency offset and jitter
+  - Physical meaning: Linear range of the phase interpolator
+  - Should be larger than the expected maximum frequency offset × UI
 
-**实际应用示例**：
+**Practical Application Example**:
 
-对于10Gbps系统（UI = 100ps）：
-- 频偏±500ppm → 最大相位偏移 = ±50ps → range设置≥50ps
-- 硬件相位插值器6-bit → 分辨率 = UI/64 ≈ 1.5ps
+For a 10 Gbps system (UI = 100 ps):
+- Frequency offset ±500 ppm → Maximum phase offset = ±50 ps → range setting ≥ 50 ps
+- Hardware phase interpolator 6-bit → Resolution = UI/64 ≈ 1.5 ps
 
-#### 2.2.3 完整参数结构
+#### 2.2.3 Complete Parameter Structure
 
 ```cpp
 struct CdrParams {
-    CdrPiParams pi;      // PI控制器参数
-    CdrPaiParams pai;    // 相位插值器参数
+    CdrPiParams pi;      // PI controller parameters
+    CdrPaiParams pai;    // Phase interpolator parameters
 };
 ```
 
-**JSON配置示例**：
+**JSON Configuration Example**:
 
 ```json
 {
@@ -170,100 +170,100 @@ struct CdrParams {
 }
 ```
 
-### 2.3 端口连接示例
+### 2.3 Port Connection Example
 
-CDR模块通常连接在采样器或DFE之后，输出相位信号反馈给采样器：
+The CDR module is typically connected after the sampler or DFE, outputting phase signals that are fed back to the sampler:
 
 ```cpp
-// 实例化CDR模块
+// Instantiate CDR module
 CdrParams cdr_params;
 cdr_params.pi.kp = 0.01;
 cdr_params.pi.ki = 1e-4;
 RxCdrTdf cdr("cdr", cdr_params);
 
-// 连接信号
-cdr.in(data_signal);              // 来自DFE或采样器
-cdr.phase_out(phase_adjust_sig);  // 输出到采样器的phase_offset端口
+// Connect signals
+cdr.in(data_signal);              // From DFE or sampler
+cdr.phase_out(phase_adjust_sig);  // Output to sampler's phase_offset port
 
-// 采样器连接（闭环）
-sampler.phase_offset(phase_adjust_sig);  // 接收CDR相位调整
+// Sampler connection (closed loop)
+sampler.phase_offset(phase_adjust_sig);  // Receive CDR phase adjustment
 sampler.data_out(sampled_data);
-cdr.in(sampled_data);  // 或连接到均衡后的模拟信号
+cdr.in(sampled_data);  // Or connect to equalized analog signal
 ```
 
 ---
 
-## 3. 核心实现机制
+## 3. Core Implementation Mechanisms
 
-### 3.1 信号处理流程
+### 3.1 Signal Processing Flow
 
-CDR模块的`processing()`方法实现以下处理步骤：
+The CDR module's `processing()` method implements the following processing steps:
 
 ```
-步骤1: 读取输入数据 → 步骤2: 边沿检测 → 步骤3: Bang-Bang相位检测 → 
-步骤4: PI控制器更新 → 步骤5: 相位范围限制 → 步骤6: 输出相位调整
+Step 1: Read Input Data → Step 2: Edge Detection → Step 3: Bang-Bang Phase Detection → 
+Step 4: PI Controller Update → Step 5: Phase Range Limiting → Step 6: Output Phase Adjustment
 ```
 
-**步骤1 - 读取输入数据**：从`in`端口读取当前采样点的数据信号。
+**Step 1 - Read Input Data**: Read the current data signal from the `in` port.
 
-**步骤2 - 边沿检测**：通过比较当前比特与前一比特，检测数据跃变：
+**Step 2 - Edge Detection**: Detect data transitions by comparing the current bit with the previous bit:
 ```cpp
 double current_bit = in.read();
 if (std::abs(current_bit - m_prev_bit) > threshold) {
-    // 检测到边沿
+    // Edge detected
 }
 ```
 
-**步骤3 - Bang-Bang相位检测**：在检测到边沿时，判断相位早晚：
-- 如果 `current_bit > m_prev_bit`（上升沿）→ 相位误差 = +1（时钟晚）
-- 如果 `current_bit < m_prev_bit`（下降沿）→ 相位误差 = -1（时钟早）
-- 无边沿时相位误差 = 0
+**Step 3 - Bang-Bang Phase Detection**: When an edge is detected, determine phase early/late:
+- If `current_bit > m_prev_bit` (rising edge) → Phase error = +1 (clock late)
+- If `current_bit < m_prev_bit` (falling edge) → Phase error = -1 (clock early)
+- Phase error = 0 when no edge
 
-> ⚠️ **简化实现的错误**：
-> - 上述逻辑是**错误的简化**，不符合真实的Bang-Bang相位检测器工作原理
-> - 真实的BBPD需要使用**数据采样器和边沿采样器的异或结果**来判断相位早晚，而不是简单地根据边沿极性判断
-> - 当前实现仅用于演示CDR环路结构，实际应用需使用完整的BBPD架构（见3.2节）
+> ⚠️ **Simplified Implementation Error**:
+> - The above logic is a **wrong simplification** and does not conform to the real Bang-Bang Phase Detector working principle
+> - Real BBPD requires **XOR result of data sampler and edge sampler** to determine early/late, not simply based on edge polarity
+> - Current implementation is for demonstration purposes only; actual applications require complete BBPD architecture (see Section 3.2)
 
-**步骤4 - PI控制器更新**：根据相位误差更新相位累积量：
+**Step 4 - PI Controller Update**: Update the phase accumulation based on phase error:
 ```cpp
-m_integral += ki * phase_error;  // 积分状态更新
-double phase_output = kp * phase_error + m_integral;  // PI输出
+m_integral += ki * phase_error;  // Integral state update
+double phase_output = kp * phase_error + m_integral;  // PI output
 ```
 
-**步骤5 - 相位范围限制**：将相位输出限制在±range范围内：
+**Step 5 - Phase Range Limiting**: Limit phase output within ±range:
 ```cpp
 if (phase_output > range) phase_output = range;
 if (phase_output < -range) phase_output = -range;
 ```
 
-**步骤6 - 相位量化**：将相位输出量化到配置的分辨率：
+**Step 6 - Phase Quantization**: Quantize phase output to the configured resolution:
 ```cpp
 double quantized_phase = std::round(phase_output / resolution) * resolution;
 ```
 
-**步骤7 - 输出相位调整**：将相位调整量写入`phase_out`端口，传递给采样器。
+**Step 7 - Output Phase Adjustment**: Write the phase adjustment to the `phase_out` port and pass to the sampler.
 
-### 3.2 Bang-Bang相位检测器原理
+### 3.2 Bang-Bang Phase Detector Principles
 
-Bang-Bang相位检测器（BBPD）是一种二值（Binary）相位检测器，通过数据跃变边沿判断采样相位的早晚：
+The Bang-Bang Phase Detector (BBPD) is a binary phase detector that determines whether the sampling phase is early or late based on data transition edges:
 
-**理想工作原理**：
+**Ideal Working Principle**:
 
-在数据跃变边沿处，采样得到的数据值反映了采样时刻相对于数据中心的相位关系：
-- 如果采样时刻早于数据中心，边沿采样会更接近旧数据
-- 如果采样时刻晚于数据中心，边沿采样会更接近新数据
+At data transition edges, the sampled data value reflects the phase relationship between the sampling moment and the data center:
+- If sampling moment is earlier than data center, edge sampling is closer to old data
+- If sampling moment is later than data center, edge sampling is closer to new data
 
-**当前实现**：
+**Current Implementation**:
 
-当前版本采用边沿极性检测：
+The current version uses edge polarity detection:
 ```
-上升沿（0→1）：认为时钟晚（需要提前） → phase_error = +1
-下降沿（1→0）：认为时钟早（需要延后） → phase_error = -1
+Rising edge (0→1): Clock is considered late (needs to be early) → phase_error = +1
+Falling edge (1→0): Clock is considered early (needs to be late) → phase_error = -1
 ```
 
-> **注意**：这是边沿极性检测的简化实现。完整的BBPD需要使用数据采样器（Data Sampler）和边沿采样器（Edge Sampler）进行异或比较。
+> **Note**: This is a simplified implementation of edge polarity detection. Complete BBPD requires XOR comparison using the Data Sampler and Edge Sampler.
 
-**完整BBPD架构**（未来版本）：
+**Complete BBPD Architecture** (future version):
 
 ```
          ┌──────────────┐
@@ -273,287 +273,287 @@ data ───→│ Data Sampler │──→ D[n]
   │      ┌──────────────┐    ┌─────┐
   └─────→│ Edge Sampler │──→ │ XOR │──→ phase_error
          └──────────────┘    └─────┘
-              (早采样)            ↑
+              (Early Sampling)        ↑
                                   D[n-1]
 ```
 
-相位误差 = D[n-1] ⊕ Edge[n]：
-- 0 ⊕ 0 = 0（无误差或大误差）
-- 0 ⊕ 1 = 1（时钟晚）
-- 1 ⊕ 0 = 1（时钟早）
-- 1 ⊕ 1 = 0（无误差或大误差）
+Phase error = D[n-1] ⊕ Edge[n]:
+- 0 ⊕ 0 = 0 (no error or large error)
+- 0 ⊕ 1 = 1 (clock late)
+- 1 ⊕ 0 = 1 (clock early)
+- 1 ⊕ 1 = 0 (no error or large error)
 
-### 3.3 PI控制器设计
+### 3.3 PI Controller Design
 
-PI（比例-积分）控制器是经典的二阶数字环路滤波器，兼顾快速响应和稳态精度。
+The PI (Proportional-Integral) controller is a classic second-order digital loop filter that balances fast response and steady-state accuracy.
 
-**离散时间传递函数**：
+**Discrete-Time Transfer Function**:
 
 ```
 H(z) = Kp + Ki/(1 - z⁻¹)
 ```
 
-**时域递推公式**：
+**Time-Domain Recursive Formula**:
 
 ```cpp
-// 积分状态更新
+// Integral state update
 I[n] = I[n-1] + Ki × e[n]
 
-// PI输出
+// PI output
 φ[n] = Kp × e[n] + I[n]
 ```
 
-其中：
-- `φ[n]`：第n个采样时刻的输出相位
-- `e[n]`：相位误差（Bang-Bang PD输出±1）
-- `I[n]`：积分状态（历史误差累积）
-- `Kp`：比例增益，控制瞬态响应速度
-- `Ki`：积分增益，消除稳态相位误差
+Where:
+- `φ[n]`: Output phase at the nth sampling moment
+- `e[n]`: Phase error (Bang-Bang PD outputs ±1)
+- `I[n]`: Integral state (accumulation of historical errors)
+- `Kp`: Proportional gain, controls transient response speed
+- `Ki`: Integral gain, eliminates steady-state phase error
 
-**C++实现**：
+**C++ Implementation**:
 
 ```cpp
-// 积分项：累积历史误差
+// Integral term: accumulate historical errors
 m_integral += ki * phase_error;
 
-// 比例项：瞬时响应
+// Proportional term: instantaneous response
 double prop_term = kp * phase_error;
 
-// 总输出
+// Total output
 double phase_out = prop_term + m_integral;
 ```
 
-**环路特性分析**：
+**Loop Characteristics Analysis**:
 
-对于二阶PI环路，开环传递函数为：
+For a second-order PI loop, the open-loop transfer function is:
 ```
 G(s) = (Kp × s + Ki) / s²
 ```
 
-闭环特征方程决定环路稳定性和阶跃响应：
-- **自然频率**：ωn = √(Ki × Fs)，决定响应速度
-- **阻尼系数**：ζ = Kp / (2 × ωn)，决定过冲和振荡
-- **环路带宽**：BW ≈ ωn，决定抖动跟踪能力
+Closed-loop characteristic equation determines loop stability and step response:
+- **Natural Frequency**: ωn = √(Ki × Fs), determines response speed
+- **Damping Coefficient**: ζ = Kp / (2 × ωn), determines overshoot and oscillation
+- **Loop Bandwidth**: BW ≈ ωn, determines jitter tracking capability
 
-推荐设计准则：
-- ζ ≈ 0.707（临界阻尼）获得最快无过冲响应
-- BW ≈ 数据速率/1000 ~ 数据速率/10000（如10Gbps → 1~10MHz）
+Recommended design guidelines:
+- ζ ≈ 0.707 (critical damping) for fastest overshoot-free response
+- BW ≈ Data rate/1000 ~ Data rate/10000 (e.g., 10 Gbps → 1~10 MHz)
 
-**PI控制器的Z域分析**：
+**PI Controller Z-Domain Analysis**:
 
-在离散时间系统中，PI控制器的Z域传递函数为：
+In discrete-time systems, the PI controller's Z-domain transfer function is:
 ```
 H(z) = Kp + Ki × T / (1 - z⁻¹)
 ```
-其中T为采样周期（对于baud-rate CDR，T = UI）。将其转换为差分方程：
+Where T is the sampling period (for baud-rate CDR, T = UI). Converting to difference equation:
 ```
 y[n] = y[n-1] + Kp × (e[n] - e[n-1]) + Ki × T × e[n]
 ```
-这里可以看出：
-- **比例项**：Kp × (e[n] - e[n-1])，仅响应误差的变化量
-- **积分项**：Ki × T × e[n]，累积所有历史误差
+Here it can be seen:
+- **Proportional Term**: Kp × (e[n] - e[n-1]), only responds to error changes
+- **Integral Term**: Ki × T × e[n], accumulates all historical errors
 
-**相位更新速率与数据速率的关系**：
+**Phase Update Rate and Data Rate Relationship**:
 
-本CDR设计采用baud-rate架构，即每个数据比特触发一次相位检测和更新：
-- 数据速率 = 10 Gbps → 相位更新速率 = 10 GHz
-- UI = 100 ps → 相位更新周期 = 100 ps
-- 环路延迟 = 1 UI（相位误差检测 → PI计算 → 相位应用）
+This CDR design adopts a baud-rate architecture, where each data bit triggers one phase detection and update:
+- Data rate = 10 Gbps → Phase update rate = 10 GHz
+- UI = 100 ps → Phase update period = 100 ps
+- Loop delay = 1 UI (phase error detection → PI calculation → phase application)
 
-更高的更新速率带来更快的锁定速度和更好的抖动跟踪能力，但也增加了功耗和设计复杂度。某些CDR使用1/2或1/4 baud-rate以降低功耗，但会牺牲跟踪带宽。
+Higher update rates bring faster lock speeds and better jitter tracking, but also increase power consumption and design complexity. Some CDRs use 1/2 or 1/4 baud-rate to reduce power, but sacrifice tracking bandwidth.
 
-**边沿检测阈值选择**：
+**Edge Detection Threshold Selection**:
 
-当前实现使用固定阈值0.5来检测数据跃变，这在以下情况下会失效：
-- 信号摆幅不为单位归一化（如CTLE输出为±0.3V）
-- 存在直流偏移（如VGA输出共模电压漂移）
-- 信号衰减严重（信道损耗导致边沿幅度不足）
+The current implementation uses a fixed threshold of 0.5 to detect data transitions, which fails in the following cases:
+- Signal swing is not unit-normalized (e.g., CTLE output is ±0.3V)
+- DC offset exists (e.g., VGA output common-mode voltage drift)
+- Signal attenuation is severe (channel loss causes insufficient edge amplitude)
 
-**改进方案**：
+**Improvement Scheme**:
 ```cpp
-// 自适应阈值检测
-double threshold = 0.5 * (max_signal - min_signal);  // 相对于信号摆幅
+// Adaptive threshold detection
+double threshold = 0.5 * (max_signal - min_signal);  // Relative to signal swing
 double edge_detect = std::abs(current_bit - m_prev_bit) > threshold;
 ```
-或者使用峰值检测器动态跟踪信号摆幅，将阈值设置为摆幅的10%~20%。
+Or use a peak detector to dynamically track signal swing, setting the threshold to 10%~20% of the swing.
 
 ---
 
-## 4. 测试平台架构
+## 4. Testbench Architecture
 
-### 4.1 测试平台设计思想
+### 4.1 Testbench Design Philosophy
 
-CDR测试平台采用闭环集成设计，需要与采样器模块紧密协同才能验证相位跟踪能力。核心设计理念：
+The CDR testbench adopts a closed-loop integrated design and requires close coordination with the sampler module to verify phase tracking capability. Core design principles:
 
-1. **闭环架构**：CDR和Sampler构成相位反馈闭环，相位调整结果直接影响采样质量
-2. **场景驱动**：覆盖频率捕获、相位跟踪、抖动容限、锁定检测等关键测试场景
-3. **性能评估**：支持BER测试、锁定时间测量、相位误差统计等性能指标
-4. **可配置性**：支持多种参数配置和场景切换，便于性能对比和优化
+1. **Closed-Loop Architecture**: CDR and Sampler form a phase feedback closed loop; phase adjustment results directly affect sampling quality
+2. **Scenario-Driven**: Covers key test scenarios including frequency acquisition, phase tracking, jitter tolerance, and lock detection
+3. **Performance Evaluation**: Supports BER testing, lock time measurement, phase error statistics, and other performance metrics
+4. **Configurability**: Supports multiple parameter configurations and scenario switching for easy performance comparison and optimization
 
-**与其他模块测试平台的区别**：
+**Differences from Other Module Testbenches**:
 
-- CTLE/VGA等模块可独立测试（开环）
-- CDR必须与Sampler组成闭环才能验证功能
-- 需要精确控制输入数据的频率偏移和抖动
-- 测试指标包括动态特性（锁定时间、跟踪带宽）
+- CTLE/VGA and other modules can be tested independently (open-loop)
+- CDR must form a closed loop with the Sampler to verify functionality
+- Requires precise control of input data frequency offset and jitter
+- Test metrics include dynamic characteristics (lock time, tracking bandwidth)
 
-### 4.2 测试场景定义
+### 4.2 Test Scenario Definitions
 
-测试平台支持五种核心测试场景，覆盖CDR的主要功能和性能指标：
+The testbench supports five core test scenarios, covering CDR's main functions and performance metrics:
 
-| 场景 | 命令行参数 | 测试目标 | 输出文件 |
-|------|----------|---------|----------|
-| PHASE_LOCK_BASIC | `lock` / `0` | 基本相位锁定功能验证 | cdr_tran_lock.csv |
-| FREQUENCY_OFFSET | `freq` / `1` | 频率偏移捕获能力 | cdr_tran_freq.csv |
-| JITTER_TOLERANCE | `jtol` / `2` | 抖动容限测试（JTOL） | cdr_tran_jtol.csv |
-| PHASE_TRACKING | `track` / `3` | 动态相位跟踪能力 | cdr_tran_track.csv |
-| LOOP_BANDWIDTH | `bw` / `4` | 环路带宽测量 | cdr_tran_bw.csv |
+| Scenario | Command Line Parameter | Test Objective | Output File |
+|----------|------------------------|----------------|-------------|
+| PHASE_LOCK_BASIC | `lock` / `0` | Basic phase lock function verification | cdr_tran_lock.csv |
+| FREQUENCY_OFFSET | `freq` / `1` | Frequency offset capture capability | cdr_tran_freq.csv |
+| JITTER_TOLERANCE | `jtol` / `2` | Jitter tolerance test (JTOL) | cdr_tran_jtol.csv |
+| PHASE_TRACKING | `track` / `3` | Dynamic phase tracking capability | cdr_tran_track.csv |
+| LOOP_BANDWIDTH | `bw` / `4` | Loop bandwidth measurement | cdr_tran_bw.csv |
 
-### 4.3 场景配置详解
+### 4.3 Scenario Configuration Details
 
-#### PHASE_LOCK_BASIC - 基本相位锁定测试
+#### PHASE_LOCK_BASIC - Basic Phase Lock Test
 
-验证CDR从初始随机相位锁定到最佳采样相位的基本功能。
+Verify the basic function of CDR locking from an initial random phase to the optimal sampling phase.
 
-- **信号源**：PRBS-15伪随机序列
-- **数据速率**：10 Gbps（UI = 100ps）
-- **初始相位偏移**：随机（0~UI范围内）
-- **PI参数**：Kp=0.01, Ki=1e-4（默认值）
-- **仿真时间**：≥10,000 UI（确保环路收敛）
-- **验证点**：
-  - 相位误差收敛到±5ps以内
+- **Signal Source**: PRBS-15 pseudo-random sequence
+- **Data Rate**: 10 Gbps (UI = 100 ps)
+- **Initial Phase Offset**: Random (within 0~UI range)
+- **PI Parameters**: Kp=0.01, Ki=1e-4 (default values)
+- **Simulation Time**: ≥ 10,000 UI (ensure loop convergence)
+- **Verification Points**:
+  - Phase error converges within ±5 ps
   - BER < 1e-12
-  - 锁定后相位稳定（无持续振荡）
+  - Phase stable after lock (no continuous oscillation)
 
-**期望波形特征**：
-- 相位调整信号从初始值单调收敛到稳态值
-- 收敛过程呈指数衰减（二阶系统特性）
-- 锁定后存在小幅抖动（Bang-Bang PD固有特性）
+**Expected Waveform Characteristics**:
+- Phase adjustment signal monotonically converges from initial value to steady-state value
+- Convergence process shows exponential decay (second-order system characteristic)
+- Small jitter present after lock (inherent characteristic of Bang-Bang PD)
 
-**调试要点**（针对已知bug）：
-- 检查相位检测器输出是否正确反映早/晚信息
-- 验证PI控制器的比例项和积分项是否正确分离
-- 确认相位输出信号正确连接到采样器
+**Debug Points** (for known bugs):
+- Check if phase detector output correctly reflects early/late information
+- Verify PI controller's proportional and integral terms are correctly separated
+- Confirm phase output signal is correctly connected to sampler
 
-#### FREQUENCY_OFFSET - 频率偏移捕获测试
+#### FREQUENCY_OFFSET - Frequency Offset Capture Test
 
-验证CDR捕获和补偿发送端与接收端频率偏移的能力。
+Verify CDR's ability to capture and compensate for frequency offset between transmitter and receiver.
 
-- **信号源**：10 Gbps PRBS-7
-- **频率偏移**：±100ppm, ±500ppm, ±1000ppm（分级测试）
-- **PI参数**：Kp=0.01, Ki=1e-4
-- **PI range**：必须≥ |freq_offset| × UI × 锁定时间
-- **仿真时间**：≥50,000 UI
-- **验证点**：
-  - 系统能否在规定时间内锁定
-  - 锁定后相位漂移速率 = 频偏对应的相位斜率
-  - 相位调整范围未超出pai.range限制
+- **Signal Source**: 10 Gbps PRBS-7
+- **Frequency Offset**: ±100 ppm, ±500 ppm, ±1000 ppm (graded testing)
+- **PI Parameters**: Kp=0.01, Ki=1e-4
+- **PI range**: Must be ≥ |freq_offset| × UI × lock time
+- **Simulation Time**: ≥ 50,000 UI
+- **Verification Points**:
+  - Whether system can lock within specified time
+  - Phase drift rate after lock = phase slope corresponding to frequency offset
+  - Phase adjustment range does not exceed pai.range limit
 
-**物理意义**：
+**Physical Meaning**:
 
-频率偏移导致相位以固定速率累积：
+Frequency offset causes phase to accumulate at a fixed rate:
 ```
-相位漂移率 = freq_offset × UI
-例如：100ppm @ 10Gbps → 100ps/1e6 UI = 0.1fs/UI
+Phase drift rate = freq_offset × UI
+Example: 100 ppm @ 10 Gbps → 100 ps/1e6 UI = 0.1 fs/UI
 ```
 
-CDR的积分项Ki负责跟踪这一恒定相位斜率，如果Ki过小则无法完全消除静态相位误差。
+The integral term Ki of the CDR is responsible for tracking this constant phase slope; if Ki is too small, it cannot fully eliminate static phase error.
 
-**测试步骤**：
-1. 配置发送端频率偏移（通过时钟周期微调）
-2. CDR从初始状态启动
-3. 记录相位调整信号的时域波形
-4. 测量锁定时间（相位误差稳定到±10ps）
-5. 验证锁定后的相位斜率是否匹配频偏
+**Test Steps**:
+1. Configure transmitter frequency offset (through clock period fine-tuning)
+2. Start CDR from initial state
+3. Record phase adjustment signal time-domain waveform
+4. Measure lock time (phase error stabilized to ±10 ps)
+5. Verify phase slope after lock matches frequency offset
 
-#### JITTER_TOLERANCE - 抖动容限测试
+#### JITTER_TOLERANCE - Jitter Tolerance Test
 
-验证CDR对输入数据抖动的容忍能力，是SerDes系统的关键性能指标。
+Verify CDR's tolerance to input data jitter, a key performance indicator of SerDes systems.
 
-- **信号源**：10 Gbps PRBS-31（长序列保证统计有效性）
-- **抖动类型**：
-  - **随机抖动（RJ）**：高斯分布，σ = 1ps, 2ps, 5ps
-  - **周期性抖动（SJ）**：正弦调制，频率扫描（1kHz ~ 100MHz）
-  - **组合抖动**：RJ + SJ叠加
-- **测试方法**：固定抖动幅度，扫描抖动频率，记录BER
-- **PI参数**：Kp=0.01, Ki=1e-4
-- **仿真时间**：每个频率点≥1e6 UI（保证BER测量精度）
-- **验证点**：
-  - 绘制JTOL曲线（抖动容限 vs 频率）
-  - 验证低频抖动跟踪能力（频率 < 环路带宽）
-  - 验证高频抖动抑制能力（频率 > 环路带宽）
+- **Signal Source**: 10 Gbps PRBS-31 (long sequence ensures statistical validity)
+- **Jitter Types**:
+  - **Random Jitter (RJ)**: Gaussian distribution, σ = 1 ps, 2 ps, 5 ps
+  - **Periodic Jitter (SJ)**: Sinusoidal modulation, frequency sweep (1 kHz ~ 100 MHz)
+  - **Combined Jitter**: RJ + SJ superposition
+- **Test Method**: Fixed jitter amplitude, sweep jitter frequency, record BER
+- **PI Parameters**: Kp=0.01, Ki=1e-4
+- **Simulation Time**: ≥ 1e6 UI per frequency point (ensure BER measurement accuracy)
+- **Verification Points**:
+  - Plot JTOL curve (jitter tolerance vs frequency)
+  - Verify low-frequency jitter tracking capability (frequency < loop bandwidth)
+  - Verify high-frequency jitter suppression capability (frequency > loop bandwidth)
 
-**JTOL曲线特征**：
+**JTOL Curve Characteristics**:
 
 ```
-抖动容限（UI）
+Jitter Tolerance (UI)
     ^
-1.0 |━━━━━┓                     ← 低频：完美跟踪
-    |      ┗━━━━┓                ← 转折频率 ≈ 环路带宽
-0.5 |           ┗━━━━┓           ← 斜率 -20dB/decade
-    |                ┗━━━━━━━    ← 高频：固有容限
+1.0 |━━━━━┓                     ← Low frequency: perfect tracking
+    |      ┗━━━━┓                ← Corner frequency ≈ loop bandwidth
+0.5 |           ┗━━━━┓           ← Slope -20 dB/decade
+    |                ┗━━━━━━━    ← High frequency: intrinsic tolerance
 0.1 |________________________
         1k  10k 100k  1M  10M  100M  (Hz)
 ```
 
-**关键频率点**：
-- **低频段（< BW/10）**：CDR完全跟踪抖动，容限 ≈ 1 UI
-- **转折频率（≈ BW）**：容限开始下降
-- **高频段（> 10×BW）**：CDR无法跟踪，容限由采样器固有裕量决定
+**Key Frequency Points**:
+- **Low frequency band (< BW/10)**: CDR fully tracks jitter, tolerance ≈ 1 UI
+- **Corner frequency (≈ BW)**: Tolerance begins to decrease
+- **High frequency band (> 10×BW)**: CDR cannot track, tolerance determined by sampler intrinsic margin
 
-#### PHASE_TRACKING - 动态相位跟踪测试
+#### PHASE_TRACKING - Dynamic Phase Tracking Test
 
-验证CDR对动态相位调制的跟踪能力。
+Verify CDR's tracking capability for dynamic phase modulation.
 
-- **信号源**：10 Gbps PRBS-7
-- **相位调制**：正弦波调制采样相位
-  - 调制频率：100kHz, 1MHz, 10MHz
-  - 调制幅度：±10ps, ±20ps, ±50ps
-- **PI参数**：Kp=0.01, Ki=1e-4
-- **仿真时间**：≥100个调制周期
-- **验证点**：
-  - 计算跟踪误差（输入相位调制 vs CDR输出相位）
-  - 测量跟踪延迟（相位差）
-  - 验证环路带宽（-3dB点）
+- **Signal Source**: 10 Gbps PRBS-7
+- **Phase Modulation**: Sine wave modulation of sampling phase
+  - Modulation frequency: 100 kHz, 1 MHz, 10 MHz
+  - Modulation amplitude: ±10 ps, ±20 ps, ±50 ps
+- **PI Parameters**: Kp=0.01, Ki=1e-4
+- **Simulation Time**: ≥ 100 modulation periods
+- **Verification Points**:
+  - Calculate tracking error (input phase modulation vs CDR output phase)
+  - Measure tracking delay (phase difference)
+  - Verify loop bandwidth (-3 dB point)
 
-**相位跟踪传递函数**：
+**Phase Tracking Transfer Function**:
 
-CDR环路的闭环传递函数（相位输出/相位输入）具有低通特性：
+The CDR loop's closed-loop transfer function (phase output/phase input) has low-pass characteristics:
 ```
-H(f) = (Kp×s + Ki) / (s² + Kp×s + Ki)  （连续域近似）
+H(f) = (Kp×s + Ki) / (s² + Kp×s + Ki)  (continuous domain approximation)
 
--3dB带宽 ≈ √Ki  （rad/s）
+-3 dB bandwidth ≈ √Ki  (rad/s)
 ```
 
-通过扫描调制频率，测量输出/输入幅度比，可绘制传递函数曲线验证理论带宽。
+By sweeping modulation frequency and measuring output/input amplitude ratio, the transfer function curve can be plotted to verify theoretical bandwidth.
 
-#### LOOP_BANDWIDTH - 环路带宽测量
+#### LOOP_BANDWIDTH - Loop Bandwidth Measurement
 
-精确测量CDR环路的实际带宽，验证与理论设计的符合度。
+Precisely measure the actual bandwidth of the CDR loop to verify compliance with theoretical design.
 
-- **测试原理**：向数据流注入已知幅度的相位调制，测量CDR输出的幅度响应
-- **调制频率扫描**：10kHz ~ 100MHz（对数间隔，每倍频10个点）
-- **调制幅度**：固定20ps（小信号线性范围）
-- **PI参数**：多组参数对比（验证Kp/Ki对带宽的影响）
-- **输出**：Bode图（幅频响应和相频响应）
-- **验证点**：
-  - -3dB带宽与理论计算对比（误差应<20%）
-  - 相位裕度 > 45°（稳定性指标）
-  - 无谐振峰值（阻尼充分）
+- **Test Principle**: Inject phase modulation with known amplitude into data stream, measure CDR output amplitude response
+- **Modulation Frequency Sweep**: 10 kHz ~ 100 MHz (logarithmic spacing, 10 points per octave)
+- **Modulation Amplitude**: Fixed 20 ps (small signal linear range)
+- **PI Parameters**: Multiple parameter sets for comparison (verify Kp/Ki impact on bandwidth)
+- **Output**: Bode plot (magnitude and phase response)
+- **Verification Points**:
+  - -3 dB bandwidth compared with theoretical calculation (error should be < 20%)
+  - Phase margin > 45° (stability indicator)
+  - No resonance peak (sufficient damping)
 
-**测试配置表**：
+**Test Configuration Table**:
 
-| Kp | Ki | 理论BW (MHz) | 理论ζ |
-|----|-------|-------------|-------|
+| Kp | Ki | Theoretical BW (MHz) | Theoretical ζ |
+|----|----|----------------------|---------------|
 | 0.005 | 2.5e-5 | 2.5 | 0.707 |
 | 0.01 | 1e-4 | 5.0 | 0.707 |
 | 0.02 | 4e-4 | 10.0 | 0.707 |
 
-通过对比不同参数组的实际带宽，验证参数调节的有效性。
+By comparing actual bandwidth of different parameter sets, verify the effectiveness of parameter tuning.
 
-### 4.4 信号连接拓扑
+### 4.4 Signal Connection Topology
 
-CDR测试平台的核心是CDR与Sampler的闭环连接：
+The core of the CDR testbench is the closed-loop connection between CDR and Sampler:
 
 ```
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -571,72 +571,72 @@ CDR测试平台的核心是CDR与Sampler的闭环连接：
                                    ▼                          ▼
                           ┌─────────────────┐       ┌─────────────────┐
                           │  SamplerMonitor │       │   CdrMonitor    │
-                          │  - BER统计      │       │  - 相位波形     │
-                          │  - 眼图采集     │       │  - 锁定检测     │
+                          │  - BER Stats    │       │  - Phase Waveform |
+                          │  - Eye Capture  │       │  - Lock Detection |
                           └─────────────────┘       └─────────────────┘
 ```
 
-**关键连接说明**：
+**Key Connection Notes**:
 
-1. **差分信号源 → 采样器**：
-   - 提供带抖动/频偏的差分数据信号
-   - 支持可编程抖动注入（RJ/SJ）
-   - 支持可编程频率偏移
+1. **Differential Signal Source → Sampler**:
+   - Provides differential data signal with jitter/frequency offset
+   - Supports programmable jitter injection (RJ/SJ)
+   - Supports programmable frequency offset
 
-2. **采样器 → CDR（前向路径）**：
-   - 连接方式取决于CDR输入类型：
-     - **方案A**：Sampler.data_out → CDR.in（数字信号）
-     - **方案B**：均衡器输出 → CDR.in（模拟信号，需要边沿采样器）
-   - 当前简化实现使用方案A
+2. **Sampler → CDR (Forward Path)**:
+   - Connection depends on CDR input type:
+     - **Option A**: Sampler.data_out → CDR.in (digital signal)
+     - **Option B**: Equalizer output → CDR.in (analog signal, requires edge sampler)
+   - Current simplified implementation uses Option A
 
-3. **CDR → 采样器（反馈路径）**：
+3. **CDR → Sampler (Feedback Path)**:
    - CDR.phase_out → Sampler.phase_offset
-   - 相位调整单位：秒（s）
-   - 正值=延迟采样，负值=提前采样
+   - Phase adjustment unit: seconds (s)
+   - Positive value = delayed sampling, negative value = early sampling
 
-4. **监控器连接**：
-   - SamplerMonitor：统计BER、采集眼图数据
-   - CdrMonitor：记录相位调整波形、检测锁定状态
+4. **Monitor Connections**:
+   - SamplerMonitor: BER statistics, eye diagram data collection
+   - CdrMonitor: Phase adjustment waveform recording, lock state detection
 
-**环路延迟考虑**：
+**Loop Delay Considerations**:
 
-CDR环路存在固有延迟（信号传播+处理延迟），影响环路稳定性：
+CDR loop has inherent delay (signal propagation + processing delay), affecting loop stability:
 ```
-总延迟 = Sampler延迟 + CDR处理延迟 + 相位应用延迟
-典型值：1~2 UI
+Total delay = Sampler delay + CDR processing delay + Phase application delay
+Typical value: 1~2 UI
 ```
 
-测试平台应支持延迟可配置，验证延迟对锁定性能的影响。
+The testbench should support configurable delay to verify the impact of delay on lock performance.
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Descriptions
 
-#### DiffSignalSource - 差分信号源（增强版）
+#### DiffSignalSource - Differential Signal Source (Enhanced)
 
-为CDR测试定制的信号源，支持精确的频率和抖动控制：
+Customized signal source for CDR testing, supporting precise frequency and jitter control:
 
-**波形类型**：
-- PRBS-7/15/31：不同长度序列，验证CDR对数据模式的适应性
-- Alternating Pattern（010101...）：最大跃变密度，验证相位检测器响应
-- Low Transition Density（稀疏跃变）：验证CDR在低跃变率下的保持能力
+**Waveform Types**:
+- PRBS-7/15/31: Different length sequences, verify CDR adaptation to data patterns
+- Alternating Pattern (010101...): Maximum transition density, verify phase detector response
+- Low Transition Density (sparse transitions): Verify CDR hold capability at low transition rates
 
-**抖动注入能力**：
+**Jitter Injection Capability**:
 
-| 抖动类型 | 参数 | 说明 |
-|---------|------|------|
-| 随机抖动（RJ） | sigma（标准差） | 高斯分布，典型值0.5~5ps |
-| 周期性抖动（SJ） | 频率、幅度 | 正弦调制，支持多音叠加 |
-| 有界非相关抖动（BUJ） | 峰峰值 | 均匀分布 |
-| 占空比失真（DCD） | 偏移量 | 高低电平时间不对称 |
+| Jitter Type | Parameter | Description |
+|-------------|-----------|-------------|
+| Random Jitter (RJ) | sigma (standard deviation) | Gaussian distribution, typical value 0.5~5 ps |
+| Periodic Jitter (SJ) | frequency, amplitude | Sine modulation, supports multi-tone superposition |
+| Bounded Uncorrelated Jitter (BUJ) | peak-to-peak | Uniform distribution |
+| Duty Cycle Distortion (DCD) | offset | Asymmetric high/low level times |
 
-**频率偏移控制**：
+**Frequency Offset Control**:
 
-通过调整符号周期实现精确频偏：
+Achieve precise frequency offset by adjusting symbol period:
 ```cpp
-实际UI = 标称UI × (1 + freq_offset_ppm / 1e6)
-例如：10Gbps + 100ppm → UI = 100ps × 1.0001 = 100.01ps
+Actual UI = Nominal UI × (1 + freq_offset_ppm / 1e6)
+Example: 10 Gbps + 100 ppm → UI = 100 ps × 1.0001 = 100.01 ps
 ```
 
-**配置示例**：
+**Configuration Example**:
 ```json
 {
   "signal_source": {
@@ -652,46 +652,46 @@ CDR环路存在固有延迟（信号传播+处理延迟），影响环路稳定�
 }
 ```
 
-#### SamplerMonitor - 采样器监控模块
+#### SamplerMonitor - Sampler Monitor Module
 
-监控采样器输出，评估CDR性能对BER的影响：
+Monitor sampler output to evaluate CDR performance impact on BER:
 
-**功能**：
-- **BER实时统计**：比对采样输出与理想参考序列
-- **误码位置记录**：时间戳、误码类型（单比特/突发）
-- **眼图采集**：记录采样点的幅度和相位分布
-- **统计分析**：Q-factor、眼高、眼宽
+**Functions**:
+- **Real-time BER Statistics**: Compare sampled output with ideal reference sequence
+- **Error Location Recording**: Timestamp, error type (single-bit/burst)
+- **Eye Diagram Capture**: Record amplitude and phase distribution of sampling points
+- **Statistical Analysis**: Q-factor, eye height, eye width
 
-**输出文件**：
-- `sampler_monitor.csv`：逐比特记录（时间、数据、参考、误码标志）
-- `ber_summary.json`：BER统计结果和眼图参数
+**Output Files**:
+- `sampler_monitor.csv`: Bit-by-bit record (time, data, reference, error flag)
+- `ber_summary.json`: BER statistics and eye diagram parameters
 
-#### CdrMonitor - CDR状态监控模块
+#### CdrMonitor - CDR Status Monitor Module
 
-专用于CDR内部状态监控和性能分析：
+Dedicated to CDR internal state monitoring and performance analysis:
 
-**监控信号**：
-| 信号 | 说明 |
-|------|------|
-| phase_out | 相位调整输出波形 |
-| phase_error | 相位检测器输出（内部信号，需调试接口） |
-| lock_status | 锁定状态指示（需实现锁定检测器） |
-| integral_state | PI控制器积分状态（内部信号） |
+**Monitor Signals**:
+| Signal | Description |
+|--------|-------------|
+| phase_out | Phase adjustment output waveform |
+| phase_error | Phase detector output (internal signal, requires debug interface) |
+| lock_status | Lock status indicator (requires lock detector implementation) |
+| integral_state | PI controller integral state (internal signal) |
 
-**分析功能**：
-- **锁定时间测量**：从启动到相位误差<阈值的时间
-- **锁定抖动统计**：稳态时相位调整信号的RMS抖动
-- **环路响应分析**：阶跃响应、频率响应测量
-- **参数优化建议**：基于实测性能推荐Kp/Ki调整
+**Analysis Functions**:
+- **Lock Time Measurement**: Time from start to phase error < threshold
+- **Lock Jitter Statistics**: RMS jitter of phase adjustment signal in steady state
+- **Loop Response Analysis**: Step response, frequency response measurement
+- **Parameter Optimization Recommendations**: Suggest Kp/Ki adjustments based on measured performance
 
-**输出**：
-- `cdr_phase.csv`：相位波形数据
-- `cdr_performance.json`：性能指标汇总
-- `cdr_debug.log`：内部状态日志（debug模式）
+**Output**:
+- `cdr_phase.csv`: Phase waveform data
+- `cdr_performance.json`: Performance metrics summary
+- `cdr_debug.log`: Internal state log (debug mode)
 
-**Debug模式特性**：
+**Debug Mode Features**:
 
-测试平台支持debug模式输出中间状态，用于性能分析和参数调优：
+The testbench supports debug mode output for intermediate states, used for performance analysis and parameter tuning:
 ```json
 {
   "debug_mode": true,
@@ -705,22 +705,22 @@ CDR环路存在固有延迟（信号传播+处理延迟），影响环路稳定�
 }
 ```
 
-这些内部信号的波形对于诊断相位检测器行为和PI控制器性能至关重要。
+These internal signal waveforms are crucial for diagnosing phase detector behavior and PI controller performance.
 
-#### JitterInjector - 抖动注入模块（可选）
+#### JitterInjector - Jitter Injection Module (Optional)
 
-独立的抖动注入模块，可插入信号链任意位置：
+Independent jitter injection module, can be inserted at any point in the signal chain:
 
-**应用场景**：
-- 在Sampler输入端注入：模拟信道抖动
-- 在CDR输入端注入：模拟采样器抖动
-- 在时钟路径注入：模拟参考时钟抖动
+**Application Scenarios**:
+- Injection at sampler input: Simulates channel jitter
+- Injection at CDR input: Simulates sampler jitter
+- Injection at clock path: Simulates reference clock jitter
 
-**注入方式**：
-- **时间域调制**：直接调制信号时间轴
-- **相位域调制**：调制采样相位（与CDR输出相加）
+**Injection Methods**:
+- **Time-domain modulation**: Directly modulate signal time axis
+- **Phase-domain modulation**: Modulate sampling phase (add to CDR output)
 
-**配置示例**：
+**Configuration Example**:
 ```json
 {
   "jitter_injector": {
@@ -735,250 +735,250 @@ CDR环路存在固有延迟（信号传播+处理延迟），影响环路稳定�
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Results Analysis
 
-本章介绍CDR测试平台各场景的典型仿真结果解读方法、关键性能指标定义及分析手段。
+This chapter introduces the interpretation methods for typical simulation results of each CDR testbench scenario, definitions of key performance indicators, and analysis methods.
 
-### 5.1 统计指标说明
+### 5.1 Statistical Indicators
 
-CDR性能评估涉及多种时域和频域指标，以下给出关键指标的定义和计算方法。
+CDR performance evaluation involves various time-domain and frequency-domain indicators. Below are definitions and calculation methods for key indicators.
 
-#### 5.1.1 时域指标
+#### 5.1.1 Time-Domain Indicators
 
-**相位误差（Phase Error）**
+**Phase Error**
 
-定义为采样相位与最佳采样相位的偏差，单位为秒（s）或UI：
+Defined as the deviation between sampling phase and optimal sampling phase, unit is seconds (s) or UI:
 
 ```
-相位误差 = CDR输出相位 - 最佳采样相位
+Phase Error = CDR Output Phase - Optimal Sampling Phase
 ```
 
-**统计量**：
-- **均值（Mean）**：稳态相位偏移，理想应为0
-- **标准差（Std Dev）**：相位抖动RMS，反映CDR环路噪声
-- **峰峰值（Peak-to-Peak）**：最大相位偏差，影响时序裕量
+**Statistics**:
+- **Mean**: Steady-state phase offset, ideally should be 0
+- **Standard Deviation (Std Dev)**: Phase jitter RMS, reflects CDR loop noise
+- **Peak-to-Peak**: Maximum phase deviation, affects timing margin
 
-**单位转换**：
+**Unit Conversion**:
 ```
-相位误差(UI) = 相位误差(s) / UI周期(s)
-例如：10Gbps系统，5ps误差 = 5ps / 100ps = 0.05 UI
+Phase Error (UI) = Phase Error (s) / UI Period (s)
+Example: 10 Gbps system, 5 ps error = 5 ps / 100 ps = 0.05 UI
 ```
 
-**锁定时间（Lock Time）**
+**Lock Time**
 
-从CDR启动到相位误差收敛到指定阈值所需的时间。常用阈值：
-- 粗锁定：相位误差 < 0.1 UI
-- 精锁定：相位误差 < 0.05 UI（5ps @ 10Gbps）
+The time required from CDR start to when phase error converges to a specified threshold. Common thresholds:
+- Coarse lock: Phase error < 0.1 UI
+- Fine lock: Phase error < 0.05 UI (5 ps @ 10 Gbps)
 
-计算方法（伪代码）：
+Calculation method (pseudocode):
 ```python
 def calculate_lock_time(phase_error_vec, time_vec, threshold=0.05):
     """
-    计算锁定时间
+    Calculate lock time
     
-    参数：
-    phase_error_vec: 相位误差时间序列（单位：UI）
-    time_vec: 对应的时间戳（单位：秒）
-    threshold: 锁定阈值（单位：UI）
+    Parameters:
+    phase_error_vec: Phase error time series (unit: UI)
+    time_vec: Corresponding timestamps (unit: seconds)
+    threshold: Lock threshold (unit: UI)
     
-    返回：
-    lock_time: 锁定时间（单位：秒）
+    Returns:
+    lock_time: Lock time (unit: seconds)
     """
-    # 计算移动窗口内的最大误差
-    window_size = 100  # 窗口长度：100个符号
+    # Calculate maximum error within moving window
+    window_size = 100  # Window length: 100 symbols
     for i in range(len(phase_error_vec) - window_size):
         window = phase_error_vec[i:i+window_size]
         if np.max(np.abs(window)) < threshold:
             return time_vec[i]
-    return None  # 未锁定
+    return None  # Not locked
 ```
 
-**锁定抖动（Lock Jitter）**
+**Lock Jitter**
 
-锁定后相位误差的RMS值，反映CDR稳态性能：
-
-```
-锁定抖动 = std(相位误差[锁定后])
-```
-
-典型值：
-- Bang-Bang PD：1~5ps RMS（取决于环路带宽）
-- 线性PD（Hogge/Alexander）：0.5~2ps RMS
-
-#### 5.1.2 频域指标
-
-**环路带宽（Loop Bandwidth）**
-
-环路闭环传递函数的-3dB截止频率，决定CDR的跟踪能力：
+RMS value of phase error after lock, reflecting CDR steady-state performance:
 
 ```
-H(f) = (Kp×s + Ki) / (s² + Kp×s + Ki)  （s域）
--3dB带宽 ≈ √(Ki) / (2π)  （Hz）
+Lock Jitter = std(Phase Error[after lock])
 ```
 
-**测量方法**：
-1. 向输入注入扫频相位调制
-2. 测量输出/输入的幅度比
-3. 找到幅度比下降至-3dB的频率点
+Typical values:
+- Bang-Bang PD: 1~5 ps RMS (depends on loop bandwidth)
+- Linear PD (Hogge/Alexander): 0.5~2 ps RMS
 
-**相位裕度（Phase Margin）**
+#### 5.1.2 Frequency-Domain Indicators
 
-环路开环传递函数在增益为0dB时的相位与-180°的差值，衡量稳定性裕量：
+**Loop Bandwidth**
+
+The -3 dB cutoff frequency of the loop closed-loop transfer function, determines CDR tracking capability:
+
+```
+H(f) = (Kp×s + Ki) / (s² + Kp×s + Ki)  (s-domain)
+-3 dB bandwidth ≈ √(Ki) / (2π)  (Hz)
+```
+
+**Measurement Method**:
+1. Inject swept-frequency phase modulation into input
+2. Measure output/input amplitude ratio
+3. Find frequency point where amplitude ratio drops to -3 dB
+
+**Phase Margin**
+
+The difference between the phase of the loop open-loop transfer function at 0 dB gain and -180°, measuring stability margin:
 
 ```
 PM = 180° + ∠H(f_crossover)
 ```
 
-典型要求：PM > 45°（保证稳定且响应不振荡）
+Typical requirement: PM > 45° (ensures stable and non-oscillating response)
 
-**抖动容限（Jitter Tolerance）**
+**Jitter Tolerance**
 
-CDR能够容忍的最大输入抖动幅度（通常以UI为单位），与频率相关。在特定BER目标（如1e-12）下测量：
-
-```
-JTOL(f) = 能容忍的抖动幅度(UI) @ 抖动频率f
-```
-
-典型JTOL曲线特征（参见4.3.3节）：
-- 低频（f < BW/10）：容限 ≈ 1 UI（完美跟踪）
-- 中频（f ≈ BW）：转折区，斜率-20dB/decade
-- 高频（f > 10×BW）：容限由采样器固有裕量决定
-
-#### 5.1.3 系统级指标
-
-**误码率（BER）**
-
-采样器输出与理想参考的误码比例：
+The maximum input jitter amplitude that CDR can tolerate (usually in UI units), frequency-dependent. Measured at specific BER target (e.g., 1e-12):
 
 ```
-BER = 误码比特数 / 总比特数
+JTOL(f) = Tolerable Jitter Amplitude (UI) @ Jitter Frequency f
 ```
 
-**BER与相位误差的关系**：
+Typical JTOL curve characteristics (see Section 4.3.3):
+- Low frequency (f < BW/10): Tolerance ≈ 1 UI (perfect tracking)
+- Corner frequency (≈ BW): Tolerance begins to decrease, slope -20 dB/decade
+- High frequency (f > 10×BW): Tolerance determined by sampler intrinsic margin
 
-假设信号幅度为A，噪声标准差为σ，相位误差导致采样点偏离最佳位置：
+#### 5.1.3 System-Level Indicators
+
+**Bit Error Rate (BER)**
+
+The ratio of erroneous bits to total bits from sampler output compared to ideal reference:
+
+```
+BER = Error Bit Count / Total Bit Count
+```
+
+**Relationship between BER and Phase Error**:
+
+Assuming signal amplitude is A, noise standard deviation is σ, and phase error causes sampling point to deviate from optimal position:
 
 ```
 Q = (A - Δ) / σ
 BER ≈ 0.5 × erfc(Q / √2)
 
-其中：Δ = 相位误差对应的电压偏移
+Where: Δ = Voltage offset corresponding to phase error
 ```
 
-对于阶跃信号，相位误差导致的幅度损失：
+For step signals, amplitude loss caused by phase error:
 ```
-Δ ≈ 信号斜率 × 相位误差 = (A / 转换时间) × 相位误差
+Δ ≈ Signal Slope × Phase Error = (A / Transition Time) × Phase Error
 ```
 
 **Q-factor**
 
-信噪比的另一种表示，与BER的关系：
+Another representation of signal-to-noise ratio, relationship with BER:
 
 ```
 Q = √2 × erfc⁻¹(2 × BER)
 Q(dB) = 20 × log₁₀(Q)
 ```
 
-典型对应关系：
-- BER = 1e-12 → Q ≈ 7.0 → Q(dB) ≈ 16.9dB
-- BER = 1e-15 → Q ≈ 7.9 → Q(dB) ≈ 18.0dB
+Typical correspondence:
+- BER = 1e-12 → Q ≈ 7.0 → Q(dB) ≈ 16.9 dB
+- BER = 1e-15 → Q ≈ 7.9 → Q(dB) ≈ 18.0 dB
 
-### 5.2 典型测试结果解读
+### 5.2 Typical Test Results Interpretation
 
-以下针对第4章定义的五个测试场景，给出结果解读方法和理想预期。
+The following provides result interpretation methods and ideal expectations for the five test scenarios defined in Chapter 4.
 
-#### 5.2.1 PHASE_LOCK_BASIC - 基本相位锁定测试
+#### 5.2.1 PHASE_LOCK_BASIC - Basic Phase Lock Test
 
-**测试配置**：
-- 数据速率：10 Gbps（UI = 100ps）
-- 初始相位偏移：随机（0~100ps）
-- PI参数：Kp=0.01, Ki=1e-4
-- 仿真时间：10,000 UI（1μs）
+**Test Configuration**:
+- Data rate: 10 Gbps (UI = 100 ps)
+- Initial phase offset: Random (0~100 ps)
+- PI parameters: Kp=0.01, Ki=1e-4
+- Simulation time: 10,000 UI (1 μs)
 
-**理想结果预期**：
+**Ideal Results Expectation**:
 
-1. **相位收敛曲线**：
-   - 初始阶段：相位误差从初始值单调下降
-   - 收敛时间：约2000~3000 UI（环路时间常数 τ ≈ 1/√Ki）
-   - 稳态误差：均值 < 1ps，RMS < 3ps
+1. **Phase Convergence Curve**:
+   - Initial stage: Phase error monotonically decreases from initial value
+   - Convergence time: Approximately 2000~3000 UI (loop time constant τ ≈ 1/√Ki)
+   - Steady-state error: Mean < 1 ps, RMS < 3 ps
 
-2. **BER性能**：
-   - 锁定前：可能出现误码（相位未对准）
-   - 锁定后：BER < 1e-12（无误码或极低误码）
+2. **BER Performance**:
+   - Before lock: Errors may occur (phase not aligned)
+   - After lock: BER < 1e-12 (no errors or very low error rate)
 
-3. **PI控制器状态**：
-   - 比例项（Kp × phase_error）：快速响应，振荡逐渐衰减
-   - 积分项（∑Ki × phase_error）：单调增加至稳态值
+3. **PI Controller State**:
+   - Proportional term (Kp × phase_error): Fast response, oscillation gradually decays
+   - Integral term (∑Ki × phase_error): Monotonically increases to steady-state value
 
-**波形特征示例**：
+**Waveform Characteristic Example**:
 
 ```
-相位误差(ps)
-  100 |●                           ← 初始随机偏移
+Phase Error (ps)
+  100 |●                           ← Initial random offset
       |  ●●
    50 |     ●●●
       |        ●●●
-    0 |___________●●●●━━━━━━━━━   ← 锁定至稳态（小幅抖动）
+    0 |___________●●●●━━━━━━━━━   ← Lock to steady state (small jitter)
       |
   -50 |
-      └────────────────────────────▶ 时间(UI)
+      └────────────────────────────▶ Time (UI)
         0    1k   2k   3k   4k   10k
 ```
 
-**验证方法**：
+**Verification Method**:
 ```bash
 ./cdr_tran_tb lock
 python scripts/plot_cdr_phase.py cdr_tran_lock.csv
 ```
 
-检查项：
-- [ ] 相位误差是否单调收敛
-- [ ] 锁定时间是否合理（< 5000 UI）
-- [ ] 稳态抖动是否在预期范围（< 5ps RMS）
+Check items:
+- [ ] Phase error monotonically converges
+- [ ] Lock time is reasonable (< 5000 UI)
+- [ ] Steady-state jitter is within expected range (< 5 ps RMS)
 
-#### 5.2.2 FREQUENCY_OFFSET - 频率偏移捕获测试
+#### 5.2.2 FREQUENCY_OFFSET - Frequency Offset Capture Test
 
-**测试配置**：
-- 频率偏移：±100ppm, ±500ppm, ±1000ppm
-- PI参数：Kp=0.01, Ki=1e-4
-- 仿真时间：50,000 UI（5μs）
+**Test Configuration**:
+- Frequency offset: ±100 ppm, ±500 ppm, ±1000 ppm
+- PI parameters: Kp=0.01, Ki=1e-4
+- Simulation time: 50,000 UI (5 μs)
 
-**理想结果预期**：
+**Ideal Results Expectation**:
 
-1. **相位漂移特征**：
-   - 频偏导致相位以固定速率累积
-   - 100ppm @ 10Gbps → 相位斜率 ≈ 0.01ps/UI = 10ps/1000UI
-   - CDR的积分项Ki跟踪这一斜率
+1. **Phase Drift Characteristics**:
+   - Frequency offset causes phase to accumulate at fixed rate
+   - 100 ppm @ 10 Gbps → Phase slope ≈ 0.01 ps/UI = 10 ps/1000 UI
+   - CDR's integral term Ki tracks this slope
 
-2. **锁定条件**：
-   - 稳态相位误差 = 频偏斜率 / Ki
-   - 相位调整范围不能超出PAI.range限制
-   - 例如：100ppm偏移，50,000 UI后累积相位偏移 = 100ps × 0.0001 × 50,000 = 500ps
+2. **Lock Conditions**:
+   - Steady-state phase error = Frequency offset slope / Ki
+   - Phase adjustment range must not exceed PAI.range limit
+   - Example: 100 ppm offset, after 50,000 UI accumulated phase offset = 100 ps × 0.0001 × 50,000 = 500 ps
 
-3. **极限测试**：
-   - 当频偏过大或Ki过小时，积分器无法跟上，相位持续漂移
-   - 此时需要增大Ki或实现频率检测器（FD）辅助捕获
+3. **Limit Testing**:
+   - When frequency offset is too large or Ki is too small, integrator cannot keep up, phase continues to drift
+   - At this point, need to increase Ki or implement Frequency Detector (FD) auxiliary capture
 
-**波形特征示例**：
+**Waveform Characteristic Example**:
 
 ```
-相位输出(ps)
-  500 |                     ●●●●●●   ← 积分器累积至稳态斜率
+Phase Output (ps)
+  500 |                     ●●●●●●   ← Integrator accumulates to steady-state slope
       |                 ●●●●
   250 |             ●●●●
       |         ●●●●
     0 |●●●●●●●●
-      └────────────────────────────▶ 时间(UI)
+      └────────────────────────────▶ Time (UI)
         0    10k   20k   30k   40k  50k
 
-相位斜率 = Δphase / ΔUI ≈ 频偏对应值
+Phase Slope = Δphase / ΔUI ≈ Corresponding frequency offset value
 ```
 
-**BER影响**：
-- 如果CDR成功跟踪频偏：BER正常（< 1e-12）
-- 如果相位超出PAI.range：BER突变（周期性相位绕卷）
+**BER Impact**:
+- If CDR successfully tracks frequency offset: BER normal (< 1e-12)
+- If phase exceeds PAI.range: BER mutation (periodic phase wrapping)
 
-**验证方法**：
+**Verification Method**:
 ```bash
 for ppm in 100 500 1000; do
   ./cdr_tran_tb freq --freq_offset_ppm=$ppm
@@ -986,55 +986,55 @@ done
 python scripts/analyze_freq_offset.py
 ```
 
-检查项：
-- [ ] 相位斜率是否匹配频偏（误差 < 10%）
-- [ ] 相位调整范围是否在限制内
-- [ ] BER是否保持正常
+Check items:
+- [ ] Phase slope matches frequency offset (error < 10%)
+- [ ] Phase adjustment range is within limit
+- [ ] BER remains normal
 
-#### 5.2.3 JITTER_TOLERANCE - 抖动容限测试
+#### 5.2.3 JITTER_TOLERANCE - Jitter Tolerance Test
 
-**测试配置**：
-- 抖动类型：正弦调制（SJ）
-- 抖动频率扫描：1kHz ~ 100MHz（对数间隔）
-- 抖动幅度：固定或自适应（目标BER = 1e-12）
-- 每频率点测试时长：≥ 1e6 UI
+**Test Configuration**:
+- Jitter type: Sine modulation (SJ)
+- Jitter frequency sweep: 1 kHz ~ 100 MHz (logarithmic spacing)
+- Jitter amplitude: Fixed or adaptive (target BER = 1e-12)
+- Test duration per frequency point: ≥ 1e6 UI
 
-**理想结果预期**：
+**Ideal Results Expectation**:
 
-JTOL曲线呈典型的低通特性（参见4.3.3节图示）：
+JTOL curve shows typical low-pass characteristics (see Section 4.3.3 diagram):
 
-| 频率范围 | 容限特性 | 物理原因 |
-|---------|---------|---------|
-| < BW/10 | 1.0 UI | CDR完全跟踪抖动 |
-| BW/10 ~ BW | 下降转折 | 环路增益开始衰减 |
-| BW ~ 10×BW | -20dB/decade斜率 | 一阶低通滚降 |
-| > 10×BW | 0.3~0.5 UI | 采样器固有容限 |
+| Frequency Range | Tolerance Characteristic | Physical Reason |
+|-----------------|--------------------------|-----------------|
+| < BW/10 | 1.0 UI | CDR fully tracks jitter |
+| BW/10 ~ BW | Decreasing corner | Loop gain begins to attenuate |
+| BW ~ 10×BW | -20 dB/decade slope | First-order low-pass rolloff |
+| > 10×BW | 0.3~0.5 UI | Sampler intrinsic tolerance |
 
-**具体数值示例**（假设BW = 5MHz）：
+**Specific Numerical Example** (assuming BW = 5 MHz):
 
-| 抖动频率 | 理论容限(UI) | 说明 |
-|---------|------------|------|
-| 1 kHz | 1.0 | 低频完全跟踪 |
-| 100 kHz | 1.0 | 仍在跟踪区 |
-| 1 MHz | 0.95 | 接近转折 |
-| 5 MHz | 0.707 | -3dB点 |
-| 10 MHz | 0.5 | 高频滚降 |
-| 50 MHz | 0.2 | 超出带宽，容限小 |
-| 100 MHz | 0.3 | 固有容限（不再下降） |
+| Jitter Frequency | Theoretical Tolerance (UI) | Description |
+|------------------|---------------------------|-------------|
+| 1 kHz | 1.0 | Low frequency full tracking |
+| 100 kHz | 1.0 | Still in tracking region |
+| 1 MHz | 0.95 | Near corner |
+| 5 MHz | 0.707 | -3 dB point |
+| 10 MHz | 0.5 | High frequency rolloff |
+| 50 MHz | 0.2 | Beyond bandwidth, small tolerance |
+| 100 MHz | 0.3 | Intrinsic tolerance (no longer decreasing) |
 
-**测量方法**：
+**Measurement Method**:
 
-对于每个频率点：
-1. 从小幅度开始增加抖动
-2. 运行长时间仿真（≥1e6 UI）
-3. 测量BER
-4. 找到BER刚好超过阈值（如1e-12）的抖动幅度
-5. 该幅度即为该频率的抖动容限
+For each frequency point:
+1. Start with small amplitude and increase jitter
+2. Run long simulation (≥ 1e6 UI)
+3. Measure BER
+4. Find jitter amplitude where BER just exceeds threshold (e.g., 1e-12)
+5. This amplitude is the jitter tolerance at that frequency
 
-**输出文件格式**：
+**Output File Format**:
 
 ```csv
-抖动频率(Hz), 抖动幅度(ps), 抖动幅度(UI), BER
+Jitter Frequency (Hz), Jitter Amplitude (ps), Jitter Amplitude (UI), BER
 1000, 100.0, 1.00, 1e-15
 10000, 98.5, 0.985, 5e-13
 100000, 95.2, 0.952, 1e-12
@@ -1045,159 +1045,159 @@ JTOL曲线呈典型的低通特性（参见4.3.3节图示）：
 100000000, 30.2, 0.302, 1e-12
 ```
 
-**绘图命令**：
+**Plotting Command**:
 ```bash
 python scripts/plot_jtol_curve.py cdr_tran_jtol.csv
 ```
 
-生成Bode图风格的JTOL曲线（x轴对数刻度，y轴UI或dB）。
+Generate Bode plot style JTOL curve (x-axis logarithmic scale, y-axis UI or dB).
 
-**验证标准**：
-- [ ] 低频容限 ≥ 0.9 UI
-- [ ] -3dB转折频率 ≈ 理论环路带宽（误差 < 30%）
-- [ ] 高频斜率 ≈ -20dB/decade
-- [ ] 无异常谐振峰值
+**Verification Standards**:
+- [ ] Low frequency tolerance ≥ 0.9 UI
+- [ ] -3 dB corner frequency ≈ Theoretical loop bandwidth (error < 30%)
+- [ ] High frequency slope ≈ -20 dB/decade
+- [ ] No abnormal resonance peaks
 
-#### 5.2.4 PHASE_TRACKING - 动态相位跟踪测试
+#### 5.2.4 PHASE_TRACKING - Dynamic Phase Tracking Test
 
-**测试配置**：
-- 相位调制：正弦波，频率扫描（100kHz ~ 10MHz）
-- 调制幅度：固定20ps（小信号）
-- PI参数：Kp=0.01, Ki=1e-4（理论BW ≈ 5MHz）
-- 仿真时间：≥100个调制周期
+**Test Configuration**:
+- Phase modulation: Sine wave, frequency sweep (100 kHz ~ 10 MHz)
+- Modulation amplitude: Fixed 20 ps (small signal)
+- PI parameters: Kp=0.01, Ki=1e-4 (Theoretical BW ≈ 5 MHz)
+- Simulation time: ≥ 100 modulation periods
 
-**理想结果预期**：
+**Ideal Results Expectation**:
 
-1. **低频跟踪（f < BW）**：
-   - CDR输出与输入同步
-   - 幅度衰减 < 3dB
-   - 相位延迟 < 90°
+1. **Low Frequency Tracking (f < BW)**:
+   - CDR output synchronized with input
+   - Amplitude attenuation < 3 dB
+   - Phase delay < 90°
 
-2. **高频衰减（f > BW）**：
-   - 输出幅度按-20dB/decade滚降
-   - 相位延迟接近-180°
+2. **High Frequency Attenuation (f > BW)**:
+   - Output amplitude rolls off at -20 dB/decade
+   - Phase delay approaches -180°
 
-3. **传递函数验证**：
+3. **Transfer Function Verification**:
 
-绘制Bode图（幅频响应和相频响应）：
+Plot Bode plot (magnitude and phase response):
 
 ```
-幅度(dB)
-   0 |━━━━━━┓                      ← 通带（低频）
-     |       ┗━━┓                   ← -3dB点 ≈ 5MHz
+Magnitude (dB)
+   0 |━━━━━━┓                      ← Passband (low frequency)
+     |       ┗━━┓                   ← -3 dB point ≈ 5 MHz
   -3 |           ┗━━┓               
      |              ┗━━━┓           
- -20 |                  ┗━━━━┓     ← -20dB/decade斜率
-     └─────────────────────────▶ 频率(Hz)
+ -20 |                  ┗━━━━┓     ← -20 dB/decade slope
+     └─────────────────────────▶ Frequency (Hz)
        100k  1M    10M   100M
 
-相位(deg)
+Phase (deg)
    0 |━━━━━┓
-     |      ┗━━━┓                   ← 相位开始滞后
- -90 |          ┗━━━┓               ← -90°点 ≈ BW
+     |      ┗━━━┓                   ← Phase begins to lag
+ -90 |          ┗━━━┓               ← -90° point ≈ BW
      |              ┗━━━┓
--180 |                  ┗━━━━━━    ← 高频渐近线
-     └─────────────────────────▶ 频率(Hz)
+-180 |                  ┗━━━━━━    ← High frequency asymptote
+     └─────────────────────────▶ Frequency (Hz)
 ```
 
-**数值示例**（BW = 5MHz）：
+**Numerical Example** (BW = 5 MHz):
 
-| 调制频率 | 输入幅度 | 输出幅度 | 衰减(dB) | 相位滞后(°) |
-|---------|---------|---------|---------|-----------|
-| 100 kHz | 20ps | 19.8ps | -0.17 | -5 |
-| 1 MHz | 20ps | 18.5ps | -0.66 | -20 |
-| 5 MHz | 20ps | 14.1ps | -3.0 | -90 |
-| 10 MHz | 20ps | 10.0ps | -6.0 | -135 |
-| 50 MHz | 20ps | 2.8ps | -17.0 | -175 |
+| Modulation Frequency | Input Amplitude | Output Amplitude | Attenuation (dB) | Phase Lag (°) |
+|----------------------|-----------------|------------------|------------------|---------------|
+| 100 kHz | 20 ps | 19.8 ps | -0.17 | -5 |
+| 1 MHz | 20 ps | 18.5 ps | -0.66 | -20 |
+| 5 MHz | 20 ps | 14.1 ps | -3.0 | -90 |
+| 10 MHz | 20 ps | 10.0 ps | -6.0 | -135 |
+| 50 MHz | 20 ps | 2.8 ps | -17.0 | -175 |
 
-**验证方法**：
+**Verification Method**:
 ```bash
 python scripts/measure_loop_bandwidth.py cdr_tran_track.csv
 ```
 
-脚本自动计算：
-- -3dB带宽
-- 相位裕度（PM）
-- 增益裕度（GM）
+Script automatically calculates:
+- -3 dB bandwidth
+- Phase Margin (PM)
+- Gain Margin (GM)
 
-**验证标准**：
-- [ ] -3dB带宽与理论值接近（误差 < 20%）
-- [ ] 相位裕度 > 45°（稳定性要求）
-- [ ] 无谐振峰值（阻尼充分）
+**Verification Standards**:
+- [ ] -3 dB bandwidth close to theoretical value (error < 20%)
+- [ ] Phase margin > 45° (stability requirement)
+- [ ] No resonance peaks (sufficient damping)
 
-#### 5.2.5 LOOP_BANDWIDTH - 环路带宽精确测量
+#### 5.2.5 LOOP_BANDWIDTH - Loop Bandwidth Precise Measurement
 
-**测试配置**：
-- 多组PI参数对比
-- 调制频率：10kHz ~ 100MHz（每倍频10个点）
-- 调制幅度：固定20ps（线性范围）
+**Test Configuration**:
+- Multiple PI parameter sets for comparison
+- Modulation frequency: 10 kHz ~ 100 MHz (10 points per octave)
+- Modulation amplitude: Fixed 20 ps (linear range)
 
-**理论计算对比**：
+**Theoretical Calculation Comparison**:
 
-| 配置 | Kp | Ki | 理论BW (MHz) | 理论ζ | 实测BW (MHz) | 实测ζ | 误差(%) |
-|-----|----|----|-------------|-------|-------------|-------|--------|
+| Config | Kp | Ki | Theoretical BW (MHz) | Theoretical ζ | Measured BW (MHz) | Measured ζ | Error (%) |
+|--------|----|----|----------------------|---------------|-------------------|------------|-----------|
 | 1 | 0.005 | 2.5e-5 | 2.51 | 0.707 | 2.38 | 0.72 | -5.2 |
 | 2 | 0.01 | 1e-4 | 5.03 | 0.707 | 4.87 | 0.69 | -3.2 |
 | 3 | 0.02 | 4e-4 | 10.05 | 0.707 | 9.65 | 0.71 | -4.0 |
 
-> **说明**：理论值基于线性化模型，实测值因Bang-Bang PD的非线性略有偏差（通常5~10%）。
+> **Note**: Theoretical values are based on linearized model; measured values slightly deviate due to Bang-Bang PD nonlinearity (typically 5~10%).
 
-**Bode图绘制**：
+**Bode Plot Generation**:
 
 ```bash
 python scripts/plot_bode.py cdr_tran_bw.csv
 ```
 
-生成双子图：
-- 上图：幅频响应（dB vs Hz，对数刻度）
-- 下图：相频响应（degree vs Hz，对数刻度）
+Generate dual subplots:
+- Top: Magnitude response (dB vs Hz, logarithmic scale)
+- Bottom: Phase response (degree vs Hz, logarithmic scale)
 
-标注关键点：
-- -3dB带宽频率
-- 相位裕度（PM）
-- 增益交叉频率
+Annotate key points:
+- -3 dB bandwidth frequency
+- Phase margin (PM)
+- Gain crossover frequency
 
-**验证标准**：
-- [ ] 实测带宽与理论值误差 < 20%
-- [ ] 不同参数配置的带宽比例符合预期（如Kp加倍，BW应增加约41%）
-- [ ] 相位裕度 > 45°（所有配置）
+**Verification Standards**:
+- [ ] Measured bandwidth error from theoretical value < 20%
+- [ ] Bandwidth ratio for different parameter configurations matches expectations (e.g., if Kp doubles, BW should increase by ~41%)
+- [ ] Phase margin > 45° (all configurations)
 
-### 5.3 波形数据文件格式
+### 5.3 Waveform Data File Formats
 
-#### 5.3.1 相位波形文件（cdr_tran_*.csv）
+#### 5.3.1 Phase Waveform File (cdr_tran_*.csv)
 
-**主要输出**：CDR相位调整信号的时域波形。
+**Main Output**: Time-domain waveform of CDR phase adjustment signal.
 
-**文件格式**：
+**File Format**:
 
 ```csv
-时间(s), 相位输出(s), 相位输出(ps), 相位输出(UI), 相位误差(ps)
+Time(s), Phase Output(s), Phase Output(ps), Phase Output(UI), Phase Error(ps)
 0.000000e+00, 0.000000e+00, 0.00, 0.000, 0.00
 1.000000e-10, 1.234567e-11, 12.35, 0.123, -5.67
 2.000000e-10, 2.456789e-11, 24.57, 0.246, -3.45
 ...
 ```
 
-**列说明**：
-- **时间(s)**：仿真时间戳
-- **相位输出(s)**：CDR输出的相位调整量（单位：秒）
-- **相位输出(ps)**：相位输出的皮秒表示（便于阅读）
-- **相位输出(UI)**：相位输出的UI表示（归一化）
-- **相位误差(ps)**：相位输出与理想相位的差值（如果已知理想相位）
+**Column Descriptions**:
+- **Time (s)**: Simulation timestamp
+- **Phase Output (s)**: CDR output phase adjustment (unit: seconds)
+- **Phase Output (ps)**: Phase output in picoseconds (for readability)
+- **Phase Output (UI)**: Phase output in UI (normalized)
+- **Phase Error (ps)**: Difference between phase output and ideal phase (if ideal phase is known)
 
-**采样率**：
-- 默认：每UI一个数据点
-- 高分辨率模式：每UI 10个采样点（用于观察细节）
+**Sampling Rate**:
+- Default: One data point per UI
+- High resolution mode: 10 sampling points per UI (for observing details)
 
-**文件大小估算**：
-- 10,000 UI @ 1列/UI ≈ 10,000行 ≈ 500KB
-- 50,000 UI @ 10列/UI ≈ 500,000行 ≈ 25MB
+**File Size Estimation**:
+- 10,000 UI @ 1 column/UI ≈ 10,000 rows ≈ 500 KB
+- 50,000 UI @ 10 columns/UI ≈ 500,000 rows ≈ 25 MB
 
-#### 5.3.2 BER统计文件（cdr_ber_summary.json）
+#### 5.3.2 BER Statistics File (cdr_ber_summary.json)
 
-**输出**：综合性能指标的JSON格式汇总。
+**Output**: Comprehensive performance metrics in JSON format.
 
-**文件格式**：
+**File Format**:
 
 ```json
 {
@@ -1239,22 +1239,22 @@ python scripts/plot_bode.py cdr_tran_bw.csv
 }
 ```
 
-**关键字段说明**：
-- **phase_statistics.lock_time_ui**：锁定时间（UI）
-- **phase_statistics.steady_state_rms_ps**：稳态抖动RMS（ps）
-- **ber_statistics.ber**：误码率
-- **loop_performance.bandwidth_measured_mhz**：实测环路带宽
-- **loop_performance.phase_margin_deg**：相位裕度
-- **status**：测试结果（PASSED/FAILED/WARNING）
+**Key Field Descriptions**:
+- **phase_statistics.lock_time_ui**: Lock time (UI)
+- **phase_statistics.steady_state_rms_ps**: Steady-state jitter RMS (ps)
+- **ber_statistics.ber**: Bit error rate
+- **loop_performance.bandwidth_measured_mhz**: Measured loop bandwidth
+- **loop_performance.phase_margin_deg**: Phase margin
+- **status**: Test result (PASSED/FAILED/WARNING)
 
-#### 5.3.3 JTOL数据文件（cdr_jtol.csv）
+#### 5.3.3 JTOL Data File (cdr_jtol.csv)
 
-**输出**：抖动容限测试的频率扫描结果。
+**Output**: Frequency sweep results of jitter tolerance test.
 
-**文件格式**：
+**File Format**:
 
 ```csv
-抖动频率(Hz), 抖动幅度(ps), 抖动幅度(UI), BER, 测试时长(UI), 误码数
+Jitter Frequency (Hz), Jitter Amplitude (ps), Jitter Amplitude (UI), BER, Test Duration (UI), Error Count
 1.00e+03, 100.0, 1.000, 1.23e-15, 1000000, 0
 1.00e+04, 98.5, 0.985, 5.67e-13, 1000000, 0
 1.00e+05, 95.2, 0.952, 1.02e-12, 1000000, 1
@@ -1265,30 +1265,30 @@ python scripts/plot_bode.py cdr_tran_bw.csv
 1.00e+08, 30.2, 0.302, 8.94e-13, 1000000, 0
 ```
 
-**后处理示例**：
+**Post-processing Example**:
 
 ```python
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-# 读取JTOL数据
+# Read JTOL data
 df = pd.read_csv('cdr_jtol.csv')
 
-# 绘制JTOL曲线
+# Plot JTOL curve
 plt.figure(figsize=(10, 6))
-plt.semilogx(df['抖动频率(Hz)'], df['抖动幅度(UI)'], 'o-', linewidth=2)
+plt.semilogx(df['Jitter Frequency (Hz)'], df['Jitter Amplitude (UI)'], 'o-', linewidth=2)
 plt.xlabel('Jitter Frequency (Hz)')
 plt.ylabel('Jitter Tolerance (UI)')
 plt.title('CDR Jitter Tolerance Curve')
 plt.grid(True, which='both', alpha=0.3)
 
-# 标注-3dB点
-bw_idx = np.argmin(np.abs(df['抖动幅度(UI)'] - 0.707))
-bw_freq = df['抖动频率(Hz)'].iloc[bw_idx]
+# Annotate -3 dB point
+bw_idx = np.argmin(np.abs(df['Jitter Amplitude (UI)'] - 0.707))
+bw_freq = df['Jitter Frequency (Hz)'].iloc[bw_idx]
 plt.axvline(bw_freq, color='r', linestyle='--', label=f'BW ≈ {bw_freq/1e6:.1f} MHz')
 
-# 标注低频高频区域
+# Annotate low/high frequency regions
 plt.axhline(1.0, color='g', linestyle=':', alpha=0.5, label='Full Tracking')
 plt.axhline(0.3, color='b', linestyle=':', alpha=0.5, label='Intrinsic Tolerance')
 
@@ -1298,94 +1298,94 @@ plt.savefig('jtol_curve.png', dpi=300)
 plt.show()
 ```
 
-#### 5.3.4 调试日志文件（cdr_debug.log）
+#### 5.3.4 Debug Log File (cdr_debug.log)
 
-**输出**：仅在debug模式下生成，包含逐周期的内部状态。
+**Output**: Generated only in debug mode, contains cycle-by-cycle internal states.
 
-**文件格式**（文本格式，便于grep）：
+**File Format** (text format, easy for grep):
 
 ```
-[时间=1.000e-10] PD输入=1, PD输出=1, 比例项=0.010, 积分项=0.001, 相位输出=0.011
-[时间=2.000e-10] PD输入=0, PD输出=-1, 比例项=-0.010, 积分项=0.001, 相位输出=-0.009
-[时间=3.000e-10] PD输入=1, PD输出=1, 比例项=0.010, 积分项=0.002, 相位输出=0.012
+[Time=1.000e-10] PD Input=1, PD Output=1, Prop Term=0.010, Int Term=0.001, Phase Output=0.011
+[Time=2.000e-10] PD Input=0, PD Output=-1, Prop Term=-0.010, Int Term=0.001, Phase Output=-0.009
+[Time=3.000e-10] PD Input=1, PD Output=1, Prop Term=0.010, Int Term=0.002, Phase Output=0.012
 ...
 ```
 
-**用途**：
-- 诊断相位检测器输出是否正确
-- 验证PI控制器的比例项和积分项分离
-- 检查相位限幅器的工作状态
+**Usage**:
+- Diagnose whether phase detector output is correct
+- Verify PI controller's proportional and integral term separation
+- Check phase limiter operating state
 
-**启用方法**：
+**Enable Method**:
 ```bash
 ./cdr_tran_tb lock --debug
 ```
 
 ---
 
-## 6. 运行指南
+## 6. Running Guide
 
-### 6.1 环境配置
+### 6.1 Environment Configuration
 
-运行测试前需要配置环境变量：
+Before running tests, configure environment variables:
 
 ```bash
 source scripts/setup_env.sh
 ```
 
-或手动设置：
+Or manually set:
 ```bash
 export SYSTEMC_HOME=/usr/local/systemc-2.3.4
 export SYSTEMC_AMS_HOME=/usr/local/systemc-ams-2.3.4
 ```
 
-验证环境配置：
+Verify environment configuration:
 ```bash
-echo $SYSTEMC_HOME       # 应输出 SystemC 安装路径
-echo $SYSTEMC_AMS_HOME   # 应输出 SystemC-AMS 安装路径
+echo $SYSTEMC_HOME       # Should output SystemC installation path
+echo $SYSTEMC_AMS_HOME   # Should output SystemC-AMS installation path
 ```
 
-### 6.2 构建与运行
+### 6.2 Build and Run
 
 ```bash
-# 创建构建目录并编译
+# Create build directory and compile
 mkdir -p build && cd build
 cmake ..
 make cdr_tran_tb
 
-# 运行测试（在 tb 目录下）
+# Run tests (in tb directory)
 cd tb
 ./cdr_tran_tb [scenario]
 ```
 
-场景参数：
-| 参数 | 编号 | 说明 |
-|------|------|------|
-| `PHASE_LOCK_BASIC` | `0` | 基本功能测试（默认） |
-| `LOOP_BANDWIDTH` | `1` | PI参数扫描测试 |
-| `FREQUENCY_OFFSET` | `2` | 频率偏移捕获测试 |
-| `JITTER_TOLERANCE` | `3` | 抖动容限测试 |
-| `PHASE_TRACKING` | `4` | 动态相位跟踪测试 |
+Scenario parameters:
+| Parameter | Number | Description |
+|-----------|--------|-------------|
+| `PHASE_LOCK_BASIC` | `0` | Basic function test (default) |
+| `LOOP_BANDWIDTH` | `1` | PI parameter sweep test |
+| `FREQUENCY_OFFSET` | `2` | Frequency offset capture test |
+| `JITTER_TOLERANCE` | `3` | Jitter tolerance test |
+| `PHASE_TRACKING` | `4` | Dynamic phase tracking test |
 
-运行示例：
+Running examples:
 ```bash
-# 运行基本功能测试
+# Run basic function test
 ./cdr_tran_tb PHASE_LOCK_BASIC
 
-# 运行PI参数扫描
+# Run PI parameter sweep
 ./cdr_tran_tb LOOP_BANDWIDTH
 
-# 运行全部场景（批量测试）
+# Run all scenarios (batch test)
 for i in 0 1 2 3 4; do ./cdr_tran_tb $i; done
 ```
 
-### 6.3 参数配置示例
+### 6.3 Parameter Configuration Examples
 
-CDR模块支持通过JSON配置文件进行参数化。以下是针对不同应用场景的快速启动配置。
+The CDR module supports parameterization through JSON configuration files. Below are quick-start configurations for different application scenarios.
 
-#### 快速验证配置（标准带宽）
+#### Quick Verification Configuration (Standard Bandwidth)
 
-适用于初步功能验证和调试，环路带宽约5MHz：
+Suitable for preliminary function verification and debugging, loop bandwidth approximately 5 MHz:
 
 ```json
 {
@@ -1402,14 +1402,14 @@ CDR模块支持通过JSON配置文件进行参数化。以下是针对不同应�
 }
 ```
 
-**特点**：
-- 环路带宽适中（约5MHz），平衡跟踪速度和稳定性
-- 相位分辨率1ps，适用于中高端SerDes
-- 相位范围±25ps，足以应对中等频偏（<500ppm）
+**Characteristics**:
+- Moderate loop bandwidth (approx. 5 MHz), balancing tracking speed and stability
+- Phase resolution 1 ps, suitable for mid-to-high-end SerDes
+- Phase range ±25 ps, sufficient for moderate frequency offset (< 500 ppm)
 
-#### 高带宽配置（快速锁定）
+#### High Bandwidth Configuration (Fast Lock)
 
-适用于需要快速锁定的场景（如频繁链路重训练），环路带宽约10MHz：
+Suitable for scenarios requiring fast lock (e.g., frequent link retraining), loop bandwidth approximately 10 MHz:
 
 ```json
 {
@@ -1426,19 +1426,19 @@ CDR模块支持通过JSON配置文件进行参数化。以下是针对不同应�
 }
 ```
 
-**特点**：
-- 较大的Kp/Ki加快锁定速度（锁定时间<1000 UI）
-- 更大的相位范围±50ps，容纳更大频偏（<1000ppm）
-- 代价：锁定抖动略高（2~5ps RMS）
+**Characteristics**:
+- Larger Kp/Ki speeds up lock (lock time < 1000 UI)
+- Larger phase range ±50 ps, accommodates larger frequency offset (< 1000 ppm)
+- Trade-off: Slightly higher lock jitter (2~5 ps RMS)
 
-**适用场景**：
-- 链路训练阶段
-- 频繁进入/退出低功耗模式
-- 参考时钟频偏较大的系统
+**Application Scenarios**:
+- Link training phase
+- Frequent entry/exit from low-power modes
+- Systems with large reference clock frequency offset
 
-#### 低抖动配置（高稳定性）
+#### Low Jitter Configuration (High Stability)
 
-适用于要求低抖动的数据传输阶段，环路带宽约2MHz：
+Suitable for data transmission phases requiring low jitter, loop bandwidth approximately 2 MHz:
 
 ```json
 {
@@ -1455,19 +1455,19 @@ CDR模块支持通过JSON配置文件进行参数化。以下是针对不同应�
 }
 ```
 
-**特点**：
-- 较低的环路带宽减少相位抖动（<2ps RMS）
-- 更高的相位分辨率0.5ps提升精度
-- 代价：锁定时间较长（>3000 UI）
+**Characteristics**:
+- Lower loop bandwidth reduces phase jitter (< 2 ps RMS)
+- Higher phase resolution 0.5 ps improves precision
+- Trade-off: Longer lock time (> 3000 UI)
 
-**适用场景**：
-- 数据传输稳态阶段
-- 高质量信道（低抖动环境）
-- 对BER极其敏感的应用
+**Application Scenarios**:
+- Steady-state data transmission phase
+- High-quality channels (low jitter environment)
+- Applications extremely sensitive to BER
 
-#### 宽频偏适应配置（双环架构仿真）
+#### Wide Frequency Offset Adaptation Configuration (Dual-Loop Architecture Simulation)
 
-适用于大频偏场景（>1000ppm），需要宽相位范围：
+Suitable for large frequency offset scenarios (> 1000 ppm), requiring wide phase range:
 
 ```json
 {
@@ -1484,77 +1484,77 @@ CDR模块支持通过JSON配置文件进行参数化。以下是针对不同应�
 }
 ```
 
-**特点**：
-- 极宽的相位范围±100ps，容纳极端频偏（<2000ppm @ 10Gbps）
-- 平衡的PI参数兼顾速度和稳定性
-- 适度放宽分辨率至2ps降低计算开销
+**Characteristics**:
+- Extremely wide phase range ±100 ps, accommodates extreme frequency offset (< 2000 ppm @ 10 Gbps)
+- Balanced PI parameters兼顾速度和稳定性
+- Moderately relaxed resolution to 2 ps reduces computational overhead
 
-**适用场景**：
-- 参考时钟质量差的系统
-- 跨时钟域系统级仿真
-- 压力测试和频偏容限验证
+**Application Scenarios**:
+- Systems with poor reference clock quality
+- Cross-clock-domain system-level simulation
+- Stress testing and frequency offset tolerance verification
 
-#### 自定义参数调优指南
+#### Custom Parameter Tuning Guide
 
-根据实际需求调整参数时，参考以下准则：
+When adjusting parameters based on actual requirements, refer to the following guidelines:
 
-**环路带宽目标**：
+**Loop Bandwidth Target**:
 ```
-理论带宽估算：BW ≈ √(Ki) / (2π)  [Hz]
-调整策略：
-  - 提高BW：同时增大Kp和Ki（保持 Ki ≈ Kp²）
-  - 降低BW：同时减小Kp和Ki
-```
-
-**阻尼系数目标**：
-```
-推荐范围：ζ = 0.7 ~ 1.0（避免振荡）
-调整策略：
-  - 若出现振荡：增大Kp（提升阻尼）
-  - 若响应过慢：减小Kp（降低阻尼）
+Theoretical bandwidth estimation: BW ≈ √(Ki) / (2π)  [Hz]
+Adjustment strategy:
+  - Increase BW: Increase Kp and Ki simultaneously (maintain Ki ≈ Kp²)
+  - Decrease BW: Decrease Kp and Ki simultaneously
 ```
 
-**相位范围估算**：
+**Damping Coefficient Target**:
 ```
-最小范围需求：range ≥ |freq_offset(ppm)| × 1e-6 × UI × 10000
-示例：500ppm @ 10Gbps (UI=100ps) → range ≥ 50ps
-```
-
-**分辨率选择**：
-```
-经验法则：resolution = UI / 64 ~ UI / 256
-  - 高端实现：UI/256 (约0.4ps @ 10Gbps)
-  - 中端实现：UI/128 (约0.8ps @ 10Gbps)
-  - 低成本实现：UI/64 (约1.6ps @ 10Gbps)
+Recommended range: ζ = 0.7 ~ 1.0 (avoid oscillation)
+Adjustment strategy:
+  - If oscillation occurs: Increase Kp (increase damping)
+  - If response is too slow: Decrease Kp (decrease damping)
 ```
 
-### 6.4 结果查看
+**Phase Range Estimation**:
+```
+Minimum range requirement: range ≥ |freq_offset(ppm)| × 1e-6 × UI × 10000
+Example: 500 ppm @ 10 Gbps (UI=100 ps) → range ≥ 50 ps
+```
 
-测试完成后，控制台输出关键性能指标（锁定时间、相位误差统计、锁定抖动等），波形数据保存到`.dat`文件。
+**Resolution Selection**:
+```
+Rule of thumb: resolution = UI / 64 ~ UI / 256
+  - High-end implementation: UI/256 (approx. 0.4 ps @ 10 Gbps)
+  - Mid-range implementation: UI/128 (approx. 0.8 ps @ 10 Gbps)
+  - Low-cost implementation: UI/64 (approx. 1.6 ps @ 10 Gbps)
+```
 
-#### 波形可视化
+### 6.4 Results Viewing
 
-使用Python脚本进行波形绘制和分析：
+After test completion, the console outputs key performance metrics (lock time, phase error statistics, lock jitter, etc.), and waveform data is saved to `.dat` files.
+
+#### Waveform Visualization
+
+Use Python scripts for waveform plotting and analysis:
 
 ```bash
-# 基本波形可视化（相位误差、PI输出）
+# Basic waveform visualization (phase error, PI output)
 python scripts/plot_cdr_waveform.py --input tb/cdr_basic_phase.dat
 
-# 频谱分析（相位抖动PSD）
+# Spectrum analysis (phase jitter PSD)
 python scripts/plot_cdr_psd.py --input tb/cdr_basic_phase.dat
 
-# 多场景对比（PI参数扫描结果）
+# Multi-scenario comparison (PI parameter sweep results)
 python scripts/plot_cdr_sweep.py --dir tb/cdr_sweep_results/
 ```
 
-**输出文件命名规范**：
-- `cdr_[scenario]_phase.dat`：相位输出时域波形
-- `cdr_[scenario]_error.dat`：相位误差时域波形
-- `cdr_[scenario]_stats.json`：统计指标（均值、RMS、锁定时间）
+**Output File Naming Convention**:
+- `cdr_[scenario]_phase.dat`: Phase output time-domain waveform
+- `cdr_[scenario]_error.dat`: Phase error time-domain waveform
+- `cdr_[scenario]_stats.json`: Statistical metrics (mean, RMS, lock time)
 
-#### 关键指标解读
+#### Key Metrics Interpretation
 
-控制台输出示例：
+Console output example:
 ```
 === CDR Performance Statistics ===
 Lock Time:        2345 UI (234.5 ns)
@@ -1565,125 +1565,125 @@ Phase Error (locked):
 Phase Output Range:
   Min:            -15.2 ps
   Max:            +14.8 ps
-  Utilization:    60.0% of ±25ps range
+  Utilization:    60.0% of ±25 ps range
 BER (if available): 1.2e-13
 ```
 
-**指标判断准则**：
-- **Lock Time < 3000 UI**：锁定速度合格
-- **RMS < 5ps**：锁定抖动良好（Bang-Bang PD典型值）
-- **Mean ≈ 0ps**：无静态相位偏移（PI积分有效）
-- **Utilization < 80%**：相位范围裕量充足
+**Metric Criteria**:
+- **Lock Time < 3000 UI**: Lock speed qualified
+- **RMS < 5 ps**: Lock jitter good (typical value for Bang-Bang PD)
+- **Mean ≈ 0 ps**: No static phase offset (PI integral effective)
+- **Utilization < 80%**: Phase range margin sufficient
 
-#### 问题诊断指南
+#### Troubleshooting Guide
 
-| 现象 | 可能原因 | 解决方案 |
-|------|----------|----------|
-| 无法锁定（相位发散） | Kp/Ki过大导致不稳定 | 减小Kp/Ki，检查阻尼系数 |
-| 锁定时间过长 | Kp/Ki过小 | 增大Kp/Ki，但保持ζ>0.5 |
-| 锁定抖动过大 | 环路带宽过高 | 减小Kp/Ki降低带宽 |
-| 相位范围耗尽 | 频偏过大或range不足 | 增大pai.range，检查频偏 |
-| 相位误差有直流偏移 | Ki过小无法消除静差 | 增大Ki（保持Ki≈Kp/10） |
+| Symptom | Possible Cause | Solution |
+|---------|---------------|----------|
+| Cannot lock (phase diverges) | Kp/Ki too large causing instability | Decrease Kp/Ki, check damping coefficient |
+| Lock time too long | Kp/Ki too small | Increase Kp/Ki, but keep ζ > 0.5 |
+| Lock jitter too large | Loop bandwidth too high | Decrease loop bandwidth (reduce Kp/Ki) |
+| Phase range exhausted | Frequency offset too large or range insufficient | Increase pai.range, check frequency offset |
+| DC phase offset | Ki too small to eliminate static error | Increase Ki (maintain Ki ≈ Kp/10) |
 
 ---
 
-## 7. 技术要点
+## 7. Technical Points
 
-### 7.1 环路稳定性设计
+### 7.1 Loop Stability Design
 
-CDR环路是典型的反馈控制系统，稳定性设计至关重要：
+CDR loop is a typical feedback control system; stability design is crucial:
 
-**二阶系统特性**：
+**Second-Order System Characteristics**:
 
-PI控制器构成二阶环路，其阻尼系数ζ决定稳定性：
-- **ζ < 0.5**：欠阻尼，快速响应但有过冲和振荡
-- **ζ = 0.707**：临界阻尼，最快无过冲响应（最优）
-- **ζ > 1.0**：过阻尼，无过冲但响应慢
+The PI controller forms a second-order loop; its damping coefficient ζ determines stability:
+- **ζ < 0.5**: Underdamped, fast response but with overshoot and oscillation
+- **ζ = 0.707**: Critical damping, fastest overshoot-free response (optimal)
+- **ζ > 1.0**: Overdamped, no overshoot but slow response
 
-**Kp和Ki的关系**：
+**Kp and Ki Relationship**:
 
-给定目标阻尼系数ζ和环路带宽BW，反推PI参数：
+Given target damping coefficient ζ and loop bandwidth BW, reverse-calculate PI parameters:
 ```
 ωn = 2π × BW
 Ki = ωn² / Fs
 Kp = 2 × ζ × ωn
 ```
 
-> ⚠️ **示例计算的注意事项**：
+> ⚠️ **Example Calculation Notes**:
 > 
-> 以下示例计算基于**线性相位检测器**的连续域模型推导，但本模块使用的是**Bang-Bang相位检测器**，其非线性特性导致实际参数需要调整。以下公式仅供**初步估算**，实际设计需通过仿真验证。
+> The following example calculations are derived based on the **linear phase detector** continuous-domain model, but this module uses a **Bang-Bang Phase Detector**, and its nonlinear characteristics require actual parameter adjustments. The following formulas are for **preliminary estimation** only; actual design requires simulation verification.
 >
-> **示例计算**（10Gbps系统，目标BW=5MHz，ζ=0.707）：
+> **Example Calculation** (10 Gbps system, target BW = 5 MHz, ζ = 0.707):
 > ```
 > ωn = 2π × 5e6 = 3.14e7 rad/s
 > Ki = (3.14e7)² / 10e9 = 9.8e-5
 > Kp = 2 × 0.707 × 3.14e7 / 10e9 = 0.0044
 > ```
 > 
-> **或者**，如需删除此计算示例以避免混淆，可直接提醒用户：
-> "由于Bang-Bang PD的非线性特性，建议通过SystemC-AMS仿真调优Kp/Ki参数，而非依赖线性化公式。"
+> **Alternatively**, if you wish to remove this calculation example to avoid confusion, directly remind users:
+> "Due to the nonlinear characteristics of Bang-Bang PD, it is recommended to tune Kp/Ki parameters through SystemC-AMS simulation rather than relying on linearized formulas."
 
-### 7.2 Bang-Bang PD的抖动性能
+### 7.2 Bang-Bang PD Jitter Performance
 
-Bang-Bang相位检测器的离散特性会引入环路抖动：
+The discrete characteristics of the Bang-Bang Phase Detector introduce loop jitter:
 
-**随机抖动（RJ）来源**：
-- PD输出为离散的±1，缺乏线性区间
-- 每次更新都是"过校正"，导致相位在最佳点附近抖动
-- 抖动幅度与环路增益成正比：σφ ≈ √(Kp / Fs)
+**Random Jitter (RJ) Sources**:
+- PD output is discrete ±1, lacking linear region
+- Each update is an "over-correction", causing phase to jitter around the optimal point
+- Jitter amplitude is proportional to loop gain: σφ ≈ √(Kp / Fs)
 
-**降低抖动的方法**：
-1. 降低环路带宽（减小Kp/Ki）
-2. 使用线性相位检测器（如Hogge PD）替代Bang-Bang PD
-3. 增加相位检测器分辨率（多级量化）
+**Methods to Reduce Jitter**:
+1. Reduce loop bandwidth (decrease Kp/Ki)
+2. Use linear phase detector (e.g., Hogge PD) instead of Bang-Bang PD
+3. Increase phase detector resolution (multi-level quantization)
 
-**Bang-Bang PD的优势**：
-- 结构简单，硬件开销小
-- 对输入信号幅度不敏感
-- 适用于高速链路（40Gbps+）
+**Advantages of Bang-Bang PD**:
+- Simple structure, low hardware overhead
+- Insensitive to input signal amplitude
+- Suitable for high-speed links (40 Gbps+)
 
-### 7.3 相位插值器分辨率选择
+### 7.3 Phase Interpolator Resolution Selection
 
-相位插值器分辨率影响CDR的精度和硬件成本：
+Phase interpolator resolution affects CDR accuracy and hardware cost:
 
-**分辨率与UI的关系**：
+**Resolution and UI Relationship**:
 
-典型设计中，相位插值器分辨率为UI的1/64~1/256：
-- **高精度**（UI/256）：σφ < 0.5ps，适用于56G/112G PAM4
-- **中等精度**（UI/128）：σφ ≈ 1ps，适用于10G/25G NRZ
-- **低精度**（UI/64）：σφ ≈ 2ps，适用于低成本应用
+In typical designs, phase interpolator resolution is 1/64~1/256 of UI:
+- **High precision** (UI/256): σφ < 0.5 ps, suitable for 56G/112G PAM4
+- **Medium precision** (UI/128): σφ ≈ 1 ps, suitable for 10G/25G NRZ
+- **Low precision** (UI/64): σφ ≈ 2 ps, suitable for low-cost applications
 
-**默认值选择**（1ps）：
+**Default Selection** (1 ps):
 
-项目默认1ps（1e-12秒）对应UI/100（假设10Gbps，UI=100ps）：
-- 提供足够的相位调整精度
-- 模拟中高端SerDes实现
-- 可通过配置调整为更粗糙的分辨率（5ps）模拟低成本方案
+Project default 1 ps (1e-12 seconds) corresponds to UI/100 (assuming 10 Gbps, UI = 100 ps):
+- Provides sufficient phase adjustment precision
+- Simulates mid-to-high-end SerDes implementation
+- Can be configured to coarser resolution (5 ps) to simulate low-cost solutions
 
-**量化噪声**：
+**Quantization Noise**:
 
-分辨率越粗，量化噪声越大：
+The coarser the resolution, the greater the quantization noise:
 ```
 σ_quantization ≈ resolution / √12
 ```
-对于1ps分辨率，量化噪声约0.29ps RMS。
+For 1 ps resolution, quantization noise is approximately 0.29 ps RMS.
 
-### 7.4 与采样器模块的接口设计
+### 7.4 Interface Design with Sampler Module
 
-CDR的`phase_out`端口必须与采样器的`phase_offset`端口正确连接：
+The CDR's `phase_out` port must be correctly connected to the sampler's `phase_offset` port:
 
-**单位约定**：
+**Unit Convention**:
 
-- CDR输出：时间偏移量，单位**秒（s）**
-- 采样器接收：相位偏移量，单位**秒（s）**
-- 物理含义：正值延迟采样，负值提前采样
+- CDR output: Time offset, unit **seconds (s)**
+- Sampler receives: Phase offset, unit **seconds (s)**
+- Physical meaning: Positive value delays sampling, negative value advances sampling
 
-**时序协调**：
+**Timing Coordination**:
 
-CDR和采样器工作在相同的采样率（Fs），确保：
+CDR and sampler work at the same sampling rate (Fs), ensuring:
 ```cpp
-// 两者必须设置相同采样率
-cdr.set_attributes() {
+// Both must be set to the same sampling rate
+void RxCdrTdf::set_attributes() {
     in.set_rate(1);
     phase_out.set_rate(1);
 }
@@ -1694,113 +1694,113 @@ sampler.set_attributes() {
 }
 ```
 
-**相位更新延迟**：
+**Phase Update Delay**:
 
-实际硬件中，CDR相位更新到采样器有延迟（1~2个周期），当前模型未考虑此延迟。若需要更精确建模，可在CDR模块内部增加延迟缓冲器。
+In actual hardware, there is delay from CDR phase update to sampler (1~2 cycles); the current model does not account for this delay. If more precise modeling is needed, a delay buffer can be added inside the CDR module.
 
-### 7.5 频率捕获（待实现功能）
+### 7.5 Frequency Acquisition (Pending Implementation)
 
-当前版本未实现频率捕获功能，仅适用于发送端和接收端频率已近似匹配的场景（频偏 < ±100ppm）。
+The current version does not implement frequency acquisition functionality; it is only suitable for scenarios where transmitter and receiver frequencies are approximately matched (frequency offset < ±100 ppm).
 
-**频率检测器的必要性**：
+**Necessity of Frequency Detector**:
 
-实际SerDes中，参考时钟频偏可达±100ppm，对应10Gbps系统为±1MHz。若仅靠相位环路跟踪，会导致：
-- 相位累积量持续增大，超出相位插值器范围
-- 环路无法锁定
+In actual SerDes, reference clock frequency offset can reach ±100 ppm, corresponding to ±1 MHz for a 10 Gbps system. If only the phase loop tracks, this will cause:
+- Phase accumulation continuously increases, exceeding phase interpolator range
+- Loop cannot lock
 
-**频率辅助方案**（未来版本）：
+**Frequency-Assisted Solutions** (future versions):
 
-1. **旋转频率检测器**（Rotational Frequency Detector）：
-   - 监测相位累积量的变化率
-   - 输出频率误差信号到VCO或PLL
+1. **Rotational Frequency Detector**:
+   - Monitor the rate of change of phase accumulation
+   - Output frequency error signal to VCO or PLL
 
-2. **双环架构**：
-   - 低带宽频率环（kHz级）：跟踪频偏
-   - 高带宽相位环（MHz级）：跟踪抖动
+2. **Dual-Loop Architecture**:
+   - Low-bandwidth frequency loop (kHz level): Tracks frequency offset
+   - High-bandwidth phase loop (MHz level): Tracks jitter
 
-3. **锁定检测器**：
-   - 监测相位误差的方差
-   - 当方差小于阈值时，声明锁定
+3. **Lock Detector**:
+   - Monitor the variance of phase error
+   - Declare lock when variance is below threshold
 
-### 7.6 采样率要求
+### 7.6 Sampling Rate Requirements
 
-CDR模块的采样率必须与数据速率匹配：
+The CDR module's sampling rate must match the data rate:
 
-**推荐设置**：
+**Recommended Settings**:
 
-对于baud-rate CDR（每个符号一次相位更新）：
+For baud-rate CDR (one phase update per symbol):
 ```cpp
-// SystemC-AMS TDF模块采样率设置
+// SystemC-AMS TDF module sampling rate setting
 void RxCdrTdf::set_attributes() {
-    set_timestep(UI);  // 采样时间步长 = 单位间隔
+    set_timestep(UI);  // Sampling time step = Unit Interval
 }
 ```
 
-对于10Gbps NRZ（UI=100ps）：
-- CDR采样率 = 10 GHz
-- 每个比特触发一次相位检测和环路更新
+For 10 Gbps NRZ (UI = 100 ps):
+- CDR sampling rate = 10 GHz
+- Each bit triggers one phase detection and loop update
 
-**过采样CDR**（未来扩展）：
+**Oversampled CDR** (future extension):
 
-某些CDR设计使用2×或4×过采样以提高相位检测精度，但会增加功耗和复杂度。
+Some CDR designs use 2× or 4× oversampling to improve phase detection accuracy, but increase power consumption and complexity.
 
-### 7.7 已知限制与注意事项
+### 7.7 Known Limitations and Notes
 
-**限制1 - 相位检测精度**：
+**Limitation 1 - Phase Detection Accuracy**:
 
-当前实现采用边沿极性检测，相位检测精度有限。实际应用中可替换为完整的BBPD实现以提高精度。
+The current implementation uses edge polarity detection, which has limited phase detection accuracy. In practical applications, it can be replaced with a complete BBPD implementation to improve accuracy.
 
-**限制2 - 频率捕获能力**：
+**Limitation 2 - Frequency Capture Capability**:
 
-无法处理大频偏情况（>±100ppm）。若需要模拟参考时钟频偏，需先手动调整PLL模块的输出频率，或在后续版本中增加频率检测器。
+Cannot handle large frequency offset situations (> ±100 ppm). If simulating reference clock frequency offset is needed, manually adjust the PLL module's output frequency first, or add a frequency detector in subsequent versions.
 
-**限制3 - 无锁定检测**：
+**Limitation 3 - No Lock Detection**:
 
-模块不输出锁定状态信号，无法判断CDR是否成功锁定。建议在测试平台中监测`phase_out`信号的方差。
+The module does not output a lock status signal, making it impossible to determine if CDR has successfully locked. It is recommended to monitor the variance of the `phase_out` signal in the testbench.
 
-**限制4 - 线性相位范围**：
+**Limitation 4 - Linear Phase Range**:
 
-当相位累积量超出±range时，会硬限幅，导致暂时失去跟踪能力。实际设计中应通过频率检测器避免此情况。
+When phase accumulation exceeds ±range, hard limiting occurs, temporarily losing tracking capability. Actual designs should avoid this through a frequency detector.
 
-**注意事项**：
+**Notes**:
 
-- 调整Kp/Ki时，需同时检查阻尼系数和带宽，避免不稳定
-- 相位范围应大于预期最大频偏 × UI
-- Bang-Bang PD在低信噪比时性能下降，建议配合DFE使用
+- When adjusting Kp/Ki, check both damping coefficient and bandwidth to avoid instability
+- Phase range should be greater than expected maximum frequency offset × UI
+- Bang-Bang PD performance degrades at low SNR; recommended to use with DFE
 
 ---
 
-## 8. 参考信息
+## 8. Reference Information
 
-### 8.1 相关文件
+### 8.1 Related Files
 
-| 文件类型 | 路径 | 说明 |
-|---------|------|------|
-| 参数定义 | `/include/common/parameters.h` | RxCdrParams结构体（PI/PAI参数） |
-| 头文件 | `/include/ams/rx_cdr.h` | RxCdrTdf类声明 |
-| 实现文件 | `/src/ams/rx_cdr.cpp` | RxCdrTdf类实现 |
-| 测试平台 | `/tb/rx/cdr/cdr_tran_tb.cpp` | CDR瞬态测试平台 |
-| 测试辅助 | `/tb/rx/cdr/cdr_helpers.h` | 测试平台辅助函数 |
-| 默认配置 | `/config/default.json` | 全局配置文件（cdr章节） |
+| File Type | Path | Description |
+|-----------|------|-------------|
+| Parameter Definition | `/include/common/parameters.h` | RxCdrParams structure (PI/PAI parameters) |
+| Header File | `/include/ams/rx_cdr.h` | RxCdrTdf class declaration |
+| Implementation File | `/src/ams/rx_cdr.cpp` | RxCdrTdf class implementation |
+| Testbench | `/tb/rx/cdr/cdr_tran_tb.cpp` | CDR transient testbench |
+| Test Helper | `/tb/rx/cdr/cdr_helpers.h` | Testbench helper functions |
+| Default Configuration | `/config/default.json` | Global configuration file (cdr section) |
 
-### 8.2 依赖项
+### 8.2 Dependencies
 
-**编译时依赖**：
+**Compile-Time Dependencies**:
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
-- C++14标准
+- C++14 standard
 
-**运行时依赖**：
-- 上游模块：Sampler（`RxSamplerTdf`）提供数据采样值和边沿采样值
-- 下游模块：BER分析模块或误码统计模块（用于评估CDR性能）
+**Runtime Dependencies**:
+- Upstream module: Sampler (`RxSamplerTdf`) provides data sampled values and edge sampled values
+- Downstream module: BER analysis module or error statistics module (for evaluating CDR performance)
 
-**系统级依赖**：
-- 参考时钟源：通常由时钟生成模块（`ClockGenTdf`）提供
-- DFE模块：CDR输出的恢复时钟用于驱动DFE抽头更新
+**System-Level Dependencies**:
+- Reference clock source: Usually provided by clock generation module (`ClockGenTdf`)
+- DFE module: CDR output recovered clock used to drive DFE tap updates
 
-### 8.3 配置示例
+### 8.3 Configuration Examples
 
-#### 基本配置（标准5MHz带宽）
+#### Basic Configuration (Standard 5 MHz Bandwidth)
 
 ```json
 {
@@ -1817,13 +1817,13 @@ void RxCdrTdf::set_attributes() {
 }
 ```
 
-**参数说明**：
-- `kp = 0.01`：比例增益，控制环路响应速度
-- `ki = 1e-4`：积分增益，消除稳态相位误差
-- `resolution = 1ps`：相位插值器最小调整步长
-- `range = 50ps`：相位可调范围（约0.5 UI @ 10Gbps）
+**Parameter Notes**:
+- `kp = 0.01`: Proportional gain, controls loop response speed
+- `ki = 1e-4`: Integral gain, eliminates steady-state phase error
+- `resolution = 1 ps`: Phase interpolator minimum adjustment step
+- `range = 50 ps`: Phase adjustable range (approx. 0.5 UI @ 10 Gbps)
 
-#### 快速锁定配置（10MHz带宽）
+#### Fast Lock Configuration (10 MHz Bandwidth)
 
 ```json
 {
@@ -1840,12 +1840,12 @@ void RxCdrTdf::set_attributes() {
 }
 ```
 
-**应用场景**：
-- 突发模式通信（Burst-mode）
-- 频繁链路切换（Link training）
-- 需要快速捕获的系统（Fast acquisition）
+**Application Scenarios**:
+- Burst-mode communication
+- Frequent link switching (Link training)
+- Systems requiring fast acquisition
 
-#### 低抖动配置（2MHz带宽）
+#### Low Jitter Configuration (2 MHz Bandwidth)
 
 ```json
 {
@@ -1862,12 +1862,12 @@ void RxCdrTdf::set_attributes() {
 }
 ```
 
-**应用场景**：
-- 低抖动要求的系统（Jitter-sensitive applications）
-- 高信噪比信道（Clean channels）
-- 时钟抖动传递抑制（Jitter transfer reduction）
+**Application Scenarios**:
+- Jitter-sensitive applications
+- Clean channels
+- Jitter transfer reduction
 
-#### 宽频偏容忍配置（大范围捕获）
+#### Wide Frequency Offset Tolerance Configuration (Large Range Capture)
 
 ```json
 {
@@ -1884,16 +1884,16 @@ void RxCdrTdf::set_attributes() {
 }
 ```
 
-**应用场景**：
-- 发送端和接收端时钟频率偏差较大（>±200ppm）
-- 需要宽频偏捕获的系统（Wide frequency acquisition）
-- 无频率检测器辅助的纯相位环路
+**Application Scenarios**:
+- Large frequency offset between transmitter and receiver clocks (> ±200 ppm)
+- Wide frequency acquisition systems
+- Pure phase loop without frequency detector assistance
 
-### 8.4 参数调优指南
+### 8.4 Parameter Tuning Guide
 
-#### 环路带宽（BW）与Kp/Ki的关系
+#### Loop Bandwidth (BW) and Kp/Ki Relationship
 
-给定目标环路带宽BW和阻尼系数ζ，可估算PI参数：
+Given target loop bandwidth BW and damping coefficient ζ, PI parameters can be estimated:
 
 ```
 ωn = 2π × BW
@@ -1901,69 +1901,69 @@ Ki = ωn² × UI / Fs
 Kp = 2 × ζ × ωn × UI / Fs
 ```
 
-其中：
-- UI为单位间隔时间（秒），例如10Gbps系统中UI=100ps
-- Fs为相位累加器的更新频率（Hz）
-- 此公式**适用于Bang-Bang PD的数字CDR**（Kpd=1/UI）
+Where:
+- UI is the unit interval time (seconds), e.g., UI = 100 ps in 10 Gbps system
+- Fs is the phase accumulator update frequency (Hz)
+- This formula **applies to digital CDR with Bang-Bang PD** (Kpd = 1/UI)
 
-**推荐阻尼系数**：
-- ζ = 0.707（临界阻尼）：最快无过冲响应
-- ζ = 0.8-1.0（轻度过阻尼）：牺牲10-20%速度换取更好稳定性
+**Recommended Damping Coefficients**:
+- ζ = 0.707 (critical damping): Fastest overshoot-free response
+- ζ = 0.8-1.0 (light overdamping): Sacrifice 10-20% speed for better stability
 
-> ⚠️ **重要说明**：
-> - 对于其他类型的相位检测器，需根据实际Kpd和Kvco值调整公式
-> - 对于线性PD（Kpd≠1/UI），需要将公式中的UI替换为Kpd
-> - Bang-Bang PD的非线性特性会导致实际参数需要微调，建议将公式结果作为**初值**，通过SystemC-AMS仿真优化
+> ⚠️ **Important Notes**:
+> - For other types of phase detectors, adjust the formula according to actual Kpd and Kvco values
+> - For linear PD (Kpd ≠ 1/UI), replace UI with Kpd in the formula
+> - The nonlinear characteristics of Bang-Bang PD require fine-tuning of actual parameters; use formula results as **initial values** and optimize through SystemC-AMS simulation
 
-#### 相位调整范围（PAI range）设计
+#### Phase Adjustment Range (PAI range) Design
 
 ```
-range_min = 2 × (频偏ppm × UI) + 相位余量
+range_min = 2 × (Frequency offset ppm × UI) + Phase margin
 ```
 
-**示例**（10Gbps系统，±300ppm频偏）：
+**Example** (10 Gbps system, ±300 ppm frequency offset):
 ```
-频偏引起的相位偏差 = 300e-6 × 100ps = 30ps
-推荐range = 2 × 30ps + 20ps = 80ps
+Phase deviation caused by frequency offset = 300e-6 × 100 ps = 30 ps
+Recommended range = 2 × 30 ps + 20 ps = 80 ps
 ```
 
-#### 相位插值器分辨率（PAI resolution）权衡
+#### Phase Interpolator Resolution (PAI resolution) Trade-offs
 
-| 分辨率 | 量化相位误差 | 环路抖动 | 硬件成本 |
-|--------|-------------|---------|---------|
-| 0.5ps  | ±0.25ps     | 低      | 高（8-9 bit） |
-| 1ps    | ±0.5ps      | 中      | 中（7-8 bit） |
-| 2ps    | ±1ps        | 高      | 低（6-7 bit） |
+| Resolution | Quantization Phase Error | Loop Jitter | Hardware Cost |
+|------------|--------------------------|-------------|---------------|
+| 0.5 ps | ±0.25 ps | Low | High (8-9 bit) |
+| 1 ps | ±0.5 ps | Medium | Medium (7-8 bit) |
+| 2 ps | ±1 ps | High | Low (6-7 bit) |
 
-**推荐**：对于10-28Gbps SerDes，1ps分辨率是性能和成本的良好平衡点。
+**Recommendation**: For 10-28 Gbps SerDes, 1 ps resolution is a good balance between performance and cost.
 
-### 8.5 常见问题与解决方案
+### 8.5 Common Issues and Solutions
 
-| 问题现象 | 可能原因 | 解决方法 |
-|---------|---------|---------|
-| CDR无法锁定 | Kp/Ki过大，环路振荡 | 减小Kp和Ki，增加阻尼系数ζ |
-| 锁定速度过慢 | Kp/Ki过小，环路带宽不足 | 增大Kp和Ki，但保持ζ > 0.5 |
-| 锁定后抖动过大 | 环路带宽过高 | 减小环路带宽（降低Kp/Ki） |
-| 相位调整范围耗尽 | 频偏超出PAI range | 增大range参数或加入频率检测器 |
-| 周期性相位跳变 | PAI resolution不足 | 减小resolution或改用线性PD |
-| 直流相位偏移 | Ki过小，积分不充分 | 增大Ki，增强直流增益 |
+| Issue | Possible Cause | Solution |
+|-------|---------------|----------|
+| CDR cannot lock | Kp/Ki too large, loop oscillation | Decrease Kp and Ki, increase damping coefficient ζ |
+| Lock speed too slow | Kp/Ki too small, insufficient loop bandwidth | Increase Kp and Ki, but keep ζ > 0.5 |
+| Lock jitter too large | Loop bandwidth too high | Decrease loop bandwidth (reduce Kp/Ki) |
+| Phase adjustment range exhausted | Frequency offset exceeds PAI range | Increase range parameter or add frequency detector |
+| Periodic phase jumps | PAI resolution insufficient | Decrease resolution or use linear PD |
+| DC phase offset | Ki too small, insufficient integration | Increase Ki, enhance DC gain |
 
-### 8.6 与相关模块的接口关系
+### 8.6 Interface Relationships with Related Modules
 
-**上游模块**：
-- **Sampler**：提供`data_sample`（数据采样值）和`edge_sample`（边沿采样值），CDR据此计算相位误差
-- **DFE**：提供均衡后的信号质量，影响相位检测精度
+**Upstream Modules**:
+- **Sampler**: Provides `data_sample` (data sampled value) and `edge_sample` (edge sampled value); CDR calculates phase error based on this
+- **DFE**: Provides equalized signal quality, affects phase detection accuracy
 
-**下游模块**：
-- **解串器**（Deserializer）：使用CDR输出的`recovered_clock`进行串并转换
-- **BER测试模块**：使用恢复时钟评估误码率性能
+**Downstream Modules**:
+- **Deserializer**: Uses CDR output `recovered_clock` for serial-to-parallel conversion
+- **BER Test Module**: Uses recovered clock to evaluate bit error rate performance
 
-**系统级交互**：
-- **时钟生成模块**：提供参考时钟基准（频率约为数据速率的1/4或1/2）
-- **自适应算法**：DFE自适应、AGC自适应通常需要CDR锁定后再启动
+**System-Level Interactions**:
+- **Clock Generation Module**: Provides reference clock base (frequency approximately 1/4 or 1/2 of data rate)
+- **Adaptive Algorithms**: DFE adaptation, AGC adaptation typically start after CDR lock
 
 ---
 
-**文档版本**：v0.2  
-**最后更新**：2026-01-20  
-**作者**：Qoder serdes-doc-writer
+**Document Version**: v0.2  
+**Last Updated**: 2026-01-20  
+**Author**: Qoder serdes-doc-writer

@@ -1,434 +1,435 @@
-# Adaption 模块技术文档
+# Adaption Module Technical Documentation
 
-🌐 **Languages**: [中文](adaption.md) | [English](../en/modules/adaption.md)
+🌐 **Languages**: [中文](../../modules/adaption.md) | [English](adaption.md)
 
-**级别**：DE 顶层模块  
-**类名**：`AdaptionDe`  
-**当前版本**：v0.1 (2025-10-30)  
-**状态**：开发中
+**Level**: DE Top-Level Module  
+**Class Name**: `AdaptionDe`  
+**Current Version**: v0.1 (2025-10-30)  
+**Status**: In Development
 
 ---
 
-## 1. 概述
+## 1. Overview
 
-Adaption 是 SerDes 链路的自适应控制中枢，运行于 SystemC DE（Discrete Event）域，承载链路运行时自适应算法库。该模块通过 DE‑TDF 桥接机制对 AMS 域模块（CTLE、VGA、Sampler、DFE Summer、CDR）的参数进行在线更新与控制，提升链路在不同通道特征、数据速率与噪声条件下的稳态性能（眼图开口、抖动抑制、误码率）与动态响应（锁定时间、收敛速度）。
+The Adaption module serves as the adaptive control hub of the SerDes link, operating in the SystemC DE (Discrete Event) domain and hosting the link runtime adaptive algorithm library. Through the DE-TDF bridging mechanism, this module performs online updates and control of parameters for AMS domain modules (CTLE, VGA, Sampler, DFE Summer, CDR), improving the link's steady-state performance (eye opening, jitter suppression, bit error rate) and dynamic response (lock time, convergence speed) under varying channel characteristics, data rates, and noise conditions.
 
-### 1.1 设计原理
+### 1.1 Design Principles
 
-Adaption 模块的核心设计思想是建立多层次、多速率的自适应控制架构，通过实时反馈优化链路参数：
+The core design philosophy of the Adaption module is to establish a multi-level, multi-rate adaptive control architecture that optimizes link parameters through real-time feedback:
 
-- **分层控制策略**：将自适应算法分为快路径（CDR PI、阈值自适应，高更新频率）与慢路径（AGC、DFE 抽头更新，低更新频率），符合实际硬件的分层控制架构，平衡性能与计算开销
+- **Hierarchical Control Strategy**: The adaptive algorithms are divided into fast paths (CDR PI, threshold adaptation, high update frequency) and slow paths (AGC, DFE tap updates, low update frequency), conforming to practical hardware hierarchical control architectures while balancing performance and computational overhead
 
-- **反馈驱动优化**：依据采样误差、幅度统计、相位误差等实时指标，采用经典控制理论（PI 控制器）与自适应滤波理论（LMS/Sign-LMS）动态调整增益、抽头、阈值与相位命令
+- **Feedback-Driven Optimization**: Based on real-time metrics such as sampling error, amplitude statistics, and phase error, classical control theory (PI controller) and adaptive filtering theory (LMS/Sign-LMS) are employed to dynamically adjust gain, taps, thresholds, and phase commands
 
-- **跨域协同机制**：通过 SystemC-AMS 的 DE‑TDF 桥接机制实现 DE 域控制逻辑与 TDF 域模拟前端之间的参数传递，确保时序对齐与参数原子更新
+- **Cross-Domain Collaboration Mechanism**: Parameter transfer between DE domain control logic and TDF domain analog front-end is achieved through SystemC-AMS's DE-TDF bridging mechanism, ensuring timing alignment and atomic parameter updates
 
-- **鲁棒性设计**：提供饱和钳位、速率限制、泄漏、冻结/回退等安全机制，防止算法发散或参数异常，确保在极端场景（信号丢失、噪声暴涨、配置错误）下的系统稳定性
+- **Robustness Design**: Safety mechanisms including saturation clamping, rate limiting, leakage, freeze/rollback are provided to prevent algorithm divergence or parameter anomalies, ensuring system stability under extreme scenarios (signal loss, noise surge, configuration errors)
 
-**控制环路架构**：
+**Control Loop Architecture**:
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Adaption DE 控制层                        │
+│                    Adaption DE Control Layer                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │  快路径      │  │  慢路径      │  │  安全监管    │      │
-│  │  CDR PI      │  │  AGC/DFE     │  │  冻结/回退   │      │
-│  │  阈值自适应  │  │  抽头更新    │  │  快照保存    │      │
+│  │  Fast Path   │  │  Slow Path   │  │  Safety      │      │
+│  │  CDR PI      │  │  AGC/DFE     │  │  Freeze/     │      │
+│  │  Threshold   │  │  Tap Update  │  │  Rollback    │      │
+│  │  Adaptation  │  │              │  │  Snapshot    │      │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
 │         │                 │                 │              │
 └─────────┼─────────────────┼─────────────────┼──────────────┘
           │                 │                 │
           ▼                 ▼                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   DE‑TDF 桥接层                             │
+│                   DE-TDF Bridge Layer                        │
 │  phase_cmd, vga_gain, dfe_taps, sampler_threshold          │
 └─────────────────────────────────────────────────────────────┘
           │                 │                 │
           ▼                 ▼                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   AMS 模拟前端层                            │
+│                   AMS Analog Front-End Layer                 │
 │  ┌──────┐  ┌──────┐  ┌────────┐  ┌────────┐  ┌────────┐  │
 │  │ CDR  │  │ VGA  │  │Sampler │  │  DFE   │  │  CTLE  │  │
 │  └──┬───┘  └──┬───┘  └───┬────┘  └───┬────┘  └───┬────┘  │
 └─────┼────────┼──────────┼──────────┼───────────┼────────┘
       │        │          │          │           │
       └────────┴──────────┴──────────┴───────────┘
-                      反馈信号
+                      Feedback Signals
   phase_error, amplitude_rms, error_count, isi_metric
 ```
 
-### 1.2 核心特性
+### 1.2 Core Features
 
-- **四大自适应算法**：集成 AGC（自动增益控制）、DFE 抽头更新（LMS/Sign-LMS/NLMS）、CDR PI 控制器、阈值自适应算法，覆盖链路关键参数优化
+- **Four Major Adaptive Algorithms**: Integrated AGC (Automatic Gain Control), DFE tap updates (LMS/Sign-LMS/NLMS), CDR PI controller, and threshold adaptation algorithms, covering key link parameter optimization
 
-- **多速率调度架构**：支持事件驱动、周期驱动、多速率三种调度模式，快路径（每 10‑100 UI）与慢路径（每 1000‑10000 UI）并行运行，优化计算效率
+- **Multi-Rate Scheduling Architecture**: Supports three scheduling modes: event-driven, periodic-driven, and multi-rate. Fast paths (every 10-100 UI) and slow paths (every 1000-10000 UI) run in parallel, optimizing computational efficiency
 
-- **DE‑TDF 桥接机制**：通过 `sca_de::sca_in/out` 与 TDF 模块的 `sca_tdf::sca_de::sca_in/out` 端口连接，实现跨域参数传递，确保时序对齐与数据同步
+- **DE-TDF Bridging Mechanism**: Connects to TDF modules via `sca_de::sca_in/out` and TDF module's `sca_tdf::sca_de::sca_in/out` ports, implementing cross-domain parameter transfer while ensuring timing alignment and data synchronization
 
-- **安全与回退机制**：提供冻结策略（误码暴涨/幅度异常/相位失锁时暂停更新）、回退策略（恢复至上次稳定快照）、快照保存（周期性记录参数历史），提升系统鲁棒性
+- **Safety and Rollback Mechanisms**: Provides freeze strategies (pausing updates when error bursts/amplitude anomalies/phase unlock occur), rollback strategies (reverting to last stable snapshot), and snapshot saving (periodically recording parameter history), enhancing system robustness
 
-- **参数约束与钳位**：所有输出参数支持范围限制（gain_min/max、tap_min/max、phase_range）、速率限制（增益变化率限制）、抗积分饱和（CDR PI 控制器），防止参数发散
+- **Parameter Constraints and Clamping**: All output parameters support range limits (gain_min/max, tap_min/max, phase_range), rate limits (gain change rate limits), and anti-windup (CDR PI controller), preventing parameter divergence
 
-- **配置驱动设计**：通过 JSON/YAML 配置文件管理所有算法参数，支持运行时场景切换与参数重载，便于不同通道与速率场景的快速验证
+- **Configuration-Driven Design**: Manages all algorithm parameters through JSON/YAML configuration files, supporting runtime scenario switching and parameter reloading, facilitating rapid verification of different channels and rate scenarios
 
-- **Trace 与诊断**：输出关键信号时间序列（vga_gain、dfe_taps、sampler_threshold、phase_cmd、update_count、freeze_flag），支持后处理分析与回归验证
+- **Trace and Diagnostics**: Outputs critical signal time series (vga_gain, dfe_taps, sampler_threshold, phase_cmd, update_count, freeze_flag), supporting post-processing analysis and regression verification
 
-### 1.3 版本历史
-
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.1 | 2025-10-30 | 初始版本，建立模块框架与四大算法架构（AGC、DFE、阈值、CDR PI），定义多速率调度与冻结/回退机制，提供 JSON 配置示例与使用说明，制定测试验证计划 |
-
-## 2. 模块接口
-
-### 2.1 端口定义（DE域）
-
-Adaption 模块运行于 SystemC DE（Discrete Event）域，通过 `sca_de::sca_in/out` 端口与 TDF 域模块进行跨域通信。
-
-#### 输入端口（来自 RX/CDR/SystemConfiguration）
-
-| 端口名 | 方向 | 类型 | 说明 |
-|-------|------|------|------|
-| `phase_error` | 输入 | double | 相位误差（CDR 用，单位：秒或归一化 UI），来自 CDR 相位检测器输出 |
-| `amplitude_rms` | 输入 | double | 幅度 RMS 或峰值（AGC 用），来自 RX 幅度统计模块 |
-| `error_count` | 输入 | int | 误码计数或误差累积（阈值自适应/DFE 用），来自 Sampler 判决误差统计 |
-| `isi_metric` | 输入 | double | ISI 指标（可选，用于 DFE 更新策略），反映码间干扰程度 |
-| `mode` | 输入 | int | 运行模式（0=初始化，1=训练，2=数据，3=冻结），来自系统配置控制器 |
-| `reset` | 输入 | bool | 全局复位或参数重置信号，高电平有效 |
-| `scenario_switch` | 输入 | double | 场景切换事件（可选），用于多场景热切换触发 |
-
-> **重要**：所有输入端口必须连接，即使对应算法未启用（SystemC-AMS 要求所有端口均需连接）。
-
-#### 输出端口（到 RX/CDR）
-
-| 端口名 | 方向 | 类型 | 说明 |
-|-------|------|------|------|
-| `vga_gain` | 输出 | double | VGA 增益设定（线性倍数），通过 DE‑TDF 桥接写入 RX VGA 模块 |
-| `ctle_zero` | 输出 | double | CTLE 零点频率（Hz，可选），支持在线调整 CTLE 频响特性 |
-| `ctle_pole` | 输出 | double | CTLE 极点频率（Hz，可选），在线调整 CTLE 带宽 |
-| `ctle_dc_gain` | 输出 | double | CTLE 直流增益（线性倍数，可选），在线调整 CTLE 低频增益 |
-| `dfe_taps` | 输出 | vector&lt;double&gt; | DFE 抽头系数数组 [tap1, tap2, ..., tapN]，写入 DFE Summer 模块 |
-| `sampler_threshold` | 输出 | double | 采样阈值（V），写入 Sampler 模块判决比较器 |
-| `sampler_hysteresis` | 输出 | double | 迟滞窗口（V），写入 Sampler 模块抗噪迟滞 |
-| `phase_cmd` | 输出 | double | 相位插值器命令（秒或归一化步长），写入 CDR PI 控制器 |
-| `update_count` | 输出 | int | 更新次数计数器，用于诊断和性能分析 |
-| `freeze_flag` | 输出 | bool | 冻结/回退状态标志，高电平表示参数更新已暂停 |
-
-#### 桥接机制说明
-
-| 机制 | 说明 |
-|------|------|
-| **DE‑TDF 桥接** | 使用 `sca_de::sca_in/out` 与 TDF 模块的 `sca_tdf::sca_de::sca_in/out` 端口连接 |
-| **时序对齐** | DE 事件驱动或周期驱动更新，参数在下一 TDF 采样周期生效；避免读写竞争与跨域延迟不确定性 |
-| **数据同步** | 通过缓冲机制或时间戳标记，确保参数原子更新（多参数同时切换时） |
-| **延迟处理** | DE→TDF 桥接可能有 1 个 TDF 周期延迟，算法设计需考虑此延迟对稳定性影响 |
-
-### 2.2 参数配置（AdaptionParams）
-
-#### 基本参数
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `Fs` | double | 80e9 | 系统采样率（Hz），影响更新周期与时序对齐 |
-| `UI` | double | 2.5e-11 | 单位间隔（秒），用于归一化相位误差与抖动指标 |
-| `seed` | int | 12345 | 随机种子（用于仿真可重复性，与算法随机化扰动相关） |
-| `update_mode` | string | "multi-rate" | 调度模式："event"（事件驱动）\|"periodic"（周期驱动）\|"multi-rate"（多速率） |
-| `fast_update_period` | double | 2.5e-10 | 快路径更新周期（秒，用于 CDR/阈值，约 10 UI） |
-| `slow_update_period` | double | 2.5e-7 | 慢路径更新周期（秒，用于 AGC/DFE，约 10000 UI） |
-
-#### AGC 子结构
-
-自动增益控制参数，通过 PI 控制器动态调整 VGA 增益以维持目标输出幅度。
-
-| 参数 | 说明 |
-|------|------|
-| `enabled` | 启用 AGC 算法 |
-| `target_amplitude` | 目标幅度（V 或归一化），期望的输出信号幅度 |
-| `kp` | PI 控制器比例系数，控制响应速度 |
-| `ki` | PI 控制器积分系数，控制稳态误差 |
-| `gain_min` | 最小增益（线性倍数），饱和下限 |
-| `gain_max` | 最大增益（线性倍数），饱和上限 |
-| `rate_limit` | 增益变化速率限制（linear/s），防止过快变化导致不稳定 |
-| `initial_gain` | 初始增益（线性倍数），系统启动时的默认值 |
-
-**工作原理**：
-1. 从 `amplitude_rms` 端口读取当前输出幅度
-2. 计算幅度误差：`amp_error = target_amplitude - current_amplitude`
-3. PI 控制器更新：`gain = P + I`，其中 `P = kp * amp_error`，`I += ki * amp_error * dt`
-4. 增益饱和钳位：`gain = clamp(gain, gain_min, gain_max)`
-5. 速率限制：防止单次更新增益变化过大
-6. 输出到 `vga_gain` 端口，下一 TDF 周期生效
-
-#### DFE 子结构
-
-DFE 抽头更新参数，使用自适应滤波算法在线优化 DFE 抽头系数以抑制码间干扰（ISI）。
-
-| 参数 | 说明 |
-|------|------|
-| `enabled` | 启用 DFE 在线更新 |
-| `num_taps` | 抽头数量（通常 3‑8），决定 DFE 可抑制的 ISI 深度 |
-| `algorithm` | 更新算法："lms" \| "sign-lms" \| "nlms"，选择不同的自适应策略 |
-| `mu` | 步长系数（LMS/Sign‑LMS），控制收敛速度与稳定性权衡 |
-| `leakage` | 泄漏系数（0‑1），防止噪声累积导致抽头发散 |
-| `initial_taps` | 初始抽头系数数组 [tap1, tap2, ..., tapN]，系统启动时的默认值 |
-| `tap_min` | 单个抽头最小值（饱和约束），防止抽头系数过小 |
-| `tap_max` | 单个抽头最大值（饱和约束），防止抽头系数过大 |
-| `freeze_threshold` | 误差超过此阈值时冻结更新，避免异常噪声干扰 |
-
-**工作原理**（以 Sign-LMS 为例）：
-1. 从 `error_count` 端口或专用误差端口读取当前判决误差 `e(n)`
-2. 对每个抽头 `i`：
-   - 获取延迟 `i` 个符号的判决值 `x[n-i]`
-   - Sign-LMS 更新：`tap[i] = tap[i] + mu * sign(e(n)) * sign(x[n-i])`
-   - 泄露处理：`tap[i] = (1 - leakage) * tap[i]`
-   - 饱和钳位：`tap[i] = clamp(tap[i], tap_min, tap_max)`
-3. 冻结条件：若 `|e(n)| > freeze_threshold`，暂停所有抽头更新
-4. 输出到 `dfe_taps` 数组端口，DFE Summer 在下一周期使用新系数
-
-#### 阈值自适应子结构
-
-采样阈值自适应参数，通过动态调整判决阈值和迟滞窗口优化误码率性能。
-
-| 参数 | 说明 |
-|------|------|
-| `enabled` | 启用阈值自适应 |
-| `initial` | 初始阈值（V），系统启动时的默认判决电平 |
-| `hysteresis` | 迟滞窗口（V），抗噪迟滞宽度 |
-| `adapt_step` | 调整步长（V/更新），每次更新的阈值变化量 |
-| `target_ber` | 目标 BER（用于阈值优化目标，可选），自适应算法的优化目标 |
-| `drift_threshold` | 电平漂移阈值（V），超过时触发阈值调整 |
-
-**工作原理**：
-1. 从采样信号统计高/低电平分布（均值、方差）
-2. 或使用误码趋势（`error_count` 变化率）作为反馈
-3. 梯度下降或二分查找策略调整阈值，向误码减小方向移动
-4. 根据噪声强度动态调整迟滞窗口，平衡抗噪与灵敏度
-5. 输出到 `sampler_threshold` 和 `sampler_hysteresis` 端口
-
-#### CDR PI 子结构
-
-CDR PI 控制器参数，通过相位插值器命令调整采样相位，实现时钟数据恢复。
-
-| 参数 | 说明 |
-|------|------|
-| `enabled` | 启用 PI 控制 |
-| `kp` | 比例系数，控制环路响应速度 |
-| `ki` | 积分系数，控制稳态相位误差 |
-| `phase_resolution` | 相位命令分辨率（秒），量化步长 |
-| `phase_range` | 相位命令范围（±秒），最大相位调整范围 |
-| `anti_windup` | 启用抗积分饱和，防止积分器溢出 |
-| `initial_phase` | 初始相位命令（秒），系统启动时的默认相位 |
-
-**工作原理**：
-1. 从 `phase_error` 端口读取相位误差（早/晚采样差值）
-2. PI 控制器更新：`phase_cmd = P + I`，其中 `P = kp * phase_error`，`I += ki * phase_error * dt`
-3. 抗饱和处理：若 `phase_cmd` 超出 `±phase_range`，钳位并停止积分累积
-4. 量化处理：按 `phase_resolution` 量化命令：`phase_cmd_q = round(phase_cmd / phase_resolution) * phase_resolution`
-5. 输出到 `phase_cmd` 端口，相位插值器根据命令调整采样时刻
-
-#### 安全与回退子结构
-
-安全监管机制参数，提供冻结、回退、快照保存等鲁棒性保障。
-
-| 参数 | 说明 |
-|------|------|
-| `freeze_on_error` | 误差超限时是否冻结所有更新，防止参数发散 |
-| `rollback_enable` | 是否支持参数回滚至上次稳定快照，故障恢复机制 |
-| `snapshot_interval` | 稳定快照保存间隔（秒），周期性记录参数历史 |
-| `error_burst_threshold` | 误码暴涨阈值（触发冻结/回退），异常检测门限 |
-
-**工作原理**：
-1. **冻结策略**：检测误码暴涨（`error_count > error_burst_threshold`）、幅度异常、相位失锁等条件，暂停所有参数更新
-2. **快照保存**：每隔 `snapshot_interval` 保存一次当前参数（增益、抽头、阈值、相位）到历史缓冲
-3. **回退策略**：冻结持续时间超过阈值或关键指标持续劣化时，恢复至上次稳定快照参数，重新启动训练
-4. **历史记录**：维护最近 N 次更新的参数与指标历史，输出到 trace（`update_count`、`freeze_flag`）用于诊断
-
-## 4. 测试平台架构
-
-### 4.1 测试平台设计思想
-
-Adaption 测试平台（`AdaptionTestbench`）采用多场景驱动的分层测试架构，支持四大自适应算法（AGC、DFE、阈值自适应、CDR PI）的独立测试与联合验证。核心设计理念：
-
-1. **分层测试策略**：将测试分为单元级（单算法）、集成级（多算法联合）、系统级（完整链路）三个层次，逐步验证算法正确性与系统鲁棒性
-
-2. **多速率仿真支持**：通过 DE 域事件触发器模拟快路径（每 10-100 UI）与慢路径（每 1000-10000 UI）的并行调度，验证多速率架构的正确性
-
-3. **可重构测试环境**：支持通过配置文件快速切换测试场景（短通道/长通道/串扰/抖动），无需重新编译
-
-4. **自动化验证框架**：集成收敛性检测、稳定性监控、回归指标计算，自动判断测试通过/失败
-
-5. **故障注入机制**：支持误码暴涨、幅度异常、相位失锁等故障注入，验证冻结/回退机制的鲁棒性
-
-### 4.2 测试场景定义
-
-测试平台支持八种核心测试场景：
-
-| 场景 | 命令行参数 | 测试目标 | 输出文件 | 仿真时长 |
-|------|----------|---------|----------|----------|
-| BASIC_FUNCTION | `basic` / `0` | 基本功能测试（所有算法联合） | adaption_basic.csv | 10 μs |
-| AGC_TEST | `agc` / `1` | AGC 自动增益控制 | adaption_agc.csv | 10 μs |
-| DFE_TEST | `dfe` / `2` | DFE 抽头更新（LMS/Sign-LMS） | adaption_dfe.csv | 10 μs |
-| THRESHOLD_TEST | `threshold` / `3` | 阈值自适应算法 | adaption_threshold.csv | 10 μs |
-| CDR_PI_TEST | `cdr_pi` / `4` | CDR PI 控制器 | adaption_cdr.csv | 10 μs |
-| FREEZE_ROLLBACK | `safety` / `5` | 冻结与回退机制 | adaption_safety.csv | 10 μs |
-| MULTI_RATE | `multirate` / `6` | 多速率调度架构 | adaption_multirate.csv | 10 μs |
-| SCENARIO_SWITCH | `switch` / `7` | 多场景热切换 | adaption_switch.csv | 9 μs |
-
-### 4.3 场景配置详解
-
-#### BASIC_FUNCTION - 基本功能测试
-
-验证 Adaption 模块在标准链路场景下所有算法的联合工作能力。
-
-- **信号源**：PRBS-31 伪随机序列
-- **符号率**：40 Gbps（UI = 25ps）
-- **通道**：标准长通道（S21 插损 15dB @ 20GHz）
-- **AGC 配置**：目标幅度 0.4V，增益范围 [0.5, 8.0]
-- **DFE 配置**：5 个抽头，Sign-LMS 算法，步长 1e-4
-- **阈值配置**：初始阈值 0.0V，迟滞 0.02V
-- **CDR 配置**：Kp=0.01，Ki=1e-4，相位范围 ±0.5 UI
-- **仿真时长**：10 μs（400,000 UI）
-- **验证点**：
-  - AGC 增益收敛至稳定值（变化 < 1%）
-  - DFE 抽头收敛至稳定值（变化 < 0.001）
-  - 相位误差 RMS < 0.01 UI
-  - 误码率 < 1e-9
-
-#### AGC_TEST - AGC 自动增益控制测试
-
-验证 AGC PI 控制器在不同幅度输入下的增益调整能力。
-
-- **信号源**：幅度阶跃信号（0.2V → 0.6V → 0.3V）
-- **阶跃时刻**：2 μs、5 μs
-- **AGC 配置**：目标幅度 0.4V，Kp=0.1，Ki=100.0
-- **验证点**：
-  - 阶跃响应无超调（增益变化率受速率限制）
-  - 稳态误差 < 5%
-  - 收敛时间 < 5000 UI
-  - 增益范围 [gain_min, gain_max] 钳位生效
-
-#### DFE_TEST - DFE 抽头更新测试
-
-验证 DFE 抽头更新算法在 ISI 场景下的收敛性与稳定性。
-
-- **信号源**：PRBS-31
-- **通道**：强 ISI 通道（S21 插损 25dB @ 20GHz）
-- **DFE 配置**：
-  - 抽头数量：8 个
-  - 算法：Sign-LMS（可切换 LMS/NLMS）
-  - 步长：1e-4
-  - 泄漏系数：1e-6
-- **验证点**：
-  - 抽头在 10000 UI 内收敛至稳定值
-  - 收敛后抽头变化 < 0.001
-  - 误码率改善 > 10x（vs 无 DFE）
-  - 长时间运行（1e6 UI）无发散
-
-#### THRESHOLD_TEST - 阈值自适应测试
-
-验证阈值自适应算法在电平漂移和噪声变化下的跟踪能力。
-
-- **信号源**：PRBS-31 + 直流偏移漂移（±50mV）
-- **偏移频率**：1 MHz
-- **噪声注入**：RJ sigma=5ps
-- **阈值配置**：自适应步长 0.001V，漂移阈值 0.05V
-- **验证点**：
-  - 阈值自动跟踪电平漂移（误差 < 10mV）
-  - 迟滞窗口根据噪声强度调整
-  - 误码率最小化
-  - 异常噪声暴涨时不误触发极端阈值
-
-#### CDR_PI_TEST - CDR PI 控制器测试
-
-验证 CDR PI 控制器在不同相位误差下的锁定能力与抖动抑制性能。
-
-- **信号源**：PRBS-31 + 相位噪声
-- **相位噪声**：SJ 5MHz, 2ps + RJ 1ps
-- **初始相位误差**：5e-11 秒（±0.5 UI）
-- **CDR 配置**：Kp=0.01，Ki=1e-4，相位范围 5e-11 秒（±0.5 UI）
-- **验证点**：
-  - 锁定时间 < 1000 UI
-  - 稳态相位误差 RMS < 0.01 UI
-  - 大相位扰动下积分器不溢出
-  - 相位噪声抑制符合预期
-
-#### FREEZE_ROLLBACK - 冻结与回退机制测试
-
-验证冻结与回退机制在异常场景下的鲁棒性。
-
-- **信号源**：PRBS-31
-- **故障注入**：
-  - 3 μs：误码暴涨（error_count > 100）
-  - 6 μs：幅度异常（amplitude_rms 超出范围）
-  - 9 μs：相位失锁（|phase_error| > 0.5 UI）
-- **安全配置**：
-  - 误码暴涨阈值：100
-  - 快照保存间隔：1 μs
-  - 回退启用：true
-- **验证点**：
-  - 故障触发时冻结标志置位
-  - 参数更新暂停
-  - 回退至上次稳定快照
-  - 恢复时间 < 2000 UI
-
-#### MULTI_RATE - 多速率调度架构测试
-
-验证快路径与慢路径的并行调度与优先级处理。
-
-- **信号源**：PRBS-31
-- **更新周期**：
-  - 快路径：25ps（1 UI）
-  - 慢路径：2.5ns（100 UI）
-- **验证点**：
-  - 快路径更新次数 ≈ 400,000
-  - 慢路径更新次数 ≈ 4,000
-  - 无竞态条件
-  - 参数更新时间戳正确
-
-#### SCENARIO_SWITCH - 多场景热切换测试
-
-验证场景切换时的参数原子性与防抖策略。
-
-- **场景序列**：
-  - 0-3 μs：短通道（S21 插损 5dB）
-  - 3-6 μs：长通道（S21 插损 15dB）
-  - 6-9 μs：串扰场景
-- **切换时刻**：3 μs、6 μs
-- **验证点**：
-  - 参数原子切换（所有参数同时更新）
-  - 切换后进入训练期（误码统计冻结）
-  - 无参数不一致导致的瞬态误码
-  - 切换时间 < 100 UI
-
-### 4.4 信号连接拓扑
-
-测试平台的模块连接关系如下：
+### 1.3 Version History
+
+| Version | Date | Major Changes |
+|---------|------|---------------|
+| v0.1 | 2025-10-30 | Initial version, established module framework and four major algorithm architectures (AGC, DFE, Threshold, CDR PI), defined multi-rate scheduling and freeze/rollback mechanisms, provided JSON configuration examples and usage instructions, established test verification plan |
+
+## 2. Module Interface
+
+### 2.1 Port Definitions (DE Domain)
+
+The Adaption module operates in the SystemC DE (Discrete Event) domain and communicates across domains with TDF domain modules through `sca_de::sca_in/out` ports.
+
+#### Input Ports (from RX/CDR/SystemConfiguration)
+
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `phase_error` | Input | double | Phase error (for CDR, unit: seconds or normalized UI), from CDR phase detector output |
+| `amplitude_rms` | Input | double | Amplitude RMS or peak (for AGC), from RX amplitude statistics module |
+| `error_count` | Input | int | Error count or error accumulation (for threshold adaptation/DFE), from Sampler decision error statistics |
+| `isi_metric` | Input | double | ISI metric (optional, for DFE update strategy), reflecting inter-symbol interference degree |
+| `mode` | Input | int | Operating mode (0=initialization, 1=training, 2=data, 3=freeze), from system configuration controller |
+| `reset` | Input | bool | Global reset or parameter reset signal, active high |
+| `scenario_switch` | Input | double | Scenario switching event (optional), for triggering multi-scenario hot-swap |
+
+> **Important**: All input ports must be connected, even if the corresponding algorithm is not enabled (SystemC-AMS requires all ports to be connected).
+
+#### Output Ports (to RX/CDR)
+
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `vga_gain` | Output | double | VGA gain setting (linear multiplier), written to RX VGA module through DE-TDF bridge |
+| `ctle_zero` | Output | double | CTLE zero frequency (Hz, optional), supports online adjustment of CTLE frequency response characteristics |
+| `ctle_pole` | Output | double | CTLE pole frequency (Hz, optional), online adjustment of CTLE bandwidth |
+| `ctle_dc_gain` | Output | double | CTLE DC gain (linear multiplier, optional), online adjustment of CTLE low-frequency gain |
+| `dfe_taps` | Output | vector&lt;double&gt; | DFE tap coefficient array [tap1, tap2, ..., tapN], written to DFE Summer module |
+| `sampler_threshold` | Output | double | Sampling threshold (V), written to Sampler module decision comparator |
+| `sampler_hysteresis` | Output | double | Hysteresis window (V), written to Sampler module for noise immunity |
+| `phase_cmd` | Output | double | Phase interpolator command (seconds or normalized step), written to CDR PI controller |
+| `update_count` | Output | int | Update counter, for diagnostics and performance analysis |
+| `freeze_flag` | Output | bool | Freeze/rollback status flag, high indicates parameter updates are paused |
+
+#### Bridge Mechanism Description
+
+| Mechanism | Description |
+|-----------|-------------|
+| **DE-TDF Bridge** | Uses `sca_de::sca_in/out` connected to TDF module's `sca_tdf::sca_de::sca_in/out` ports |
+| **Timing Alignment** | DE event-driven or periodic-driven updates, parameters take effect in the next TDF sampling cycle; avoiding read-write races and cross-domain delay uncertainties |
+| **Data Synchronization** | Through buffering mechanism or timestamp marking, ensuring atomic parameter updates (when multiple parameters switch simultaneously) |
+| **Delay Handling** | DE→TDF bridge may have 1 TDF cycle delay, algorithm design needs to consider this delay's impact on stability |
+
+### 2.2 Parameter Configuration (AdaptionParams)
+
+#### Basic Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `Fs` | double | 80e9 | System sampling rate (Hz), affects update period and timing alignment |
+| `UI` | double | 2.5e-11 | Unit interval (seconds), used for normalizing phase error and jitter metrics |
+| `seed` | int | 12345 | Random seed (for simulation repeatability, related to algorithm randomization perturbation) |
+| `update_mode` | string | "multi-rate" | Scheduling mode: "event" (event-driven) \| "periodic" (periodic-driven) \| "multi-rate" (multi-rate) |
+| `fast_update_period` | double | 2.5e-10 | Fast path update period (seconds, for CDR/Threshold, ~10 UI) |
+| `slow_update_period` | double | 2.5e-7 | Slow path update period (seconds, for AGC/DFE, ~10000 UI) |
+
+#### AGC Sub-Structure
+
+Automatic Gain Control parameters, dynamically adjusting VGA gain through PI controller to maintain target output amplitude.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Enable AGC algorithm |
+| `target_amplitude` | Target amplitude (V or normalized), desired output signal amplitude |
+| `kp` | PI controller proportional coefficient, controls response speed |
+| `ki` | PI controller integral coefficient, controls steady-state error |
+| `gain_min` | Minimum gain (linear multiplier), saturation lower limit |
+| `gain_max` | Maximum gain (linear multiplier), saturation upper limit |
+| `rate_limit` | Gain change rate limit (linear/s), prevents instability from too-fast changes |
+| `initial_gain` | Initial gain (linear multiplier), default value at system startup |
+
+**Working Principle**:
+1. Read current output amplitude from `amplitude_rms` port
+2. Calculate amplitude error: `amp_error = target_amplitude - current_amplitude`
+3. PI controller update: `gain = P + I`, where `P = kp * amp_error`, `I += ki * amp_error * dt`
+4. Gain saturation clamping: `gain = clamp(gain, gain_min, gain_max)`
+5. Rate limiting: prevents excessive gain change in single update
+6. Output to `vga_gain` port, takes effect in next TDF cycle
+
+#### DFE Sub-Structure
+
+DFE tap update parameters, using adaptive filtering algorithms to online optimize DFE tap coefficients to suppress inter-symbol interference (ISI).
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Enable DFE online update |
+| `num_taps` | Number of taps (usually 3-8), determines DFE's ISI suppression depth |
+| `algorithm` | Update algorithm: "lms" \| "sign-lms" \| "nlms", selecting different adaptive strategies |
+| `mu` | Step size coefficient (LMS/Sign-LMS), controls convergence speed vs stability trade-off |
+| `leakage` | Leakage coefficient (0-1), prevents noise accumulation causing tap divergence |
+| `initial_taps` | Initial tap coefficient array [tap1, tap2, ..., tapN], default values at system startup |
+| `tap_min` | Single tap minimum value (saturation constraint), prevents tap coefficient from being too small |
+| `tap_max` | Single tap maximum value (saturation constraint), prevents tap coefficient from being too large |
+| `freeze_threshold` | Error exceeding this threshold freezes updates, avoiding abnormal noise interference |
+
+**Working Principle** (Sign-LMS example):
+1. Read current decision error `e(n)` from `error_count` port or dedicated error port
+2. For each tap `i`:
+   - Get decision value delayed by `i` symbols `x[n-i]`
+   - Sign-LMS update: `tap[i] = tap[i] + mu * sign(e(n)) * sign(x[n-i])`
+   - Leakage processing: `tap[i] = (1 - leakage) * tap[i]`
+   - Saturation clamping: `tap[i] = clamp(tap[i], tap_min, tap_max]`
+3. Freeze condition: If `|e(n)| > freeze_threshold`, pause all tap updates
+4. Output to `dfe_taps` array port, DFE Summer uses new coefficients in next cycle
+
+#### Threshold Adaptation Sub-Structure
+
+Sampling threshold adaptation parameters, optimizing bit error rate performance through dynamically adjusting decision threshold and hysteresis window.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Enable threshold adaptation |
+| `initial` | Initial threshold (V), default decision level at system startup |
+| `hysteresis` | Hysteresis window (V), noise immunity hysteresis width |
+| `adapt_step` | Adjustment step (V/update), threshold change amount per update |
+| `target_ber` | Target BER (for threshold optimization objective, optional), optimization target for adaptive algorithm |
+| `drift_threshold` | Level drift threshold (V), triggers threshold adjustment when exceeded |
+
+**Working Principle**:
+1. From sampling signal statistics high/low level distribution (mean, variance)
+2. Or use error trend (`error_count` change rate) as feedback
+3. Gradient descent or binary search strategy adjusts threshold, moving toward direction of decreasing errors
+4. Dynamically adjust hysteresis window based on noise intensity, balancing noise immunity and sensitivity
+5. Output to `sampler_threshold` and `sampler_hysteresis` ports
+
+#### CDR PI Sub-Structure
+
+CDR PI controller parameters, adjusting sampling phase through phase interpolator commands to achieve clock data recovery.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enabled` | Enable PI control |
+| `kp` | Proportional coefficient, controls loop response speed |
+| `ki` | Integral coefficient, controls steady-state phase error |
+| `phase_resolution` | Phase command resolution (seconds), quantization step |
+| `phase_range` | Phase command range (±seconds), maximum phase adjustment range |
+| `anti_windup` | Enable anti-windup, prevents integrator overflow |
+| `initial_phase` | Initial phase command (seconds), default phase at system startup |
+
+**Working Principle**:
+1. Read phase error from `phase_error` port (early/late sampling difference)
+2. PI controller update: `phase_cmd = P + I`, where `P = kp * phase_error`, `I += ki * phase_error * dt`
+3. Anti-saturation processing: If `phase_cmd` exceeds `±phase_range`, clamp and stop integral accumulation
+4. Quantization processing: Quantize command by `phase_resolution`: `phase_cmd_q = round(phase_cmd / phase_resolution) * phase_resolution`
+5. Output to `phase_cmd` port, phase interpolator adjusts sampling moment based on command
+
+#### Safety and Rollback Sub-Structure
+
+Safety supervision mechanism parameters, providing robustness guarantees such as freeze, rollback, and snapshot saving.
+
+| Parameter | Description |
+|-----------|-------------|
+| `freeze_on_error` | Whether to freeze all updates when error exceeds limit, prevents parameter divergence |
+| `rollback_enable` | Whether to support parameter rollback to last stable snapshot, fault recovery mechanism |
+| `snapshot_interval` | Stable snapshot save interval (seconds), periodically records parameter history |
+| `error_burst_threshold` | Error burst threshold (triggers freeze/rollback), anomaly detection threshold |
+
+**Working Principle**:
+1. **Freeze Strategy**: Detect error bursts (`error_count > error_burst_threshold`), amplitude anomalies, phase unlock conditions, pause all parameter updates
+2. **Snapshot Save**: Save current parameters (gain, taps, threshold, phase) to history buffer every `snapshot_interval`
+3. **Rollback Strategy**: When freeze duration exceeds threshold or key metrics continue to degrade, restore to last stable snapshot parameters and restart training
+4. **History Record**: Maintain history of recent N updates' parameters and metrics, output to trace (`update_count`, `freeze_flag`) for diagnostics
+
+## 4. Testbench Architecture
+
+### 4.1 Testbench Design Philosophy
+
+The Adaption testbench (`AdaptionTestbench`) adopts a multi-scenario driven hierarchical testing architecture, supporting independent testing and joint verification of the four major adaptive algorithms (AGC, DFE, Threshold Adaptation, CDR PI). Core design concepts:
+
+1. **Hierarchical Testing Strategy**: Testing is divided into three levels: unit-level (single algorithm), integration-level (multi-algorithm joint), and system-level (complete link), progressively verifying algorithm correctness and system robustness
+
+2. **Multi-Rate Simulation Support**: Simulates fast path (every 10-100 UI) and slow path (every 1000-10000 UI) parallel scheduling through DE domain event triggers, verifying multi-rate architecture correctness
+
+3. **Reconfigurable Test Environment**: Supports rapid switching of test scenarios (short channel/long channel/crosstalk/jitter) through configuration files without recompilation
+
+4. **Automated Verification Framework**: Integrated convergence detection, stability monitoring, regression metrics calculation, automatically determining test pass/fail
+
+5. **Fault Injection Mechanism**: Supports error bursts, amplitude anomalies, phase unlock fault injection, verifying freeze/rollback mechanism robustness
+
+### 4.2 Test Scenario Definitions
+
+The testbench supports eight core test scenarios:
+
+| Scenario | Command Line Parameter | Test Objective | Output File | Simulation Duration |
+|----------|------------------------|----------------|-------------|---------------------|
+| BASIC_FUNCTION | `basic` / `0` | Basic function test (all algorithms joint) | adaption_basic.csv | 10 μs |
+| AGC_TEST | `agc` / `1` | AGC automatic gain control | adaption_agc.csv | 10 μs |
+| DFE_TEST | `dfe` / `2` | DFE tap update (LMS/Sign-LMS) | adaption_dfe.csv | 10 μs |
+| THRESHOLD_TEST | `threshold` / `3` | Threshold adaptation algorithm | adaption_threshold.csv | 10 μs |
+| CDR_PI_TEST | `cdr_pi` / `4` | CDR PI controller | adaption_cdr.csv | 10 μs |
+| FREEZE_ROLLBACK | `safety` / `5` | Freeze and rollback mechanism | adaption_safety.csv | 10 μs |
+| MULTI_RATE | `multirate` / `6` | Multi-rate scheduling architecture | adaption_multirate.csv | 10 μs |
+| SCENARIO_SWITCH | `switch` / `7` | Multi-scenario hot-swap | adaption_switch.csv | 9 μs |
+
+### 4.3 Scenario Configuration Details
+
+#### BASIC_FUNCTION - Basic Function Test
+
+Verifies the joint working capability of all algorithms in the Adaption module under standard link scenarios.
+
+- **Signal Source**: PRBS-31 pseudo-random sequence
+- **Symbol Rate**: 40 Gbps (UI = 25ps)
+- **Channel**: Standard long channel (S21 insertion loss 15dB @ 20GHz)
+- **AGC Configuration**: Target amplitude 0.4V, gain range [0.5, 8.0]
+- **DFE Configuration**: 5 taps, Sign-LMS algorithm, step size 1e-4
+- **Threshold Configuration**: Initial threshold 0.0V, hysteresis 0.02V
+- **CDR Configuration**: Kp=0.01, Ki=1e-4, phase range ±0.5 UI
+- **Simulation Duration**: 10 μs (400,000 UI)
+- **Verification Points**:
+  - AGC gain converges to stable value (change < 1%)
+  - DFE taps converge to stable values (change < 0.001)
+  - Phase error RMS < 0.01 UI
+  - Bit error rate < 1e-9
+
+#### AGC_TEST - AGC Automatic Gain Control Test
+
+Verifies AGC PI controller's gain adjustment capability under different amplitude inputs.
+
+- **Signal Source**: Amplitude step signal (0.2V → 0.6V → 0.3V)
+- **Step Moments**: 2 μs, 5 μs
+- **AGC Configuration**: Target amplitude 0.4V, Kp=0.1, Ki=100.0
+- **Verification Points**:
+  - Step response without overshoot (gain change rate limited by rate limit)
+  - Steady-state error < 5%
+  - Convergence time < 5000 UI
+  - Gain range [gain_min, gain_max] clamping effective
+
+#### DFE_TEST - DFE Tap Update Test
+
+Verifies DFE tap update algorithm's convergence and stability under ISI scenarios.
+
+- **Signal Source**: PRBS-31
+- **Channel**: Strong ISI channel (S21 insertion loss 25dB @ 20GHz)
+- **DFE Configuration**:
+  - Number of taps: 8
+  - Algorithm: Sign-LMS (can switch to LMS/NLMS)
+  - Step size: 1e-4
+  - Leakage coefficient: 1e-6
+- **Verification Points**:
+  - Taps converge to stable values within 10000 UI
+  - Post-convergence tap change < 0.001
+  - Bit error rate improvement > 10x (vs no DFE)
+  - No divergence during long-term operation (1e6 UI)
+
+#### THRESHOLD_TEST - Threshold Adaptation Test
+
+Verifies threshold adaptation algorithm's tracking capability under level drift and noise changes.
+
+- **Signal Source**: PRBS-31 + DC offset drift (±50mV)
+- **Offset Frequency**: 1 MHz
+- **Noise Injection**: RJ sigma=5ps
+- **Threshold Configuration**: Adaptive step 0.001V, drift threshold 0.05V
+- **Verification Points**:
+  - Threshold automatically tracks level drift (error < 10mV)
+  - Hysteresis window adjusts based on noise intensity
+  - Bit error rate minimized
+  - No extreme threshold triggering during abnormal noise surges
+
+#### CDR_PI_TEST - CDR PI Controller Test
+
+Verifies CDR PI controller's locking capability and jitter suppression performance under different phase errors.
+
+- **Signal Source**: PRBS-31 + phase noise
+- **Phase Noise**: SJ 5MHz, 2ps + RJ 1ps
+- **Initial Phase Error**: 5e-11 seconds (±0.5 UI)
+- **CDR Configuration**: Kp=0.01, Ki=1e-4, phase range 5e-11 seconds (±0.5 UI)
+- **Verification Points**:
+  - Lock time < 1000 UI
+  - Steady-state phase error RMS < 0.01 UI
+  - Integrator does not overflow under large phase disturbance
+  - Phase noise suppression meets expectations
+
+#### FREEZE_ROLLBACK - Freeze and Rollback Mechanism Test
+
+Verifies freeze and rollback mechanism robustness under abnormal scenarios.
+
+- **Signal Source**: PRBS-31
+- **Fault Injection**:
+  - 3 μs: Error burst (error_count > 100)
+  - 6 μs: Amplitude anomaly (amplitude_rms out of range)
+  - 9 μs: Phase unlock (|phase_error| > 0.5 UI)
+- **Safety Configuration**:
+  - Error burst threshold: 100
+  - Snapshot save interval: 1 μs
+  - Rollback enabled: true
+- **Verification Points**:
+  - Freeze flag set when fault triggered
+  - Parameter updates paused
+  - Rollback to last stable snapshot
+  - Recovery time < 2000 UI
+
+#### MULTI_RATE - Multi-Rate Scheduling Architecture Test
+
+Verifies fast path and slow path parallel scheduling and priority handling.
+
+- **Signal Source**: PRBS-31
+- **Update Period**:
+  - Fast path: 25ps (1 UI)
+  - Slow path: 2.5ns (100 UI)
+- **Verification Points**:
+  - Fast path update count ≈ 400,000
+  - Slow path update count ≈ 4,000
+  - No race conditions
+  - Parameter update timestamps correct
+
+#### SCENARIO_SWITCH - Multi-Scenario Hot-Swap Test
+
+Verifies parameter atomicity and anti-shake strategy during scenario switching.
+
+- **Scenario Sequence**:
+  - 0-3 μs: Short channel (S21 insertion loss 5dB)
+  - 3-6 μs: Long channel (S21 insertion loss 15dB)
+  - 6-9 μs: Crosstalk scenario
+- **Switch Moments**: 3 μs, 6 μs
+- **Verification Points**:
+  - Parameter atomic switching (all parameters update simultaneously)
+  - Enter training period after switch (error statistics frozen)
+  - No transient errors due to parameter inconsistency
+  - Switch time < 100 UI
+
+### 4.4 Signal Connection Topology
+
+The module connection relationships in the testbench are as follows:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    AdaptionTestbench (DE 域)                     │
+│                    AdaptionTestbench (DE Domain)                 │
 │                                                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │  信号源      │  │  通道模型    │  │  RX 链路     │          │
-│  │  (WaveGen)   │  │  (Channel)   │  │  (CTLE/VGA/ │          │
-│  │              │  │              │  │   Sampler)   │          │
+│  │  Signal      │  │  Channel     │  │  RX Link     │          │
+│  │  Source      │  │  Model       │  │  (CTLE/VGA/  │          │
+│  │  (WaveGen)   │  │  (Channel)   │  │   Sampler)   │          │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
 │         │                 │                 │                   │
 │         └─────────────────┴─────────────────┘                   │
 │                           │                                     │
 │                           ▼                                     │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    AdaptionDe (DE 域)                     │  │
+│  │                    AdaptionDe (DE Domain)                 │  │
 │  │                                                           │  │
-│  │  输入端口:                                                 │  │
+│  │  Input Ports:                                             │  │
 │  │    phase_error ←──────────────────────────────────────┐  │  │
-│  │    amplitude_rms ←─────────────────────────────────┐  │  │
-│  │    error_count ←────────────────────────────────┐  │  │  │
-│  │    isi_metric ←─────────────────────────────┐  │  │  │  │
-│  │    mode ←──────────────────────────────┐  │  │  │  │  │
-│  │    reset ←─────────────────────────┐  │  │  │  │  │  │
-│  │    scenario_switch ←──────────┐  │  │  │  │  │  │  │
-│  │                               │  │  │  │  │  │  │  │
-│  │  输出端口:                     │  │  │  │  │  │  │  │
+│  │    amplitude_rms ←─────────────────────────────────┐  │  │  │
+│  │    error_count ←────────────────────────────────┐  │  │  │  │
+│  │    isi_metric ←─────────────────────────────┐  │  │  │  │  │
+│  │    mode ←──────────────────────────────┐  │  │  │  │  │  │
+│  │    reset ←─────────────────────────┐  │  │  │  │  │  │  │
+│  │    scenario_switch ←──────────┐  │  │  │  │  │  │  │  │
+│  │                               │  │  │  │  │  │  │  │  │
+│  │  Output Ports:                │  │  │  │  │  │  │  │  │
 │  │    vga_gain ──────────────────┼──┼──┼──┼──┼──┼──┼──┼──▶  │
 │  │    dfe_taps ──────────────────┼──┼──┼──┼──┼──┼──┼──┼──▶  │
 │  │    sampler_threshold ─────────┼──┼──┼──┼──┼──┼──┼──┼──▶  │
@@ -439,26 +440,28 @@ Adaption 测试平台（`AdaptionTestbench`）采用多场景驱动的分层测�
 │  └───────────────────────────────┼──┼──┼──┼──┼──┼──┼──┼──┘  │
 │                                  │  │  │  │  │  │  │  │       │
 │  ┌───────────────────────────────┼──┼──┼──┼──┼──┼──┼──┼──┐  │
-│  │  监控器 (TraceMonitor)        │  │  │  │  │  │  │  │  │  │
-│  │  - 记录参数时间序列           │  │  │  │  │  │  │  │  │  │
-│  │  - 计算收敛指标               │  │  │  │  │  │  │  │  │  │
-│  │  - 输出 CSV 文件              │  │  │  │  │  │  │  │  │  │
+│  │  Monitor (TraceMonitor)       │  │  │  │  │  │  │  │  │  │
+│  │  - Record parameter time      │  │  │  │  │  │  │  │  │  │
+│  │    series                     │  │  │  │  │  │  │  │  │  │
+│  │  - Calculate convergence      │  │  │  │  │  │  │  │  │  │
+│  │    metrics                    │  │  │  │  │  │  │  │  │  │
+│  │  - Output CSV file            │  │  │  │  │  │  │  │  │  │
 │  └───────────────────────────────┼──┼──┼──┼──┼──┼──┼──┼──┘  │
 │                                  │  │  │  │  │  │  │  │       │
 └──────────────────────────────────┼──┼──┼──┼──┼──┼──┼──┼───────┘
                                    │  │  │  │  │  │  │  │
                                    ▼  ▼  ▼  ▼  ▼  ▼  ▼  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    TDF 域模块（RX/CDR）                          │
+│                    TDF Domain Modules (RX/CDR)                   │
 │                                                                  │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
 │  │   VGA    │  │  DFE     │  │ Sampler  │  │   CDR    │        │
-│  │          │  │  Summer   │  │          │  │          │        │
+│  │          │  │  Summer  │  │          │  │          │        │
 │  │ vga_gain │  │ dfe_taps │  │threshold │  │phase_cmd │        │
 │  │    ◄─────┼──┼─────◄────┼──┼─────◄────┼──┼─────◄────┼        │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
 │                                                                  │
-│  反馈信号:                                                       │
+│  Feedback Signals:                                               │
 │    phase_error ──────────────────────────────────────────────┐   │
 │    amplitude_rms ────────────────────────────────────────┐   │   │
 │    error_count ──────────────────────────────────────┐   │   │   │
@@ -467,117 +470,117 @@ Adaption 测试平台（`AdaptionTestbench`）采用多场景驱动的分层测�
                                                   │   │   │   │
                                                   ▼   ▼   ▼   ▼
                                             ┌─────────────────┐
-                                            │  误码计数器     │
-                                            │  幅度统计模块   │
-                                            │  相位检测器     │
+                                            │  Error Counter  │
+                                            │  Amplitude      │
+                                            │  Statistics     │
+                                            │  Phase Detector │
                                             └─────────────────┘
 ```
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Descriptions
 
-#### WaveGen - 波形生成器
+#### WaveGen - Waveform Generator
 
-支持多种波形类型，用于生成测试信号。
+Supports multiple waveform types for generating test signals.
 
-- **波形类型**：PRBS7/9/15/23/31、正弦波、方波、DC
-- **抖动注入**：RJ（随机抖动）、SJ（周期性抖动）、DJ（确定性抖动）
-- **调制**：AM（幅度调制）、PM（相位调制）
-- **可配置参数**：幅度、频率、共模电压、抖动参数
+- **Waveform Types**: PRBS7/9/15/23/31, sine wave, square wave, DC
+- **Jitter Injection**: RJ (Random Jitter), SJ (Sinusoidal Jitter), DJ (Deterministic Jitter)
+- **Modulation**: AM (Amplitude Modulation), PM (Phase Modulation)
+- **Configurable Parameters**: Amplitude, frequency, common-mode voltage, jitter parameters
 
-#### Channel - 通道模型
+#### Channel - Channel Model
 
-基于 S 参数的信道模型，支持不同通道场景。
+Channel model based on S-parameters, supporting different channel scenarios.
 
-- **S 参数文件**：Touchstone 格式（.s2p, .s4p）
-- **简单模型**：衰减、带宽限制
-- **串扰建模**：NEXT（近端串扰）、FEXT（远端串扰）
-- **双向传输**：支持反射与回波
+- **S-Parameter Files**: Touchstone format (.s2p, .s4p)
+- **Simple Models**: Attenuation, bandwidth limitation
+- **Crosstalk Modeling**: NEXT (Near-End Crosstalk), FEXT (Far-End Crosstalk)
+- **Bidirectional Transmission**: Supports reflection and echo
 
-#### RX 链路 - 接收端链路
+#### RX Link - Receiver Link
 
-包含 CTLE、VGA、Sampler、DFE Summer 等模块。
+Contains CTLE, VGA, Sampler, DFE Summer, and other modules.
 
-- **CTLE**：连续时间线性均衡器，补偿高频衰减
-- **VGA**：可变增益放大器，支持 AGC 控制
-- **Sampler**：采样器，支持阈值与迟滞调整
-- **DFE Summer**：判决反馈均衡器，支持在线抽头更新
+- **CTLE**: Continuous-Time Linear Equalizer, compensates high-frequency attenuation
+- **VGA**: Variable Gain Amplifier, supports AGC control
+- **Sampler**: Sampler, supports threshold and hysteresis adjustment
+- **DFE Summer**: Decision Feedback Equalizer, supports online tap updates
 
-#### CDR - 时钟数据恢复
+#### CDR - Clock Data Recovery
 
-提供相位误差反馈，支持相位插值器控制。
+Provides phase error feedback, supports phase interpolator control.
 
-- **相位检测器**：Bang-Bang PD 或线性 PD
-- **PI 控制器**：接收相位命令，调整采样相位
-- **相位插值器**：根据命令调整采样时刻
+- **Phase Detector**: Bang-Bang PD or Linear PD
+- **PI Controller**: Receives phase commands, adjusts sampling phase
+- **Phase Interpolator**: Adjusts sampling moment based on commands
 
-#### TraceMonitor - 追踪监控器
+#### TraceMonitor - Trace Monitor
 
-记录关键信号时间序列，用于后处理分析。
+Records critical signal time series for post-processing analysis.
 
-- **记录信号**：
-  - **输出参数**：vga_gain、dfe_tap1~dfe_tapN、sampler_threshold、sampler_hysteresis、phase_cmd
-  - **状态信号**：update_count、freeze_flag
-  - **反馈信号**：phase_error、amplitude_rms、error_count、isi_metric
-- **统计计算**：均值、RMS、收敛时间、变化率、收敛稳定性
-- **输出格式**：CSV 文件，文件名 `adaption_<scenario>.csv`，包含15列数据
-- **收敛检测**：自动判断参数是否收敛（变化 < 阈值持续 N 次更新）
-- **CSV列结构**：
-  | 列名 | 类型 | 单位 | 说明 |
-  |------|------|------|------|
-  | `时间(s)` | double | 秒 | 仿真时间戳 |
-  | `vga_gain` | double | 线性倍数 | VGA 增益值 |
-  | `dfe_tap1` ~ `dfe_tapN` | double | - | DFE 抽头系数（N 为抽头数量） |
-  | `sampler_threshold` | double | V | 采样阈值 |
-  | `sampler_hysteresis` | double | V | 迟滞窗口 |
-  | `phase_cmd` | double | 秒 | 相位命令 |
-  | `update_count` | int | - | 更新次数计数器 |
-  | `freeze_flag` | int | - | 冻结标志（0=正常，1=冻结） |
-  | `phase_error` | double | UI | 相位误差 |
-  | `amplitude_rms` | double | V | 幅度 RMS |
-  | `error_count` | int | - | 误码计数 |
-  | `isi_metric` | double | - | ISI 指标（可选） |
+- **Recorded Signals**:
+  - **Output Parameters**: vga_gain, dfe_tap1~dfe_tapN, sampler_threshold, sampler_hysteresis, phase_cmd
+  - **Status Signals**: update_count, freeze_flag
+  - **Feedback Signals**: phase_error, amplitude_rms, error_count, isi_metric
+- **Statistical Calculations**: Mean, RMS, convergence time, change rate, convergence stability
+- **Output Format**: CSV file, filename `adaption_<scenario>.csv`, contains 15 columns of data
+- **Convergence Detection**: Automatically determines if parameters have converged (change < threshold for N consecutive updates)
+- **CSV Column Structure**:
+  | Column Name | Type | Unit | Description |
+  |-------------|------|------|-------------|
+  | `Time(s)` | double | seconds | Simulation timestamp |
+  | `vga_gain` | double | linear multiplier | VGA gain value |
+  | `dfe_tap1` ~ `dfe_tapN` | double | - | DFE tap coefficients (N is number of taps) |
+  | `sampler_threshold` | double | V | Sampling threshold |
+  | `sampler_hysteresis` | double | V | Hysteresis window |
+  | `phase_cmd` | double | seconds | Phase command |
+  | `update_count` | int | - | Update counter |
+  | `freeze_flag` | int | - | Freeze flag (0=normal, 1=freeze) |
+  | `phase_error` | double | UI | Phase error |
+  | `amplitude_rms` | double | V | Amplitude RMS |
+  | `error_count` | int | - | Error count |
 
-#### FaultInjector - 故障注入器
+#### FaultInjector - Fault Injector
 
-模拟异常场景，验证冻结/回退机制。
+Simulates abnormal scenarios to verify freeze/rollback mechanism.
 
-- **误码暴涨**：注入大量判决误差
-- **幅度异常**：修改幅度统计值超出范围
-- **相位失锁**：注入大相位误差
-- **信号丢失**：设置输入为零或噪声
+- **Error Burst**: Inject large amount of decision errors
+- **Amplitude Anomaly**: Modify amplitude statistics out of range
+- **Phase Unlock**: Inject large phase error
+- **Signal Loss**: Set input to zero or noise
 
-#### ScenarioManager - 场景管理器
+#### ScenarioManager - Scenario Manager
 
-管理多场景切换与配置加载。
+Manages multi-scenario switching and configuration loading.
 
-- **配置加载**：从 JSON/YAML 文件加载场景参数
-- **场景切换**：触发场景切换事件，更新所有参数
-- **防抖策略**：切换后进入训练期，冻结误码统计
-- **历史记录**：记录场景切换时间与参数快照
+- **Configuration Loading**: Load scenario parameters from JSON/YAML files
+- **Scenario Switching**: Trigger scenario switch events, update all parameters
+- **Anti-Shake Strategy**: Enter training period after switch, freeze error statistics
+- **History Record**: Record scenario switch time and parameter snapshots
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Results Analysis
 
-### 5.1 统计指标说明
+### 5.1 Statistical Metrics Description
 
-Adaption 模块作为 DE 域控制层，其仿真结果分析重点关注四大自适应算法的收敛特性、稳态性能和系统鲁棒性。与 AMS 域模块不同，Adaption 的输出是离散时间序列（参数更新时刻），而非连续时间波形。
+As a DE domain control layer, the Adaption module's simulation results analysis focuses on the convergence characteristics, steady-state performance, and system robustness of the four major adaptive algorithms. Unlike AMS domain modules, Adaption's outputs are discrete time series (parameter update moments) rather than continuous time waveforms.
 
-#### 5.1.1 收敛性指标
+#### 5.1.1 Convergence Metrics
 
-| 指标 | 计算方法 | 意义 | 期望值 |
-|------|----------|------|--------|
-| **收敛时间** (Convergence Time) | 参数变化率首次持续低于阈值的时间 | 反映算法从初始状态到达稳态的速度 | AGC < 5000 UI<br>DFE < 10000 UI<br>CDR PI < 1000 UI<br>阈值 < 2000 UI |
-| **稳态误差** (Steady-State Error) | 收敛后参数与最优值的平均偏差 | 反映算法的精度和稳态性能 | AGC 幅度误差 < 5%<br>DFE 抽头变化 < 0.001<br>CDR 相位误差 RMS < 0.01 UI<br>阈值误差 < 10mV |
-| **收敛稳定性** (Convergence Stability) | 收敛后参数变化的方差 | 反映算法的抗干扰能力和稳定性 | 参数变化方差 < 0.001 |
-| **过冲/下冲** (Overshoot/Undershoot) | 参数最大值与稳态值的偏差 | 反映算法的瞬态响应特性 | 过冲 < 10% |
+| Metric | Calculation Method | Significance | Expected Value |
+|--------|-------------------|--------------|----------------|
+| **Convergence Time** | Time when parameter change rate first stays below threshold continuously | Reflects algorithm's speed from initial state to steady state | AGC < 5000 UI<br>DFE < 10000 UI<br>CDR PI < 1000 UI<br>Threshold < 2000 UI |
+| **Steady-State Error** | Average deviation between converged parameter and optimal value | Reflects algorithm's accuracy and steady-state performance | AGC amplitude error < 5%<br>DFE tap change < 0.001<br>CDR phase error RMS < 0.01 UI<br>Threshold error < 10mV |
+| **Convergence Stability** | Variance of parameter changes after convergence | Reflects algorithm's anti-interference capability and stability | Parameter change variance < 0.001 |
+| **Overshoot/Undershoot** | Deviation between parameter maximum value and steady-state value | Reflects algorithm's transient response characteristics | Overshoot < 10% |
 
-**收敛判定标准**：
+**Convergence Determination Criteria**:
 ```cpp
-// AGC 增益收敛判定
+// AGC gain convergence determination
 bool agc_converged = (abs(gain - gain_prev) / gain_prev < 0.01) && (steady_counter > 10);
 
-// DFE 抽头收敛判定
+// DFE tap convergence determination
 bool dfe_converged = true;
 for (int i = 0; i < num_taps; i++) {
     if (abs(taps[i] - taps_prev[i]) > 0.001) {
@@ -586,417 +589,417 @@ for (int i = 0; i < num_taps; i++) {
     }
 }
 
-// CDR 相位收敛判定
+// CDR phase convergence determination
 bool cdr_converged = (abs(phase_error) < 0.01 * UI) && (steady_counter > 100);
 ```
 
-#### 5.1.2 性能指标
+#### 5.1.2 Performance Metrics
 
-| 指标 | 计算方法 | 意义 | 期望值 |
-|------|----------|------|--------|
-| **误码率** (BER) | 错误比特数 / 总比特数 | 反映链路的最终性能 | < 1e-9（标准场景）<br>< 1e-12（高性能场景） |
-| **误码改善比** (BER Improvement Ratio) | BER(无Adaption) / BER(有Adaption) | 反映 Adaption 模块的改善效果 | > 10x（标准通道）<br>> 100x（长通道） |
-| **眼图开口** (Eye Opening) | 眼高 × 眼宽 | 反映信号质量 | > 80% UI（短通道）<br>> 50% UI（长通道） |
-| **抖动抑制** (Jitter Reduction) | TJ(无Adaption) / TJ(有Adaption) | 反映 CDR 和 DFE 的抖动抑制能力 | > 1.1x |
+| Metric | Calculation Method | Significance | Expected Value |
+|--------|-------------------|--------------|----------------|
+| **Bit Error Rate** (BER) | Error bits / Total bits | Reflects link's ultimate performance | < 1e-9 (standard scenario)<br>< 1e-12 (high-performance scenario) |
+| **BER Improvement Ratio** | BER(without Adaption) / BER(with Adaption) | Reflects Adaption module's improvement effect | > 10x (standard channel)<br>> 100x (long channel) |
+| **Eye Opening** | Eye height × Eye width | Reflects signal quality | > 80% UI (short channel)<br>> 50% UI (long channel) |
+| **Jitter Reduction** | TJ(without Adaption) / TJ(with Adaption) | Reflects CDR and DFE's jitter suppression capability | > 1.1x |
 
-#### 5.1.3 系统指标
+#### 5.1.3 System Metrics
 
-| 指标 | 计算方法 | 意义 | 期望值 |
-|------|----------|------|--------|
-| **更新次数** (Update Count) | 快路径/慢路径更新次数统计 | 反映算法的活跃度和计算开销 | 快路径 > 1000 次<br>慢路径 > 10 次 |
-| **冻结事件次数** (Freeze Events) | freeze_flag 从 0→1 的次数 | 反映系统的鲁棒性和异常情况 | 正常场景 < 5 次 |
-| **回退事件次数** (Rollback Events) | 参数回退至上次快照的次数 | 反映故障恢复机制的有效性 | 正常场景 = 0 次 |
-| **参数范围合规性** (Parameter Range Compliance) | 参数值超出配置范围的次数 | 反映钳位策略的有效性 | = 0 次 |
+| Metric | Calculation Method | Significance | Expected Value |
+|--------|-------------------|--------------|----------------|
+| **Update Count** | Fast path/slow path update count statistics | Reflects algorithm's activity and computational overhead | Fast path > 1000 times<br>Slow path > 10 times |
+| **Freeze Events** | Number of times freeze_flag goes from 0→1 | Reflects system's robustness and abnormal situations | Normal scenario < 5 times |
+| **Rollback Events** | Number of times parameters rollback to last snapshot | Reflects fault recovery mechanism effectiveness | Normal scenario = 0 times |
+| **Parameter Range Compliance** | Number of times parameter values exceed configured range | Reflects clamping strategy effectiveness | = 0 times |
 
-#### 5.1.4 算法特定指标
+#### 5.1.4 Algorithm-Specific Metrics
 
-**AGC 特定指标**：
-- **增益调整范围**：`max(gain) - min(gain)`，反映 AGC 的动态范围
-- **增益变化率**：`|gain[n] - gain[n-1]| / dt`，反映增益调整的平滑性
-- **幅度跟踪误差**：`|amplitude_rms - target_amplitude| / target_amplitude`
+**AGC-Specific Metrics**:
+- **Gain Adjustment Range**: `max(gain) - min(gain)`, reflects AGC's dynamic range
+- **Gain Change Rate**: `|gain[n] - gain[n-1]| / dt`, reflects gain adjustment smoothness
+- **Amplitude Tracking Error**: `|amplitude_rms - target_amplitude| / target_amplitude`
 
-**DFE 特定指标**：
-- **抽头收敛顺序**：不同抽头的收敛时间序列，反映 ISI 的时域分布
-- **抽头能量分布**：`sum(tap[i]²)`，反映 DFE 的总补偿能力
-- **抽头泄漏损失**：`tap[i] * leakage`，反映泄漏机制的影响
+**DFE-Specific Metrics**:
+- **Tap Convergence Order**: Convergence time sequence of different taps, reflects ISI's time domain distribution
+- **Tap Energy Distribution**: `sum(tap[i]²)`, reflects DFE's total compensation capability
+- **Tap Leakage Loss**: `tap[i] * leakage`, reflects leakage mechanism's impact
 
-**CDR PI 特定指标**：
-- **锁定时间** (Lock Time)：相位误差首次进入 ±0.01 UI 并保持的时间
-- **相位抖动 RMS** (Phase Jitter RMS)：`sqrt(mean(phase_error²))`
-- **相位命令范围利用率**：`|phase_cmd| / phase_range`，反映相位调整裕量
+**CDR PI-Specific Metrics**:
+- **Lock Time**: Time when phase error first enters ±0.01 UI and stays
+- **Phase Jitter RMS**: `sqrt(mean(phase_error²))`
+- **Phase Command Range Utilization**: `|phase_cmd| / phase_range`, reflects phase adjustment margin
 
-**阈值自适应特定指标**：
-- **阈值跟踪延迟**：电平漂移到阈值调整的时间差
-- **迟滞窗口适应性**：迟滞值与噪声强度的相关性
-- **误码率 vs 阈值曲线**：用于验证阈值优化效果
+**Threshold Adaptation-Specific Metrics**:
+- **Threshold Tracking Delay**: Time difference between level drift and threshold adjustment
+- **Hysteresis Window Adaptability**: Correlation between hysteresis value and noise intensity
+- **BER vs Threshold Curve**: Used to verify threshold optimization effect
 
-### 5.2 典型测试结果解读
+### 5.2 Typical Test Result Interpretation
 
-#### 5.2.1 BASIC_FUNCTION 场景
+#### 5.2.1 BASIC_FUNCTION Scenario
 
-**场景配置**：
-- 符号率：40 Gbps（UI = 25ps）
-- 通道：标准长通道（S21 插损 15dB @ 20GHz）
-- 仿真时长：10 μs（400,000 UI）
-- 所有算法启用：AGC、DFE（5 抽头）、阈值、CDR PI
+**Scenario Configuration**:
+- Symbol Rate: 40 Gbps (UI = 25ps)
+- Channel: Standard long channel (S21 insertion loss 15dB @ 20GHz)
+- Simulation Duration: 10 μs (400,000 UI)
+- All algorithms enabled: AGC, DFE (5 taps), Threshold, CDR PI
 
-**典型输出**：
+**Typical Output**:
 ```
 ========================================
-Adaption 测试平台 - BASIC_FUNCTION 场景
+Adaption Testbench - BASIC_FUNCTION Scenario
 ========================================
 
-仿真配置：
-  符号率: 40 Gbps (UI = 25.00 ps)
-  仿真时长: 10.00 μs (400,000 UI)
-  更新模式: multi-rate
-  快路径周期: 250.00 ps (10 UI)
-  慢路径周期: 2.50 μs (100 UI)
+Simulation Configuration:
+  Symbol Rate: 40 Gbps (UI = 25.00 ps)
+  Simulation Duration: 10.00 μs (400,000 UI)
+  Update Mode: multi-rate
+  Fast Path Period: 250.00 ps (10 UI)
+  Slow Path Period: 2.50 μs (100 UI)
 
-AGC 统计：
-  初始增益: 2.000
-  最终增益: 3.245
-  收敛时间: 2,450 UI (61.25 ns)
-  稳态误差: 1.2%
-  增益调整范围: 1.245
-  幅度跟踪误差: 0.008 V (2.0%)
+AGC Statistics:
+  Initial Gain: 2.000
+  Final Gain: 3.245
+  Convergence Time: 2,450 UI (61.25 ns)
+  Steady-State Error: 1.2%
+  Gain Adjustment Range: 1.245
+  Amplitude Tracking Error: 0.008 V (2.0%)
 
-DFE 统计：
-  抽头数量: 5
-  算法: sign-lms
-  步长: 1.00e-04
-  初始抽头: [-0.050, -0.020, 0.010, 0.005, 0.002]
-  最终抽头: [-0.123, -0.087, 0.045, 0.023, 0.011]
-  收敛时间: 8,760 UI (219.00 ns)
-  抽头能量分布: 0.0256
-  误码改善: 15.3x (BER: 5.2e-9 → 3.4e-10)
+DFE Statistics:
+  Number of Taps: 5
+  Algorithm: sign-lms
+  Step Size: 1.00e-04
+  Initial Taps: [-0.050, -0.020, 0.010, 0.005, 0.002]
+  Final Taps: [-0.123, -0.087, 0.045, 0.023, 0.011]
+  Convergence Time: 8,760 UI (219.00 ns)
+  Tap Energy Distribution: 0.0256
+  BER Improvement: 15.3x (BER: 5.2e-9 → 3.4e-10)
 
-CDR PI 统计：
-  初始相位误差: 0.500 UI
-  锁定时间: 890 UI (22.25 ns)
-  稳态相位误差 RMS: 0.008 UI (0.20 ps)
-  相位命令范围利用率: 45%
-  相位抖动 RMS: 0.006 UI
+CDR PI Statistics:
+  Initial Phase Error: 0.500 UI
+  Lock Time: 890 UI (22.25 ns)
+  Steady-State Phase Error RMS: 0.008 UI (0.20 ps)
+  Phase Command Range Utilization: 45%
+  Phase Jitter RMS: 0.006 UI
 
-阈值自适应统计：
-  初始阈值: 0.000 V
-  最终阈值: 0.012 V
-  初始迟滞: 0.020 V
-  最终迟滞: 0.025 V
-  阈值跟踪延迟: 150 UI (3.75 ns)
+Threshold Adaptation Statistics:
+  Initial Threshold: 0.000 V
+  Final Threshold: 0.012 V
+  Initial Hysteresis: 0.020 V
+  Final Hysteresis: 0.025 V
+  Threshold Tracking Delay: 150 UI (3.75 ns)
 
-安全机制统计：
-  冻结事件次数: 0
-  回退事件次数: 0
-  快照保存次数: 10
+Safety Mechanism Statistics:
+  Freeze Events: 0
+  Rollback Events: 0
+  Snapshot Save Count: 10
 
-更新统计：
-  快路径更新次数: 40,000
-  慢路径更新次数: 4,000
-  总更新次数: 44,000
+Update Statistics:
+  Fast Path Updates: 40,000
+  Slow Path Updates: 4,000
+  Total Updates: 44,000
 
-整体性能：
-  眼图开口: 62% UI (眼高 0.31V, 眼宽 0.62 UI)
+Overall Performance:
+  Eye Opening: 62% UI (Eye Height 0.31V, Eye Width 0.62 UI)
   TJ@1e-12: 0.28 UI
-  误码率: 3.4e-10
+  Bit Error Rate: 3.4e-10
 
 ========================================
-测试通过！
-输出文件: adaption_basic.csv
+Test Passed!
+Output File: adaption_basic.csv
 ========================================
 ```
 
-**结果解读**：
+**Result Interpretation**:
 
-1. **AGC 收敛分析**：
-   - 增益从 2.0 收敛至 3.245，说明通道衰减较大，需要较高增益补偿
-   - 收敛时间 2,450 UI（61.25 ns），符合 PI 控制器设计预期
-   - 稳态误差 1.2%，说明 PI 参数（Kp=0.1, Ki=100.0）选择合理
-   - 增益调整范围 1.245，验证了增益钳位范围 [0.5, 8.0] 的合理性
+1. **AGC Convergence Analysis**:
+   - Gain converges from 2.0 to 3.245, indicating large channel attenuation requiring higher gain compensation
+   - Convergence time 2,450 UI (61.25 ns), consistent with PI controller design expectations
+   - Steady-state error 1.2%, indicating reasonable PI parameter selection (Kp=0.1, Ki=100.0)
+   - Gain adjustment range 1.245, validating reasonableness of gain clamping range [0.5, 8.0]
 
-2. **DFE 收敛分析**：
-   - 抽头从初始值收敛至 [-0.123, -0.087, 0.045, 0.023, 0.011]
-   - Tap1 和 Tap2 为负值，说明主要补偿前一符号和前两符号的 ISI
-   - Tap3、Tap4、Tap5 为正值，说明补偿后续符号的 ISI（预编码效应）
-   - 收敛时间 8,760 UI，比 AGC 慢，符合 DFE 需要更多数据积累的特点
-   - 误码改善 15.3x，验证了 Sign-LMS 算法的有效性
+2. **DFE Convergence Analysis**:
+   - Taps converge from initial values to [-0.123, -0.087, 0.045, 0.023, 0.011]
+   - Tap1 and Tap2 are negative, indicating mainly compensating ISI from previous and second-previous symbols
+   - Tap3, Tap4, Tap5 are positive, indicating compensation for subsequent symbol ISI (pre-coding effect)
+   - Convergence time 8,760 UI, slower than AGC as expected since DFE requires more data accumulation
+   - BER improvement 15.3x, validating effectiveness of Sign-LMS algorithm
 
-3. **CDR PI 锁定分析**：
-   - 初始相位误差 0.5 UI（最大），锁定时间 890 UI，说明 PI 控制器响应快速
-   - 稳态相位误差 RMS 0.008 UI（0.2 ps），远小于 UI，说明锁定精度高
-   - 相位命令范围利用率 45%，说明有足够的相位调整裕量
-   - 相位抖动 RMS 0.006 UI，说明 CDR 对相位噪声有良好的抑制能力
+3. **CDR PI Lock Analysis**:
+   - Initial phase error 0.5 UI (maximum), lock time 890 UI, indicating fast PI controller response
+   - Steady-state phase error RMS 0.008 UI (0.2 ps), much smaller than UI, indicating high lock precision
+   - Phase command range utilization 45%, indicating sufficient phase adjustment margin
+   - Phase jitter RMS 0.006 UI, indicating CDR's good phase noise suppression capability
 
-4. **阈值自适应分析**：
-   - 阈值从 0.0V 调整至 0.012V，说明信号存在轻微直流偏移
-   - 迟滞从 0.020V 增加至 0.025V，说明噪声强度略有增加
-   - 阈值跟踪延迟 150 UI，说明自适应算法响应及时
+4. **Threshold Adaptation Analysis**:
+   - Threshold adjusts from 0.0V to 0.012V, indicating slight DC offset in signal
+   - Hysteresis increases from 0.020V to 0.025V, indicating slight increase in noise intensity
+   - Threshold tracking delay 150 UI, indicating timely adaptive algorithm response
 
-5. **整体性能**：
-   - 眼图开口 62% UI，在长通道场景下表现良好
-   - TJ@1e-12 0.28 UI，符合 40G SerDes 的典型性能
-   - 误码率 3.4e-10，优于目标 1e-9，说明 Adaption 模块有效
+5. **Overall Performance**:
+   - Eye opening 62% UI, good performance in long channel scenario
+   - TJ@1e-12 0.28 UI, consistent with 40G SerDes typical performance
+   - Bit error rate 3.4e-10, better than target 1e-9, indicating effective Adaption module
 
-#### 5.2.2 AGC_TEST 场景
+#### 5.2.2 AGC_TEST Scenario
 
-**场景配置**：
-- 信号源：幅度阶跃信号（0.2V → 0.6V → 0.3V）
-- 阶跃时刻：2 μs、5 μs
-- AGC 配置：目标幅度 0.4V，Kp=0.1，Ki=100.0
+**Scenario Configuration**:
+- Signal Source: Amplitude step signal (0.2V → 0.6V → 0.3V)
+- Step Moments: 2 μs, 5 μs
+- AGC Configuration: Target amplitude 0.4V, Kp=0.1, Ki=100.0
 
-**典型输出**：
+**Typical Output**:
 ```
-AGC 统计：
-  初始增益: 2.000
-  第1阶跃后增益: 0.667 (幅度 0.2V → 0.4V)
-  第2阶跃后增益: 1.333 (幅度 0.6V → 0.4V)
-  第3阶跃后增益: 1.333 (幅度 0.3V → 0.4V)
-  收敛时间: 1,200 UI (30.00 ns)
-  稳态误差: 2.5%
-  过冲: 0% (无超调)
-```
-
-**结果解读**：
-- 增益准确跟踪幅度变化，验证了 PI 控制器的有效性
-- 无超调，说明速率限制（rate_limit=10.0）生效
-- 收敛时间 1,200 UI，比 BASIC_FUNCTION 场景更快，因为阶跃信号变化更明显
-
-#### 5.2.3 DFE_TEST 场景
-
-**场景配置**：
-- 通道：强 ISI 通道（S21 插损 25dB @ 20GHz）
-- DFE 配置：8 个抽头，Sign-LMS 算法，步长 1e-4
-
-**典型输出**：
-```
-DFE 统计：
-  抽头数量: 8
-  算法: sign-lms
-  步长: 1.00e-04
-  初始抽头: [-0.050, -0.020, 0.010, 0.005, 0.002, 0.001, 0.000, 0.000]
-  最终抽头: [-0.187, -0.134, -0.067, 0.034, 0.018, 0.009, 0.004, 0.002]
-  收敛时间: 12,450 UI (311.25 ns)
-  抽头能量分布: 0.0621
-  误码改善: 32.7x (BER: 8.5e-8 → 2.6e-9)
-  抽头收敛顺序: Tap1 → Tap2 → Tap3 → Tap4 → Tap5 → Tap6 → Tap7 → Tap8
+AGC Statistics:
+  Initial Gain: 2.000
+  Gain after 1st Step: 0.667 (amplitude 0.2V → 0.4V)
+  Gain after 2nd Step: 1.333 (amplitude 0.6V → 0.4V)
+  Gain after 3rd Step: 1.333 (amplitude 0.3V → 0.4V)
+  Convergence Time: 1,200 UI (30.00 ns)
+  Steady-State Error: 2.5%
+  Overshoot: 0% (no overshoot)
 ```
 
-**结果解读**：
-- 抽头收敛顺序符合预期：先收敛主要 ISI（Tap1-3），再收敛次要 ISI（Tap4-8）
-- 误码改善 32.7x，明显高于 BASIC_FUNCTION 场景，说明强 ISI 通道更需要 DFE
-- 收敛时间 12,450 UI，比 BASIC_FUNCTION 场景慢，因为需要更多抽头和更多数据
-- 抽头能量分布 0.0621，说明 DFE 总补偿能力较强
+**Result Interpretation**:
+- Gain accurately tracks amplitude changes, validating PI controller effectiveness
+- No overshoot, indicating rate limit (rate_limit=10.0) is effective
+- Convergence time 1,200 UI, faster than BASIC_FUNCTION scenario because step signal changes are more obvious
 
-#### 5.2.4 FREEZE_ROLLBACK 场景
+#### 5.2.3 DFE_TEST Scenario
 
-**场景配置**：
-- 故障注入：3 μs 误码暴涨、6 μs 幅度异常、9 μs 相位失锁
-- 安全配置：误码暴涨阈值 100，快照保存间隔 1 μs，回退启用
+**Scenario Configuration**:
+- Channel: Strong ISI channel (S21 insertion loss 25dB @ 20GHz)
+- DFE Configuration: 8 taps, Sign-LMS algorithm, step size 1e-4
 
-**典型输出**：
+**Typical Output**:
 ```
-安全机制统计：
-  冻结事件次数: 3
-  回退事件次数: 1
-  快照保存次数: 10
-
-冻结事件详情：
-  事件1: 3.000 μs, 误码暴涨 (error_count=150), 持续时间 500 UI
-  事件2: 6.000 μs, 幅度异常 (amplitude_rms=0.8V), 持续时间 300 UI
-  事件3: 9.000 μs, 相位失锁 (phase_error=0.6 UI), 持续时间 800 UI
-
-回退事件详情：
-  回退1: 9.800 μs, 恢复至快照 (timestamp=8.000 μs)
-  恢复参数: vga_gain=3.245, dfe_taps=[-0.123, -0.087, 0.045, 0.023, 0.011]
-  恢复时间: 1,200 UI (30.00 ns)
+DFE Statistics:
+  Number of Taps: 8
+  Algorithm: sign-lms
+  Step Size: 1.00e-04
+  Initial Taps: [-0.050, -0.020, 0.010, 0.005, 0.002, 0.001, 0.000, 0.000]
+  Final Taps: [-0.187, -0.134, -0.067, 0.034, 0.018, 0.009, 0.004, 0.002]
+  Convergence Time: 12,450 UI (311.25 ns)
+  Tap Energy Distribution: 0.0621
+  BER Improvement: 32.7x (BER: 8.5e-8 → 2.6e-9)
+  Tap Convergence Order: Tap1 → Tap2 → Tap3 → Tap4 → Tap5 → Tap6 → Tap7 → Tap8
 ```
 
-**结果解读**：
-- 冻结机制正确触发，所有故障都被检测到
-- 回退机制成功恢复系统至稳定状态
-- 恢复时间 1,200 UI，符合设计预期（< 2000 UI）
-- 快照保存间隔 1 μs，提供了足够的恢复点
+**Result Interpretation**:
+- Tap convergence order matches expectations: primary ISI (Tap1-3) converges first, then secondary ISI (Tap4-8)
+- BER improvement 32.7x, significantly higher than BASIC_FUNCTION scenario, indicating strong ISI channel needs DFE more
+- Convergence time 12,450 UI, slower than BASIC_FUNCTION scenario because more taps and more data are needed
+- Tap energy distribution 0.0621, indicating strong DFE total compensation capability
 
-#### 5.2.5 MULTI_RATE 场景
+#### 5.2.4 FREEZE_ROLLBACK Scenario
 
-**场景配置**：
-- 更新周期：快路径 25ps（1 UI），慢路径 2.5ns（100 UI）
+**Scenario Configuration**:
+- Fault Injection: 3 μs error burst, 6 μs amplitude anomaly, 9 μs phase unlock
+- Safety Configuration: Error burst threshold 100, snapshot save interval 1 μs, rollback enabled
 
-**典型输出**：
+**Typical Output**:
 ```
-更新统计：
-  快路径更新次数: 400,000
-  慢路径更新次数: 4,000
-  总更新次数: 404,000
-  快路径/慢路径比例: 100:1
+Safety Mechanism Statistics:
+  Freeze Events: 3
+  Rollback Events: 1
+  Snapshot Save Count: 10
 
-调度统计：
-  快路径平均间隔: 25.00 ps (1.00 UI)
-  慢路径平均间隔: 2.50 ns (100.00 UI)
-  最大调度延迟: 5.00 ps (0.20 UI)
-  竞态条件次数: 0
-```
+Freeze Event Details:
+  Event 1: 3.000 μs, Error Burst (error_count=150), Duration 500 UI
+  Event 2: 6.000 μs, Amplitude Anomaly (amplitude_rms=0.8V), Duration 300 UI
+  Event 3: 9.000 μs, Phase Unlock (phase_error=0.6 UI), Duration 800 UI
 
-**结果解读**：
-- 快路径/慢路径比例 100:1，符合设计预期
-- 无竞态条件，说明多速率调度架构稳定
-- 最大调度延迟 5ps，远小于 UI，说明调度精度高
-
-#### 5.2.6 THRESHOLD_TEST 场景
-
-**场景配置**：
-- 信号源：PRBS-31 + 直流偏移漂移（±50mV）
-- 偏移频率：1 MHz
-- 噪声注入：RJ sigma=5ps
-- 阈值配置：自适应步长 0.001V，漂移阈值 0.05V
-
-**典型输出**：
-```
-阈值自适应统计：
-  初始阈值: 0.000 V
-  最终阈值: 0.048 V
-  阈值调整范围: 0.048 V
-  初始迟滞: 0.020 V
-  最终迟滞: 0.028 V
-  迟滞调整范围: 0.008 V
-  阈值跟踪延迟: 180 UI (4.50 ns)
-  阈值跟踪误差: 8.5 mV (17.0%)
-
-误码统计：
-  初始误码率: 2.3e-9
-  最终误码率: 1.1e-9
-  误码改善: 2.1x
-  误码最小化时刻: 6.2 μs (阈值=0.048V)
+Rollback Event Details:
+  Rollback 1: 9.800 μs, Restore to Snapshot (timestamp=8.000 μs)
+  Restored Parameters: vga_gain=3.245, dfe_taps=[-0.123, -0.087, 0.045, 0.023, 0.011]
+  Recovery Time: 1,200 UI (30.00 ns)
 ```
 
-**结果解读**：
-- 阈值从 0.0V 调整至 0.048V，准确跟踪了直流偏移漂移（±50mV）
-- 阈值跟踪误差 8.5mV，小于验证点要求的 10mV，验证通过 ✅
-- 迟滞从 0.020V 增加至 0.028V，说明噪声强度增加，迟滞窗口自适应调整
-- 阈值跟踪延迟 180 UI，小于验证点要求的 2000 UI，响应及时
-- 误码率从 2.3e-9 降至 1.1e-9，改善 2.1x，验证了阈值自适应的有效性
-- 异常噪声暴涨时未触发极端阈值，验证了鲁棒性
+**Result Interpretation**:
+- Freeze mechanism triggers correctly, all faults are detected
+- Rollback mechanism successfully restores system to stable state
+- Recovery time 1,200 UI, consistent with design expectations (< 2000 UI)
+- Snapshot save interval 1 μs, providing sufficient recovery points
 
-#### 5.2.7 CDR_PI_TEST 场景
+#### 5.2.5 MULTI_RATE Scenario
 
-**场景配置**：
-- 信号源：PRBS-31 + 相位噪声
-- 相位噪声：SJ 5MHz, 2ps + RJ 1ps
-- 初始相位误差：5e-11 秒（±0.5 UI）
-- CDR 配置：Kp=0.01，Ki=1e-4，相位范围 5e-11 秒（±0.5 UI）
+**Scenario Configuration**:
+- Update Period: Fast path 25ps (1 UI), Slow path 2.5ns (100 UI)
 
-**典型输出**：
+**Typical Output**:
 ```
-CDR PI 统计：
-  初始相位误差: 0.500 UI
-  锁定时间: 870 UI (21.75 ns)
-  稳态相位误差 RMS: 0.007 UI (0.175 ps)
-  相位命令范围利用率: 42%
-  相位抖动 RMS: 0.005 UI
-  相位命令峰值: 0.210 UI
-  积分器输出: 0.008 UI
+Update Statistics:
+  Fast Path Updates: 400,000
+  Slow Path Updates: 4,000
+  Total Updates: 404,000
+  Fast/Slow Path Ratio: 100:1
 
-相位误差统计：
-  最大相位误差: 0.500 UI (初始)
-  最小相位误差: 0.002 UI
-  相位误差方差: 2.5e-5 UI²
-  相位误差峰峰值: 0.025 UI
-
-抖动抑制统计：
-  输入 TJ: 0.035 UI (SJ 2ps + RJ 1ps)
-  输出 TJ: 0.028 UI
-  抖动抑制比: 1.25x
+Scheduling Statistics:
+  Fast Path Average Interval: 25.00 ps (1.00 UI)
+  Slow Path Average Interval: 2.50 ns (100.00 UI)
+  Maximum Scheduling Delay: 5.00 ps (0.20 UI)
+  Race Condition Count: 0
 ```
 
-**结果解读**：
-- 锁定时间 870 UI，小于验证点要求的 1000 UI，验证通过 ✅
-- 稳态相位误差 RMS 0.007 UI（0.175 ps），小于验证点要求的 0.01 UI，验证通过 ✅
-- 相位命令范围利用率 42%，说明有足够的相位调整裕量（58%）
-- 积分器输出 0.008 UI，未饱和，说明抗积分饱和机制有效
-- 相位抖动 RMS 0.005 UI，说明 CDR 对相位噪声有良好的抑制能力
-- 大相位扰动下积分器未溢出，验证了抗饱和机制的有效性
-- 抖动抑制比 1.25x，符合预期（> 1.1x）
+**Result Interpretation**:
+- Fast/Slow path ratio 100:1, consistent with design expectations
+- No race conditions, indicating stable multi-rate scheduling architecture
+- Maximum scheduling delay 5ps, much smaller than UI, indicating high scheduling precision
 
-#### 5.2.8 SCENARIO_SWITCH 场景
+#### 5.2.6 THRESHOLD_TEST Scenario
 
-**场景配置**：
-- 场景序列：0-3 μs 短通道（S21 插损 5dB），3-6 μs 长通道（S21 插损 15dB），6-9 μs 串扰场景
-- 切换时刻：3 μs、6 μs
+**Scenario Configuration**:
+- Signal Source: PRBS-31 + DC offset drift (±50mV)
+- Offset Frequency: 1 MHz
+- Noise Injection: RJ sigma=5ps
+- Threshold Configuration: Adaptive step 0.001V, drift threshold 0.05V
 
-**典型输出**：
+**Typical Output**:
 ```
-场景切换统计：
-  切换事件次数: 2
-  平均切换时间: 85 UI (2.13 ns)
-  最大切换时间: 90 UI (2.25 ns)
-  切换成功率: 100%
+Threshold Adaptation Statistics:
+  Initial Threshold: 0.000 V
+  Final Threshold: 0.048 V
+  Threshold Adjustment Range: 0.048 V
+  Initial Hysteresis: 0.020 V
+  Final Hysteresis: 0.028 V
+  Hysteresis Adjustment Range: 0.008 V
+  Threshold Tracking Delay: 180 UI (4.50 ns)
+  Threshold Tracking Error: 8.5 mV (17.0%)
 
-场景1 (0-3 μs, 短通道):
-  AGC 增益: 1.5
-  DFE 抽头: [-0.045, -0.018, 0.008, 0.004, 0.002]
-  收敛时间: 1,200 UI
-  误码率: 8.5e-10
-
-场景2 (3-6 μs, 长通道):
-  AGC 增益: 3.2
-  DFE 抽头: [-0.118, -0.085, 0.042, 0.021, 0.010]
-  收敛时间: 2,800 UI
-  误码率: 3.2e-10
-
-场景3 (6-9 μs, 串扰):
-  AGC 增益: 3.5
-  DFE 抽头: [-0.132, -0.092, 0.048, 0.025, 0.013]
-  收敛时间: 3,100 UI
-  误码率: 5.8e-10
-
-参数原子性验证:
-  所有参数同时更新: ✅
-  无参数不一致: ✅
-  无瞬态误码: ✅
-  训练期冻结: ✅
+Error Statistics:
+  Initial BER: 2.3e-9
+  Final BER: 1.1e-9
+  BER Improvement: 2.1x
+  BER Minimization Moment: 6.2 μs (threshold=0.048V)
 ```
 
-**结果解读**：
-- 切换时间 85-90 UI，小于验证点要求的 100 UI，验证通过 ✅
-- 参数原子切换成功，所有参数同时更新，验证通过 ✅
-- 切换后进入训练期，误码统计冻结，验证通过 ✅
-- 无参数不一致导致的瞬态误码，验证通过 ✅
-- 切换成功率 100%，说明场景管理器稳定可靠
-- AGC 增益从 1.5 → 3.2 → 3.5，正确响应通道插损变化
-- DFE 抽头正确适应不同场景的 ISI 特性
-- 误码率在所有场景下均 < 1e-9，说明 Adaption 模块有效
+**Result Interpretation**:
+- Threshold adjusts from 0.0V to 0.048V, accurately tracking DC offset drift (±50mV)
+- Threshold tracking error 8.5mV, less than verification requirement of 10mV, verification passed ✅
+- Hysteresis increases from 0.020V to 0.028V, indicating increased noise intensity and adaptive hysteresis window adjustment
+- Threshold tracking delay 180 UI, less than verification requirement of 2000 UI, timely response
+- BER improves from 2.3e-9 to 1.1e-9, improvement 2.1x, validating threshold adaptation effectiveness
+- No extreme threshold triggering during abnormal noise surges, validating robustness
 
-### 5.3 波形数据文件格式
+#### 5.2.7 CDR_PI_TEST Scenario
 
-Adaption 测试平台生成的 CSV 文件包含参数时间序列和状态信号，用于后处理分析和回归验证。
+**Scenario Configuration**:
+- Signal Source: PRBS-31 + phase noise
+- Phase Noise: SJ 5MHz, 2ps + RJ 1ps
+- Initial Phase Error: 5e-11 seconds (±0.5 UI)
+- CDR Configuration: Kp=0.01, Ki=1e-4, phase range 5e-11 seconds (±0.5 UI)
 
-#### 5.3.1 CSV 文件格式
+**Typical Output**:
+```
+CDR PI Statistics:
+  Initial Phase Error: 0.500 UI
+  Lock Time: 870 UI (21.75 ns)
+  Steady-State Phase Error RMS: 0.007 UI (0.175 ps)
+  Phase Command Range Utilization: 42%
+  Phase Jitter RMS: 0.005 UI
+  Phase Command Peak: 0.210 UI
+  Integrator Output: 0.008 UI
 
-**文件命名规则**：
+Phase Error Statistics:
+  Maximum Phase Error: 0.500 UI (initial)
+  Minimum Phase Error: 0.002 UI
+  Phase Error Variance: 2.5e-5 UI²
+  Phase Error Peak-to-Peak: 0.025 UI
+
+Jitter Suppression Statistics:
+  Input TJ: 0.035 UI (SJ 2ps + RJ 1ps)
+  Output TJ: 0.028 UI
+  Jitter Suppression Ratio: 1.25x
+```
+
+**Result Interpretation**:
+- Lock time 870 UI, less than verification requirement of 1000 UI, verification passed ✅
+- Steady-state phase error RMS 0.007 UI (0.175 ps), less than verification requirement of 0.01 UI, verification passed ✅
+- Phase command range utilization 42%, indicating sufficient phase adjustment margin (58%)
+- Integrator output 0.008 UI, not saturated, indicating effective anti-windup mechanism
+- Phase jitter RMS 0.005 UI, indicating CDR's good phase noise suppression capability
+- Integrator does not overflow under large phase disturbance, validating anti-windup mechanism effectiveness
+- Jitter suppression ratio 1.25x, meets expectations (> 1.1x)
+
+#### 5.2.8 SCENARIO_SWITCH Scenario
+
+**Scenario Configuration**:
+- Scenario Sequence: 0-3 μs short channel (S21 insertion loss 5dB), 3-6 μs long channel (S21 insertion loss 15dB), 6-9 μs crosstalk scenario
+- Switch Moments: 3 μs, 6 μs
+
+**Typical Output**:
+```
+Scenario Switch Statistics:
+  Switch Events: 2
+  Average Switch Time: 85 UI (2.13 ns)
+  Maximum Switch Time: 90 UI (2.25 ns)
+  Switch Success Rate: 100%
+
+Scenario 1 (0-3 μs, Short Channel):
+  AGC Gain: 1.5
+  DFE Taps: [-0.045, -0.018, 0.008, 0.004, 0.002]
+  Convergence Time: 1,200 UI
+  BER: 8.5e-10
+
+Scenario 2 (3-6 μs, Long Channel):
+  AGC Gain: 3.2
+  DFE Taps: [-0.118, -0.085, 0.042, 0.021, 0.010]
+  Convergence Time: 2,800 UI
+  BER: 3.2e-10
+
+Scenario 3 (6-9 μs, Crosstalk):
+  AGC Gain: 3.5
+  DFE Taps: [-0.132, -0.092, 0.048, 0.025, 0.013]
+  Convergence Time: 3,100 UI
+  BER: 5.8e-10
+
+Parameter Atomicity Verification:
+  All Parameters Updated Simultaneously: ✅
+  No Parameter Inconsistency: ✅
+  No Transient Errors: ✅
+  Training Period Freeze: ✅
+```
+
+**Result Interpretation**:
+- Switch time 85-90 UI, less than verification requirement of 100 UI, verification passed ✅
+- Parameter atomic switching successful, all parameters update simultaneously, verification passed ✅
+- Enter training period after switch, error statistics frozen, verification passed ✅
+- No transient errors due to parameter inconsistency, verification passed ✅
+- Switch success rate 100%, indicating stable and reliable scenario manager
+- AGC gain correctly responds to channel insertion loss changes: 1.5 → 3.2 → 3.5
+- DFE taps correctly adapt to ISI characteristics of different scenarios
+- BER is < 1e-9 in all scenarios, indicating effective Adaption module
+
+### 5.3 Waveform Data File Format
+
+The CSV file generated by the Adaption testbench contains parameter time series and status signals for post-processing analysis and regression verification.
+
+#### 5.3.1 CSV File Format
+
+**File Naming Convention**:
 ```
 adaption_<scenario>.csv
 ```
-其中 `<scenario>` 为测试场景名称（basic、agc、dfe、threshold、cdr、freeze、multirate、switch）。
+Where `<scenario>` is the test scenario name (basic, agc, dfe, threshold, cdr, freeze, multirate, switch).
 
-**列结构**：
+**Column Structure**:
 
-| 列名 | 类型 | 单位 | 说明 |
-|------|------|------|------|
-| `时间(s)` | double | 秒 | 仿真时间戳 |
-| `vga_gain` | double | 线性倍数 | VGA 增益值 |
-| `dfe_tap1` ~ `dfe_tapN` | double | - | DFE 抽头系数（N 为抽头数量） |
-| `sampler_threshold` | double | V | 采样阈值 |
-| `sampler_hysteresis` | double | V | 迟滞窗口 |
-| `phase_cmd` | double | 秒 | 相位命令 |
-| `update_count` | int | - | 更新次数计数器 |
-| `freeze_flag` | int | - | 冻结标志（0=正常，1=冻结） |
-| `phase_error` | double | UI | 相位误差 |
-| `amplitude_rms` | double | V | 幅度 RMS |
-| `error_count` | int | - | 误码计数 |
+| Column Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `Time(s)` | double | seconds | Simulation timestamp |
+| `vga_gain` | double | linear multiplier | VGA gain value |
+| `dfe_tap1` ~ `dfe_tapN` | double | - | DFE tap coefficients (N is number of taps) |
+| `sampler_threshold` | double | V | Sampling threshold |
+| `sampler_hysteresis` | double | V | Hysteresis window |
+| `phase_cmd` | double | seconds | Phase command |
+| `update_count` | int | - | Update counter |
+| `freeze_flag` | int | - | Freeze flag (0=normal, 1=freeze) |
+| `phase_error` | double | UI | Phase error |
+| `amplitude_rms` | double | V | Amplitude RMS |
+| `error_count` | int | - | Error count |
 
-**示例数据**：
+**Example Data**:
 ```csv
-时间(s),vga_gain,dfe_tap1,dfe_tap2,dfe_tap3,dfe_tap4,dfe_tap5,sampler_threshold,sampler_hysteresis,phase_cmd,update_count,freeze_flag,phase_error,amplitude_rms,error_count
+Time(s),vga_gain,dfe_tap1,dfe_tap2,dfe_tap3,dfe_tap4,dfe_tap5,sampler_threshold,sampler_hysteresis,phase_cmd,update_count,freeze_flag,phase_error,amplitude_rms,error_count
 0.000000e+00,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.000000,0,0,0.500000,0.250000,0
 2.500000e-10,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.005000,1,0,0.489000,0.255000,0
 5.000000e-10,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.010000,2,0,0.478000,0.260000,0
@@ -1005,18 +1008,18 @@ adaption_<scenario>.csv
 ...
 ```
 
-#### 5.3.2 数据读取与处理
+#### 5.3.2 Data Reading and Processing
 
-**Python 读取示例**：
+**Python Reading Example**:
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
 
-# 读取 CSV 文件
+# Read CSV file
 data = np.loadtxt('adaption_basic.csv', delimiter=',', skiprows=1)
 time = data[:, 0]
 vga_gain = data[:, 1]
-dfe_taps = data[:, 2:7]  # 假设 5 个抽头
+dfe_taps = data[:, 2:7]  # Assume 5 taps
 sampler_threshold = data[:, 7]
 phase_cmd = data[:, 9]
 update_count = data[:, 10]
@@ -1026,104 +1029,104 @@ amplitude_rms = data[:, 13]
 error_count = data[:, 14]
 ```
 
-#### 5.3.3 收敛分析
+#### 5.3.3 Convergence Analysis
 
-**AGC 收敛分析**：
+**AGC Convergence Analysis**:
 ```python
-# 计算 AGC 收敛时间（增益变化 < 1% 持续 10 次更新）
+# Calculate AGC convergence time (gain change < 1% for 10 consecutive updates)
 gain_change = np.abs(np.diff(vga_gain)) / vga_gain[:-1]
 converged_indices = np.where(gain_change < 0.01)[0]
 if len(converged_indices) > 0:
-    # 检查是否持续 10 次更新
+    # Check if sustained for 10 consecutive updates
     for i in range(len(converged_indices) - 10):
         if np.all(gain_change[converged_indices[i]:converged_indices[i]+10] < 0.01):
             agc_convergence_time = time[converged_indices[i]]
-            print(f"AGC 收敛时间: {agc_convergence_time * 1e6:.2f} μs ({agc_convergence_time / 2.5e-11:.0f} UI)")
+            print(f"AGC Convergence Time: {agc_convergence_time * 1e6:.2f} μs ({agc_convergence_time / 2.5e-11:.0f} UI)")
             break
 ```
 
-**DFE 收敛分析**：
+**DFE Convergence Analysis**:
 ```python
-# 计算 DFE 收敛时间（所有抽头变化 < 0.001 持续 10 次更新）
+# Calculate DFE convergence time (all tap changes < 0.001 for 10 consecutive updates)
 dfe_converged = False
 for i in range(len(dfe_taps) - 10):
     tap_changes = np.abs(np.diff(dfe_taps[i:i+10], axis=0))
     if np.all(tap_changes < 0.001):
         dfe_convergence_time = time[i]
-        print(f"DFE 收敛时间: {dfe_convergence_time * 1e6:.2f} μs ({dfe_convergence_time / 2.5e-11:.0f} UI)")
+        print(f"DFE Convergence Time: {dfe_convergence_time * 1e6:.2f} μs ({dfe_convergence_time / 2.5e-11:.0f} UI)")
         dfe_converged = True
         break
 
 if not dfe_converged:
-    print("DFE 抽头未完全收敛")
+    print("DFE taps not fully converged")
 ```
 
-**CDR 锁定分析**：
+**CDR Lock Analysis**:
 ```python
-# 计算 CDR 锁定时间（相位误差 < 0.01 UI 持续 100 次更新）
+# Calculate CDR lock time (phase error < 0.01 UI for 100 consecutive updates)
 locked_indices = np.where(np.abs(phase_error) < 0.01)[0]
 if len(locked_indices) > 100:
     for i in range(len(locked_indices) - 100):
         if np.all(np.abs(phase_error[locked_indices[i]:locked_indices[i]+100]) < 0.01):
             cdr_lock_time = time[locked_indices[i]]
-            print(f"CDR 锁定时间: {cdr_lock_time * 1e6:.2f} μs ({cdr_lock_time / 2.5e-11:.0f} UI)")
+            print(f"CDR Lock Time: {cdr_lock_time * 1e6:.2f} μs ({cdr_lock_time / 2.5e-11:.0f} UI)")
             break
 ```
 
-#### 5.3.4 可视化示例
+#### 5.3.4 Visualization Example
 
-**绘制参数收敛曲线**：
+**Plot Parameter Convergence Curves**:
 ```python
 plt.figure(figsize=(15, 10))
 
-# VGA 增益收敛
+# VGA gain convergence
 plt.subplot(2, 3, 1)
 plt.plot(time * 1e6, vga_gain)
-plt.xlabel('时间 (μs)')
-plt.ylabel('VGA 增益')
-plt.title('AGC 增益收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('VGA Gain')
+plt.title('AGC Gain Convergence')
 plt.grid(True)
 
-# DFE 抽头收敛
+# DFE tap convergence
 plt.subplot(2, 3, 2)
 for i in range(dfe_taps.shape[1]):
     plt.plot(time * 1e6, dfe_taps[:, i], label=f'Tap {i+1}')
-plt.xlabel('时间 (μs)')
-plt.ylabel('抽头系数')
-plt.title('DFE 抽头收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('Tap Coefficient')
+plt.title('DFE Tap Convergence')
 plt.legend()
 plt.grid(True)
 
-# 相位命令
+# Phase command
 plt.subplot(2, 3, 3)
 plt.plot(time * 1e6, phase_cmd * 1e12)
-plt.xlabel('时间 (μs)')
-plt.ylabel('相位命令 (ps)')
-plt.title('CDR 相位命令')
+plt.xlabel('Time (μs)')
+plt.ylabel('Phase Command (ps)')
+plt.title('CDR Phase Command')
 plt.grid(True)
 
-# 相位误差
+# Phase error
 plt.subplot(2, 3, 4)
 plt.plot(time * 1e6, phase_error)
-plt.xlabel('时间 (μs)')
-plt.ylabel('相位误差 (UI)')
-plt.title('CDR 相位误差')
+plt.xlabel('Time (μs)')
+plt.ylabel('Phase Error (UI)')
+plt.title('CDR Phase Error')
 plt.grid(True)
 
-# 冻结标志
+# Freeze flag
 plt.subplot(2, 3, 5)
 plt.plot(time * 1e6, freeze_flag)
-plt.xlabel('时间 (μs)')
-plt.ylabel('冻结标志')
-plt.title('冻结状态')
+plt.xlabel('Time (μs)')
+plt.ylabel('Freeze Flag')
+plt.title('Freeze Status')
 plt.grid(True)
 
-# 误码计数
+# Error count
 plt.subplot(2, 3, 6)
 plt.plot(time * 1e6, error_count)
-plt.xlabel('时间 (μs)')
-plt.ylabel('误码计数')
-plt.title('误码累积')
+plt.xlabel('Time (μs)')
+plt.ylabel('Error Count')
+plt.title('Error Accumulation')
 plt.grid(True)
 
 plt.tight_layout()
@@ -1131,26 +1134,26 @@ plt.savefig('adaption_convergence.png', dpi=300)
 plt.show()
 ```
 
-#### 5.3.5 回归验证
+#### 5.3.5 Regression Verification
 
-**回归指标计算**：
+**Regression Metrics Calculation**:
 ```python
-# 计算回归指标
+# Calculate regression metrics
 def calculate_regression_metrics(data):
-    # 收敛时间
+    # Convergence time
     agc_conv_time = calculate_convergence_time(data[:, 1], threshold=0.01)
     dfe_conv_time = calculate_dfe_convergence_time(data[:, 2:7], threshold=0.001)
     cdr_lock_time = calculate_lock_time(data[:, 12], threshold=0.01)
     
-    # 稳态误差
+    # Steady-state error
     agc_steady_error = calculate_steady_error(data[:, 1], start_idx=int(0.8*len(data)))
     dfe_steady_error = calculate_dfe_steady_error(data[:, 2:7], start_idx=int(0.8*len(data)))
     cdr_steady_error = np.sqrt(np.mean(data[int(0.8*len(data)):, 12]**2))
     
-    # 冻结事件
+    # Freeze events
     freeze_events = np.sum(np.diff(data[:, 11]) > 0)
     
-    # 更新次数
+    # Update count
     total_updates = int(data[-1, 10])
     
     return {
@@ -1165,279 +1168,279 @@ def calculate_regression_metrics(data):
     }
 
 metrics = calculate_regression_metrics(data)
-print("回归指标:")
+print("Regression Metrics:")
 for key, value in metrics.items():
     print(f"  {key}: {value}")
 ```
 
-**回归通过标准**：
-- AGC 收敛时间 < 5000 UI
-- DFE 收敛时间 < 10000 UI
-- CDR 锁定时间 < 1000 UI
-- AGC 稳态误差 < 5%
-- DFE 稳态误差 < 0.001
-- CDR 稳态误差 RMS < 0.01 UI
-- 冻结事件次数 < 5（正常场景）
-- 总更新次数符合预期（快路径 > 1000，慢路径 > 10）
+**Regression Pass Criteria**:
+- AGC convergence time < 5000 UI
+- DFE convergence time < 10000 UI
+- CDR lock time < 1000 UI
+- AGC steady-state error < 5%
+- DFE steady-state error < 0.001
+- CDR steady-state error RMS < 0.01 UI
+- Freeze events < 5 (normal scenarios)
+- Total updates meets expectations (fast path > 1000, slow path > 10)
 
 ---
 
-## 6. 运行指南
+## 6. Running Guide
 
-### 6.1 环境配置
+### 6.1 Environment Configuration
 
-运行 Adaption 测试平台前需要配置以下环境变量：
+The following environment variables need to be configured before running the Adaption testbench:
 
 ```bash
-# 设置 SystemC 库路径
+# Set SystemC library path
 export SYSTEMC_HOME=/usr/local/systemc-2.3.4
 
-# 设置 SystemC-AMS 库路径
+# Set SystemC-AMS library path
 export SYSTEMC_AMS_HOME=/usr/local/systemc-ams-2.3.4
 
-# 或者使用项目提供的配置脚本
+# Or use the project-provided configuration script
 source scripts/setup_env.sh
 ```
 
-**环境变量说明**：
-- `SYSTEMC_HOME`：SystemC 核心库安装路径，包含头文件和库文件
-- `SYSTEMC_AMS_HOME`：SystemC-AMS 扩展库安装路径，提供 DE-TDF 桥接机制
-- 这些路径会通过 CMake 自动添加到编译器的 include 和 library 路径中
+**Environment Variable Descriptions**:
+- `SYSTEMC_HOME`: SystemC core library installation path, contains header files and library files
+- `SYSTEMC_AMS_HOME`: SystemC-AMS extension library installation path, provides DE-TDF bridging mechanism
+- These paths are automatically added to compiler include and library paths through CMake
 
-**验证环境配置**：
+**Verify Environment Configuration**:
 ```bash
-# 检查 SystemC 库是否存在
+# Check if SystemC library exists
 ls $SYSTEMC_HOME/lib-linux64/libsystemc-2.3.4.so
 
-# 检查 SystemC-AMS 库是否存在
+# Check if SystemC-AMS library exists
 ls $SYSTEMC_AMS_HOME/lib-linux64/libsystemc-ams-2.3.4.so
 
-# 检查 CMake 是否能找到库
+# Check if CMake can find libraries
 cmake .. -DCMAKE_BUILD_TYPE=Release
 ```
 
-**常见问题**：
-- 如果找不到 `libsystemc-2.3.4.so`，请检查 `SYSTEMC_HOME` 路径是否正确
-- 如果找不到 `libsystemc-ams-2.3.4.so`，请检查 `SYSTEMC_AMS_HOME` 路径是否正确
-- 如果链接时出现 undefined reference 错误，请确保库文件路径正确
+**Common Issues**:
+- If `libsystemc-2.3.4.so` is not found, check if `SYSTEMC_HOME` path is correct
+- If `libsystemc-ams-2.3.4.so` is not found, check if `SYSTEMC_AMS_HOME` path is correct
+- If undefined reference errors occur during linking, ensure library file paths are correct
 
-### 6.2 构建与运行
+### 6.2 Build and Run
 
-#### 使用 CMake 构建
+#### Build Using CMake
 
 ```bash
-# 进入项目根目录
+# Enter project root directory
 cd /mnt/d/systemCProjects/SerDesSystemCProject
 
-# 创建构建目录
+# Create build directory
 mkdir -p build && cd build
 
-# 配置 CMake（Release 模式以获得最佳性能）
+# Configure CMake (Release mode for best performance)
 cmake .. -DCMAKE_BUILD_TYPE=Release
 
-# 编译 Adaption 测试平台
+# Compile Adaption testbench
 make adaption_tran_tb -j4
 
-# 进入测试平台目录
+# Enter testbench directory
 cd tb
 ```
 
-**CMake 配置选项**：
-- `-DCMAKE_BUILD_TYPE=Release`：Release 模式，优化性能
-- `-DCMAKE_BUILD_TYPE=Debug`：Debug 模式，包含调试信息
-- `-DSYSTEMC_HOME=<path>`：指定 SystemC 安装路径（如果环境变量未设置）
-- `-DSYSTEMC_AMS_HOME=<path>`：指定 SystemC-AMS 安装路径（如果环境变量未设置）
+**CMake Configuration Options**:
+- `-DCMAKE_BUILD_TYPE=Release`: Release mode, optimized performance
+- `-DCMAKE_BUILD_TYPE=Debug`: Debug mode, includes debug information
+- `-DSYSTEMC_HOME=<path>`: Specify SystemC installation path (if environment variable not set)
+- `-DSYSTEMC_AMS_HOME=<path>`: Specify SystemC-AMS installation path (if environment variable not set)
 
-**编译输出**：
-- 可执行文件：`build/tb/adaption_tran_tb`
-- 库文件：`build/lib/libserdes.a`（静态库）
-- 依赖库：SystemC、SystemC-AMS、nlohmann/json、yaml-cpp
+**Build Output**:
+- Executable: `build/tb/adaption_tran_tb`
+- Library file: `build/lib/libserdes.a` (static library)
+- Dependencies: SystemC, SystemC-AMS, nlohmann/json, yaml-cpp
 
-#### 运行测试平台
+#### Run Testbench
 
 ```bash
-# 运行 Adaption 测试平台，指定测试场景
+# Run Adaption testbench, specify test scenario
 ./adaption_tran_tb [scenario]
 ```
 
-**场景参数说明**：
+**Scenario Parameter Descriptions**:
 
-| 场景参数 | 数值 | 测试目标 | 输出文件 | 仿真时长 |
-|---------|------|---------|----------|----------|
-| `basic` / `0` | `basic` 或 `0` | 基本功能测试（所有算法联合） | adaption_basic.csv | 10 μs |
-| `agc` / `1` | `agc` 或 `1` | AGC 自动增益控制 | adaption_agc.csv | 10 μs |
-| `dfe` / `2` | `dfe` 或 `2` | DFE 抽头更新（LMS/Sign-LMS） | adaption_dfe.csv | 10 μs |
-| `threshold` / `3` | `threshold` 或 `3` | 阈值自适应算法 | adaption_threshold.csv | 10 μs |
-| `cdr_pi` / `4` | `cdr_pi` 或 `4` | CDR PI 控制器 | adaption_cdr.csv | 10 μs |
-| `safety` / `5` | `safety` 或 `5` | 冻结与回退机制 | adaption_safety.csv | 10 μs |
-| `multirate` / `6` | `multirate` 或 `6` | 多速率调度架构 | adaption_multirate.csv | 10 μs |
-| `switch` / `7` | `switch` 或 `7` | 多场景热切换 | adaption_switch.csv | 9 μs |
+| Scenario Parameter | Value | Test Objective | Output File | Simulation Duration |
+|-------------------|-------|----------------|-------------|---------------------|
+| `basic` / `0` | `basic` or `0` | Basic function test (all algorithms joint) | adaption_basic.csv | 10 μs |
+| `agc` / `1` | `agc` or `1` | AGC automatic gain control | adaption_agc.csv | 10 μs |
+| `dfe` / `2` | `dfe` or `2` | DFE tap update (LMS/Sign-LMS) | adaption_dfe.csv | 10 μs |
+| `threshold` / `3` | `threshold` or `3` | Threshold adaptation algorithm | adaption_threshold.csv | 10 μs |
+| `cdr_pi` / `4` | `cdr_pi` or `4` | CDR PI controller | adaption_cdr.csv | 10 μs |
+| `safety` / `5` | `safety` or `5` | Freeze and rollback mechanism | adaption_safety.csv | 10 μs |
+| `multirate` / `6` | `multirate` or `6` | Multi-rate scheduling architecture | adaption_multirate.csv | 10 μs |
+| `switch` / `7` | `switch` or `7` | Multi-scenario hot-swap | adaption_switch.csv | 9 μs |
 
-**运行示例**：
+**Run Examples**:
 
 ```bash
-# 运行基本功能测试（默认场景）
+# Run basic function test (default scenario)
 ./adaption_tran_tb
 
-# 或显式指定场景
+# Or explicitly specify scenario
 ./adaption_tran_tb basic
 
-# 运行 AGC 测试
+# Run AGC test
 ./adaption_tran_tb agc
 
-# 运行 DFE 测试
+# Run DFE test
 ./adaption_tran_tb dfe
 
-# 运行冻结与回退机制测试
+# Run freeze and rollback mechanism test
 ./adaption_tran_tb freeze
 
-# 运行多场景热切换测试
+# Run multi-scenario hot-swap test
 ./adaption_tran_tb switch
 ```
 
-**命令行选项**：
-- 如果不指定场景参数，默认运行 `basic` 场景
-- 场景参数可以是名称（如 `basic`）或数字（如 `0`）
-- 无效的场景参数会显示帮助信息
+**Command Line Options**:
+- If no scenario parameter is specified, default runs `basic` scenario
+- Scenario parameter can be name (e.g., `basic`) or number (e.g., `0`)
+- Invalid scenario parameters will display help information
 
-#### 使用 Makefile 构建
+#### Build Using Makefile
 
 ```bash
-# 在项目根目录下
+# In project root directory
 make adaption_tb
 
-# 运行测试
+# Run test
 cd build/tb
 ./adaption_tran_tb [scenario]
 ```
 
-**Makefile 目标**：
-- `make adaption_tb`：编译 Adaption 测试平台
-- `make all`：编译所有模块和测试平台
-- `make clean`：清理编译产物
-- `make info`：显示构建信息
+**Makefile Targets**:
+- `make adaption_tb`: Compile Adaption testbench
+- `make all`: Compile all modules and testbenches
+- `make clean`: Clean build artifacts
+- `make info`: Display build information
 
-**调试模式**：
+**Debug Mode**:
 ```bash
-# 使用 Debug 模式编译（包含调试符号）
+# Compile using Debug mode (includes debug symbols)
 cmake .. -DCMAKE_BUILD_TYPE=Debug
 
-# 运行 GDB 调试
+# Run GDB debugging
 gdb ./adaption_tran_tb
 
-# 运行 Valgrind 内存检查
+# Run Valgrind memory check
 valgrind --leak-check=full ./adaption_tran_tb basic
 ```
 
-### 6.3 结果查看
+### 6.3 Result Viewing
 
-#### 控制台输出
+#### Console Output
 
-测试运行完成后，控制台会输出详细的统计信息。以下以 `basic` 场景为例：
+After test run completion, the console outputs detailed statistics. The following takes `basic` scenario as an example:
 
 ```
 ========================================
-Adaption 测试平台 - BASIC_FUNCTION 场景
+Adaption Testbench - BASIC_FUNCTION Scenario
 ========================================
 
-仿真配置：
-  符号率: 40 Gbps (UI = 25.00 ps)
-  仿真时长: 10.00 μs (400,000 UI)
-  更新模式: multi-rate
-  快路径周期: 250.00 ps (10 UI)
-  慢路径周期: 2.50 μs (100 UI)
+Simulation Configuration:
+  Symbol Rate: 40 Gbps (UI = 25.00 ps)
+  Simulation Duration: 10.00 μs (400,000 UI)
+  Update Mode: multi-rate
+  Fast Path Period: 250.00 ps (10 UI)
+  Slow Path Period: 2.50 μs (100 UI)
 
-AGC 统计：
-  初始增益: 2.000
-  最终增益: 3.245
-  收敛时间: 2,450 UI (61.25 ns)
-  稳态误差: 1.2%
-  增益调整范围: 1.245
+AGC Statistics:
+  Initial Gain: 2.000
+  Final Gain: 3.245
+  Convergence Time: 2,450 UI (61.25 ns)
+  Steady-State Error: 1.2%
+  Gain Adjustment Range: 1.245
 
-DFE 统计：
-  抽头数量: 5
-  算法: sign-lms
-  步长: 1.00e-04
-  初始抽头: [-0.050, -0.020, 0.010, 0.005, 0.002]
-  最终抽头: [-0.123, -0.087, 0.045, 0.023, 0.011]
-  收敛时间: 8,760 UI (219.00 ns)
-  抽头能量分布: 0.0256
-  误码改善: 15.3x (BER: 5.2e-9 → 3.4e-10)
+DFE Statistics:
+  Number of Taps: 5
+  Algorithm: sign-lms
+  Step Size: 1.00e-04
+  Initial Taps: [-0.050, -0.020, 0.010, 0.005, 0.002]
+  Final Taps: [-0.123, -0.087, 0.045, 0.023, 0.011]
+  Convergence Time: 8,760 UI (219.00 ns)
+  Tap Energy Distribution: 0.0256
+  BER Improvement: 15.3x (BER: 5.2e-9 → 3.4e-10)
 
-CDR PI 统计：
-  初始相位误差: 0.500 UI
-  锁定时间: 890 UI (22.25 ns)
-  稳态相位误差 RMS: 0.008 UI (0.20 ps)
-  相位命令范围利用率: 45%
-  相位抖动 RMS: 0.006 UI
+CDR PI Statistics:
+  Initial Phase Error: 0.500 UI
+  Lock Time: 890 UI (22.25 ns)
+  Steady-State Phase Error RMS: 0.008 UI (0.20 ps)
+  Phase Command Range Utilization: 45%
+  Phase Jitter RMS: 0.006 UI
 
-阈值自适应统计：
-  初始阈值: 0.000 V
-  最终阈值: 0.012 V
-  初始迟滞: 0.020 V
-  最终迟滞: 0.025 V
-  阈值跟踪延迟: 150 UI (3.75 ns)
+Threshold Adaptation Statistics:
+  Initial Threshold: 0.000 V
+  Final Threshold: 0.012 V
+  Initial Hysteresis: 0.020 V
+  Final Hysteresis: 0.025 V
+  Threshold Tracking Delay: 150 UI (3.75 ns)
 
-安全机制统计：
-  冻结事件次数: 0
-  回退事件次数: 0
-  快照保存次数: 10
+Safety Mechanism Statistics:
+  Freeze Events: 0
+  Rollback Events: 0
+  Snapshot Save Count: 10
 
-更新统计：
-  快路径更新次数: 40,000
-  慢路径更新次数: 4,000
-  总更新次数: 44,000
+Update Statistics:
+  Fast Path Updates: 40,000
+  Slow Path Updates: 4,000
+  Total Updates: 44,000
 
-整体性能：
-  眼图开口: 62% UI (眼高 0.31V, 眼宽 0.62 UI)
+Overall Performance:
+  Eye Opening: 62% UI (Eye Height 0.31V, Eye Width 0.62 UI)
   TJ@1e-12: 0.28 UI
-  误码率: 3.4e-10
+  Bit Error Rate: 3.4e-10
 
 ========================================
-测试通过！
-输出文件: adaption_basic.csv
+Test Passed!
+Output File: adaption_basic.csv
 ========================================
 ```
 
-**控制台输出说明**：
-- **仿真配置**：显示符号率、仿真时长、更新模式等基本配置
-- **AGC 统计**：显示增益收敛情况、收敛时间、稳态误差
-- **DFE 统计**：显示抽头收敛情况、收敛时间、误码改善
-- **CDR PI 统计**：显示相位锁定情况、锁定时间、稳态相位误差
-- **阈值自适应统计**：显示阈值调整情况、迟滞窗口变化
-- **安全机制统计**：显示冻结事件、回退事件、快照保存次数
-- **更新统计**：显示快路径/慢路径更新次数
-- **整体性能**：显示眼图开口、总抖动、误码率
+**Console Output Descriptions**:
+- **Simulation Configuration**: Displays symbol rate, simulation duration, update mode, and other basic configurations
+- **AGC Statistics**: Displays gain convergence, convergence time, steady-state error
+- **DFE Statistics**: Displays tap convergence, convergence time, BER improvement
+- **CDR PI Statistics**: Displays phase locking, lock time, steady-state phase error
+- **Threshold Adaptation Statistics**: Displays threshold adjustment, hysteresis window changes
+- **Safety Mechanism Statistics**: Displays freeze events, rollback events, snapshot save count
+- **Update Statistics**: Displays fast path/slow path update counts
+- **Overall Performance**: Displays eye opening, total jitter, bit error rate
 
-#### CSV 输出文件格式
+#### CSV Output File Format
 
-测试平台生成的 CSV 文件包含参数时间序列和状态信号，用于后处理分析和回归验证。
+The CSV file generated by the testbench contains parameter time series and status signals for post-processing analysis and regression verification.
 
-**文件命名规则**：
+**File Naming Convention**:
 ```
 adaption_<scenario>.csv
 ```
-其中 `<scenario>` 为测试场景名称（basic、agc、dfe、threshold、cdr、freeze、multirate、switch）。
+Where `<scenario>` is the test scenario name (basic, agc, dfe, threshold, cdr, freeze, multirate, switch).
 
-**列结构**：
+**Column Structure**:
 
-| 列名 | 类型 | 单位 | 说明 |
-|------|------|------|------|
-| `时间(s)` | double | 秒 | 仿真时间戳 |
-| `vga_gain` | double | 线性倍数 | VGA 增益值 |
-| `dfe_tap1` ~ `dfe_tapN` | double | - | DFE 抽头系数（N 为抽头数量，通常 5-8） |
-| `sampler_threshold` | double | V | 采样阈值 |
-| `sampler_hysteresis` | double | V | 迟滞窗口 |
-| `phase_cmd` | double | 秒 | 相位命令 |
-| `update_count` | int | - | 更新次数计数器 |
-| `freeze_flag` | int | - | 冻结标志（0=正常，1=冻结） |
-| `phase_error` | double | UI | 相位误差 |
-| `amplitude_rms` | double | V | 幅度 RMS |
-| `error_count` | int | - | 误码计数 |
+| Column Name | Type | Unit | Description |
+|-------------|------|------|-------------|
+| `Time(s)` | double | seconds | Simulation timestamp |
+| `vga_gain` | double | linear multiplier | VGA gain value |
+| `dfe_tap1` ~ `dfe_tapN` | double | - | DFE tap coefficients (N is number of taps, usually 5-8) |
+| `sampler_threshold` | double | V | Sampling threshold |
+| `sampler_hysteresis` | double | V | Hysteresis window |
+| `phase_cmd` | double | seconds | Phase command |
+| `update_count` | int | - | Update counter |
+| `freeze_flag` | int | - | Freeze flag (0=normal, 1=freeze) |
+| `phase_error` | double | UI | Phase error |
+| `amplitude_rms` | double | V | Amplitude RMS |
+| `error_count` | int | - | Error count |
 
-**示例数据**：
+**Example Data**:
 ```csv
-时间(s),vga_gain,dfe_tap1,dfe_tap2,dfe_tap3,dfe_tap4,dfe_tap5,sampler_threshold,sampler_hysteresis,phase_cmd,update_count,freeze_flag,phase_error,amplitude_rms,error_count
+Time(s),vga_gain,dfe_tap1,dfe_tap2,dfe_tap3,dfe_tap4,dfe_tap5,sampler_threshold,sampler_hysteresis,phase_cmd,update_count,freeze_flag,phase_error,amplitude_rms,error_count
 0.000000e+00,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.000000,0,0,0.500000,0.250000,0
 2.500000e-10,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.005000,1,0,0.489000,0.255000,0
 5.000000e-10,2.000000,-0.050000,-0.020000,0.010000,0.005000,0.002000,0.000000,0.020000,0.010000,2,0,0.478000,0.260000,0
@@ -1446,15 +1449,15 @@ adaption_<scenario>.csv
 ...
 ```
 
-**数据读取示例**：
+**Data Reading Example**:
 ```python
 import numpy as np
 
-# 读取 CSV 文件
+# Read CSV file
 data = np.loadtxt('adaption_basic.csv', delimiter=',', skiprows=1)
 time = data[:, 0]
 vga_gain = data[:, 1]
-dfe_taps = data[:, 2:7]  # 假设 5 个抽头
+dfe_taps = data[:, 2:7]  # Assume 5 taps
 sampler_threshold = data[:, 7]
 sampler_hysteresis = data[:, 8]
 phase_cmd = data[:, 9]
@@ -1465,31 +1468,31 @@ amplitude_rms = data[:, 13]
 error_count = data[:, 14]
 ```
 
-#### Python 可视化
+#### Python Visualization
 
-项目提供了 Python 脚本用于结果可视化和分析。
+The project provides Python scripts for result visualization and analysis.
 
-**使用项目提供的绘图脚本**：
+**Using Project-Provided Plotting Scripts**:
 ```bash
-# 基本波形绘图
+# Basic waveform plotting
 python scripts/plot_adaption_results.py --input adaption_basic.csv
 
-# 指定输出文件
+# Specify output file
 python scripts/plot_adaption_results.py --input adaption_basic.csv --output my_plot.png
 
-# 绘制特定算法的收敛曲线
+# Plot specific algorithm convergence curves
 python scripts/plot_adaption_results.py --input adaption_agc.csv --plot-type agc
 python scripts/plot_adaption_results.py --input adaption_dfe.csv --plot-type dfe
 python scripts/plot_adaption_results.py --input adaption_cdr.csv --plot-type cdr
 ```
 
-**自定义 Python 分析示例**：
+**Custom Python Analysis Example**:
 
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
 
-# 读取 CSV 文件
+# Read CSV file
 data = np.loadtxt('adaption_basic.csv', delimiter=',', skiprows=1)
 time = data[:, 0]
 vga_gain = data[:, 1]
@@ -1499,57 +1502,57 @@ phase_cmd = data[:, 9]
 update_count = data[:, 10]
 freeze_flag = data[:, 11]
 
-# 绘制参数收敛曲线
+# Plot parameter convergence curves
 plt.figure(figsize=(15, 10))
 
-# VGA 增益收敛
+# VGA gain convergence
 plt.subplot(2, 3, 1)
 plt.plot(time * 1e6, vga_gain)
-plt.xlabel('时间 (μs)')
-plt.ylabel('VGA 增益')
-plt.title('AGC 增益收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('VGA Gain')
+plt.title('AGC Gain Convergence')
 plt.grid(True)
 
-# DFE 抽头收敛
+# DFE tap convergence
 plt.subplot(2, 3, 2)
 for i in range(dfe_taps.shape[1]):
     plt.plot(time * 1e6, dfe_taps[:, i], label=f'Tap {i+1}')
-plt.xlabel('时间 (μs)')
-plt.ylabel('抽头系数')
-plt.title('DFE 抽头收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('Tap Coefficient')
+plt.title('DFE Tap Convergence')
 plt.legend()
 plt.grid(True)
 
-# 相位命令
+# Phase command
 plt.subplot(2, 3, 3)
 plt.plot(time * 1e6, phase_cmd * 1e12)
-plt.xlabel('时间 (μs)')
-plt.ylabel('相位命令 (ps)')
-plt.title('CDR 相位命令')
+plt.xlabel('Time (μs)')
+plt.ylabel('Phase Command (ps)')
+plt.title('CDR Phase Command')
 plt.grid(True)
 
-# 相位误差
+# Phase error
 plt.subplot(2, 3, 4)
 plt.plot(time * 1e6, phase_error)
-plt.xlabel('时间 (μs)')
-plt.ylabel('相位误差 (UI)')
-plt.title('CDR 相位误差')
+plt.xlabel('Time (μs)')
+plt.ylabel('Phase Error (UI)')
+plt.title('CDR Phase Error')
 plt.grid(True)
 
-# 冻结标志
+# Freeze flag
 plt.subplot(2, 3, 5)
 plt.plot(time * 1e6, freeze_flag)
-plt.xlabel('时间 (μs)')
-plt.ylabel('冻结标志')
-plt.title('冻结状态')
+plt.xlabel('Time (μs)')
+plt.ylabel('Freeze Flag')
+plt.title('Freeze Status')
 plt.grid(True)
 
-# 更新次数
+# Update count
 plt.subplot(2, 3, 6)
 plt.plot(time * 1e6, update_count)
-plt.xlabel('时间 (μs)')
-plt.ylabel('更新次数')
-plt.title('更新计数')
+plt.xlabel('Time (μs)')
+plt.ylabel('Update Count')
+plt.title('Update Counter')
 plt.grid(True)
 
 plt.tight_layout()
@@ -1557,66 +1560,66 @@ plt.savefig('adaption_convergence.png', dpi=300)
 plt.show()
 ```
 
-**收敛分析示例**：
+**Convergence Analysis Example**:
 
 ```python
-# 计算 AGC 收敛时间（增益变化 < 1% 持续 10 次更新）
+# Calculate AGC convergence time (gain change < 1% for 10 consecutive updates)
 gain_change = np.abs(np.diff(vga_gain)) / vga_gain[:-1]
 converged_indices = np.where(gain_change < 0.01)[0]
 if len(converged_indices) > 0:
-    # 检查是否持续 10 次更新
+    # Check if sustained for 10 consecutive updates
     for i in range(len(converged_indices) - 10):
         if np.all(gain_change[converged_indices[i]:converged_indices[i]+10] < 0.01):
             agc_convergence_time = time[converged_indices[i]]
-            print(f"AGC 收敛时间: {agc_convergence_time * 1e6:.2f} μs ({agc_convergence_time / 2.5e-11:.0f} UI)")
+            print(f"AGC Convergence Time: {agc_convergence_time * 1e6:.2f} μs ({agc_convergence_time / 2.5e-11:.0f} UI)")
             break
 
-# 计算 DFE 收敛时间（所有抽头变化 < 0.001 持续 10 次更新）
+# Calculate DFE convergence time (all tap changes < 0.001 for 10 consecutive updates)
 dfe_converged = False
 for i in range(len(dfe_taps) - 10):
     tap_changes = np.abs(np.diff(dfe_taps[i:i+10], axis=0))
     if np.all(tap_changes < 0.001):
         dfe_convergence_time = time[i]
-        print(f"DFE 收敛时间: {dfe_convergence_time * 1e6:.2f} μs ({dfe_convergence_time / 2.5e-11:.0f} UI)")
+        print(f"DFE Convergence Time: {dfe_convergence_time * 1e6:.2f} μs ({dfe_convergence_time / 2.5e-11:.0f} UI)")
         dfe_converged = True
         break
 
 if not dfe_converged:
-    print("DFE 抽头未完全收敛")
+    print("DFE taps not fully converged")
 
-# 计算 CDR 锁定时间（相位误差 < 0.01 UI 持续 100 次更新）
+# Calculate CDR lock time (phase error < 0.01 UI for 100 consecutive updates)
 locked_indices = np.where(np.abs(phase_error) < 0.01)[0]
 if len(locked_indices) > 100:
     for i in range(len(locked_indices) - 100):
         if np.all(np.abs(phase_error[locked_indices[i]:locked_indices[i]+100]) < 0.01):
             cdr_lock_time = time[locked_indices[i]]
-            print(f"CDR 锁定时间: {cdr_lock_time * 1e6:.2f} μs ({cdr_lock_time / 2.5e-11:.0f} UI)")
+            print(f"CDR Lock Time: {cdr_lock_time * 1e6:.2f} μs ({cdr_lock_time / 2.5e-11:.0f} UI)")
             break
 
-# 统计冻结事件
+# Count freeze events
 freeze_events = np.sum(np.diff(freeze_flag) > 0)
-print(f"冻结事件次数: {freeze_events}")
+print(f"Freeze Events: {freeze_events}")
 ```
 
-**回归验证示例**：
+**Regression Verification Example**:
 
 ```python
-# 计算回归指标
+# Calculate regression metrics
 def calculate_regression_metrics(data):
-    # 收敛时间
+    # Convergence time
     agc_conv_time = calculate_convergence_time(data[:, 1], threshold=0.01)
     dfe_conv_time = calculate_dfe_convergence_time(data[:, 2:7], threshold=0.001)
     cdr_lock_time = calculate_lock_time(data[:, 12], threshold=0.01)
     
-    # 稳态误差
+    # Steady-state error
     agc_steady_error = calculate_steady_error(data[:, 1], start_idx=int(0.8*len(data)))
     dfe_steady_error = calculate_dfe_steady_error(data[:, 2:7], start_idx=int(0.8*len(data)))
     cdr_steady_error = np.sqrt(np.mean(data[int(0.8*len(data)):, 12]**2))
     
-    # 冻结事件
+    # Freeze events
     freeze_events = np.sum(np.diff(data[:, 11]) > 0)
     
-    # 更新次数
+    # Update count
     total_updates = int(data[-1, 10])
     
     return {
@@ -1631,29 +1634,29 @@ def calculate_regression_metrics(data):
     }
 
 metrics = calculate_regression_metrics(data)
-print("回归指标:")
+print("Regression Metrics:")
 for key, value in metrics.items():
     print(f"  {key}: {value}")
 
-# 回归通过标准
-print("\n回归验证:")
-print(f"  AGC 收敛时间 < 5000 UI: {'✓' if metrics['agc_convergence_time'] / 2.5e-11 < 5000 else '✗'}")
-print(f"  DFE 收敛时间 < 10000 UI: {'✓' if metrics['dfe_convergence_time'] / 2.5e-11 < 10000 else '✗'}")
-print(f"  CDR 锁定时间 < 1000 UI: {'✓' if metrics['cdr_lock_time'] / 2.5e-11 < 1000 else '✗'}")
-print(f"  AGC 稳态误差 < 5%: {'✓' if metrics['agc_steady_error'] < 0.05 else '✗'}")
-print(f"  DFE 稳态误差 < 0.001: {'✓' if metrics['dfe_steady_error'] < 0.001 else '✗'}")
-print(f"  CDR 稳态误差 RMS < 0.01 UI: {'✓' if metrics['cdr_steady_error'] < 0.01 else '✗'}")
-print(f"  冻结事件次数 < 5: {'✓' if metrics['freeze_events'] < 5 else '✗'}")
-print(f"  快路径更新次数 > 1000: {'✓' if metrics['total_updates'] > 1000 else '✗'}")
+# Regression pass criteria
+print("\nRegression Verification:")
+print(f"  AGC Convergence Time < 5000 UI: {'✓' if metrics['agc_convergence_time'] / 2.5e-11 < 5000 else '✗'}")
+print(f"  DFE Convergence Time < 10000 UI: {'✓' if metrics['dfe_convergence_time'] / 2.5e-11 < 10000 else '✗'}")
+print(f"  CDR Lock Time < 1000 UI: {'✓' if metrics['cdr_lock_time'] / 2.5e-11 < 1000 else '✗'}")
+print(f"  AGC Steady-State Error < 5%: {'✓' if metrics['agc_steady_error'] < 0.05 else '✗'}")
+print(f"  DFE Steady-State Error < 0.001: {'✓' if metrics['dfe_steady_error'] < 0.001 else '✗'}")
+print(f"  CDR Steady-State Error RMS < 0.01 UI: {'✓' if metrics['cdr_steady_error'] < 0.01 else '✗'}")
+print(f"  Freeze Events < 5: {'✓' if metrics['freeze_events'] < 5 else '✗'}")
+print(f"  Fast Path Updates > 1000: {'✓' if metrics['total_updates'] > 1000 else '✗'}")
 ```
 
-**多场景对比分析**：
+**Multi-Scenario Comparison Analysis**:
 
 ```python
 import glob
 import os
 
-# 读取所有场景的 CSV 文件
+# Read CSV files for all scenarios
 scenarios = ['basic', 'agc', 'dfe', 'threshold', 'cdr', 'freeze', 'multirate', 'switch']
 results = {}
 
@@ -1663,35 +1666,35 @@ for scenario in scenarios:
         data = np.loadtxt(csv_file, delimiter=',', skiprows=1)
         results[scenario] = calculate_regression_metrics(data)
 
-# 对比分析
-print("多场景对比分析:")
-print(f"{'场景':<15} {'AGC收敛时间(ns)':<15} {'DFE收敛时间(ns)':<15} {'CDR锁定时间(ns)':<15} {'冻结事件':<10}")
-print("-" * 70)
+# Comparison analysis
+print("Multi-Scenario Comparison Analysis:")
+print(f"{'Scenario':<15} {'AGC Conv Time(ns)':<18} {'DFE Conv Time(ns)':<18} {'CDR Lock Time(ns)':<18} {'Freeze Events':<13}")
+print("-" * 82)
 for scenario, metrics in results.items():
     agc_conv = metrics['agc_convergence_time'] * 1e9 if 'agc_convergence_time' in metrics else 'N/A'
     dfe_conv = metrics['dfe_convergence_time'] * 1e9 if 'dfe_convergence_time' in metrics else 'N/A'
     cdr_lock = metrics['cdr_lock_time'] * 1e9 if 'cdr_lock_time' in metrics else 'N/A'
     freeze = metrics['freeze_events'] if 'freeze_events' in metrics else 'N/A'
-    print(f"{scenario:<15} {str(agc_conv):<15} {str(dfe_conv):<15} {str(cdr_lock):<15} {str(freeze):<10}")
+    print(f"{scenario:<15} {str(agc_conv):<18} {str(dfe_conv):<18} {str(cdr_lock):<18} {str(freeze):<13}")
 ```
 
-**性能分析脚本**：
+**Performance Analysis Script**:
 
 ```python
-# 计算性能指标
+# Calculate performance metrics
 def calculate_performance_metrics(data):
-    # 眼图开口（假设有眼图数据）
+    # Eye opening (assuming eye diagram data available)
     # eye_height = ...
     # eye_width = ...
     # eye_area = eye_height * eye_width
     
-    # 抖动分解
+    # Jitter decomposition
     tj = np.percentile(np.abs(phase_error), 99.9999999)  # TJ@1e-12
     rj = np.std(phase_error)  # RJ
     dj = tj - rj  # DJ
     
-    # 误码率
-    ber = error_count[-1] / (len(time) * 40e9 * 2.5e-11)  # 粗略估计
+    # Bit error rate
+    ber = error_count[-1] / (len(time) * 40e9 * 2.5e-11)  # Rough estimate
     
     return {
         'tj': tj,
@@ -1701,49 +1704,49 @@ def calculate_performance_metrics(data):
     }
 
 perf_metrics = calculate_performance_metrics(data)
-print("性能指标:")
+print("Performance Metrics:")
 print(f"  TJ@1e-12: {perf_metrics['tj']:.4f} UI")
 print(f"  RJ: {perf_metrics['rj']:.4f} UI")
 print(f"  DJ: {perf_metrics['dj']:.4f} UI")
 print(f"  BER: {perf_metrics['ber']:.2e}")
 ```
 
-**批量测试脚本**：
+**Batch Test Script**:
 
 ```bash
 #!/bin/bash
-# 批量运行所有测试场景
+# Batch run all test scenarios
 
 SCENARIOS=("basic" "agc" "dfe" "threshold" "cdr" "freeze" "multirate" "switch")
 
 for scenario in "${SCENARIOS[@]}"; do
-    echo "运行场景: $scenario"
+    echo "Running scenario: $scenario"
     ./adaption_tran_tb "$scenario"
     if [ $? -eq 0 ]; then
-        echo "✓ 场景 $scenario 测试通过"
+        echo "✓ Scenario $scenario test passed"
     else
-        echo "✗ 场景 $scenario 测试失败"
+        echo "✗ Scenario $scenario test failed"
     fi
     echo ""
 done
 
-# 生成回归报告
+# Generate regression report
 python scripts/generate_regression_report.py
 ```
 
-**输出文件说明**：
-- `adaption_<scenario>.csv`：参数时间序列数据
-- `adaption_convergence.png`：参数收敛曲线图
-- `adaption_analysis.png`：综合分析图
-- `regression_report.txt`：回归验证报告
+**Output File Descriptions**:
+- `adaption_<scenario>.csv`: Parameter time series data
+- `adaption_convergence.png`: Parameter convergence curves
+- `adaption_analysis.png`: Comprehensive analysis plots
+- `regression_report.txt`: Regression verification report
 
-**Python 分析示例**：
+**Python Analysis Example**:
 
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
 
-# 读取 CSV 文件
+# Read CSV file
 data = np.loadtxt('adaption_basic.csv', delimiter=',', skiprows=1)
 time = data[:, 0]
 vga_gain = data[:, 1]
@@ -1753,40 +1756,40 @@ phase_cmd = data[:, 9]
 update_count = data[:, 10]
 freeze_flag = data[:, 11]
 
-# 绘制 VGA 增益收敛曲线
+# Plot VGA gain convergence curve
 plt.figure(figsize=(12, 8))
 
 plt.subplot(2, 2, 1)
 plt.plot(time * 1e6, vga_gain)
-plt.xlabel('时间 (μs)')
-plt.ylabel('VGA 增益')
-plt.title('AGC 增益收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('VGA Gain')
+plt.title('AGC Gain Convergence')
 plt.grid(True)
 
-# 绘制 DFE 抽头收敛曲线
+# Plot DFE tap convergence curves
 plt.subplot(2, 2, 2)
 for i in range(5):
     plt.plot(time * 1e6, dfe_taps[:, i], label=f'Tap {i+1}')
-plt.xlabel('时间 (μs)')
-plt.ylabel('抽头系数')
-plt.title('DFE 抽头收敛')
+plt.xlabel('Time (μs)')
+plt.ylabel('Tap Coefficient')
+plt.title('DFE Tap Convergence')
 plt.legend()
 plt.grid(True)
 
-# 绘制相位命令曲线
+# Plot phase command curve
 plt.subplot(2, 2, 3)
 plt.plot(time * 1e6, phase_cmd * 1e12)
-plt.xlabel('时间 (μs)')
-plt.ylabel('相位命令 (ps)')
-plt.title('CDR 相位命令')
+plt.xlabel('Time (μs)')
+plt.ylabel('Phase Command (ps)')
+plt.title('CDR Phase Command')
 plt.grid(True)
 
-# 绘制冻结标志
+# Plot freeze flag
 plt.subplot(2, 2, 4)
 plt.plot(time * 1e6, freeze_flag)
-plt.xlabel('时间 (μs)')
-plt.ylabel('冻结标志')
-plt.title('冻结状态')
+plt.xlabel('Time (μs)')
+plt.ylabel('Freeze Flag')
+plt.title('Freeze Status')
 plt.grid(True)
 
 plt.tight_layout()
@@ -1794,18 +1797,18 @@ plt.savefig('adaption_analysis.png', dpi=300)
 plt.show()
 ```
 
-#### 性能分析
+#### Performance Analysis
 
-计算收敛时间和稳态误差：
+Calculate convergence time and steady-state error:
 
 ```python
-# 计算 AGC 收敛时间（增益变化 < 1%）
+# Calculate AGC convergence time (gain change < 1%)
 gain_stable_idx = np.where(np.abs(np.diff(vga_gain)) / vga_gain[:-1] < 0.01)[0]
 if len(gain_stable_idx) > 0:
     agc_convergence_time = time[gain_stable_idx[0]]
-    print(f"AGC 收敛时间: {agc_convergence_time * 1e6:.2f} μs")
+    print(f"AGC Convergence Time: {agc_convergence_time * 1e6:.2f} μs")
 
-# 计算 DFE 收敛时间（抽头变化 < 0.001）
+# Calculate DFE convergence time (tap change < 0.001)
 tap_stable = True
 for i in range(5):
     tap_stable_idx = np.where(np.abs(np.diff(dfe_taps[:, i])) < 0.001)[0]
@@ -1813,164 +1816,164 @@ for i in range(5):
         tap_stable = tap_stable and (len(tap_stable_idx) > len(time) * 0.9)
 
 if tap_stable:
-    print("DFE 抽头已收敛")
+    print("DFE taps converged")
 else:
-    print("DFE 抽头未完全收敛")
+    print("DFE taps not fully converged")
 
-# 统计冻结事件
+# Count freeze events
 freeze_events = np.sum(np.diff(freeze_flag) > 0)
-print(f"冻结事件次数: {freeze_events}")
+print(f"Freeze Events: {freeze_events}")
 ```
 
 ---
 
-## 7. 技术要点
+## 7. Technical Essentials
 
-### 7.1 DE-TDF 桥接的时序对齐与延迟处理
+### 7.1 DE-TDF Bridge Timing Alignment and Delay Handling
 
-**问题**：DE 域控制逻辑与 TDF 域模拟前端之间存在跨域通信延迟,可能导致参数更新与信号处理时序不对齐,影响控制环路的稳定性。
+**Problem**: There is cross-domain communication delay between DE domain control logic and TDF domain analog front-end, which may cause parameter update and signal processing timing misalignment, affecting control loop stability.
 
-**解决方案**：
-- DE→TDF 桥接有 1 个 TDF 周期的固有延迟,参数在 DE 事件完成后,下一 TDF 采样周期生效
-- 通过降低更新频率补偿延迟影响:快路径每 10-100 UI 更新一次,慢路径每 1000-10000 UI 更新一次
-- PI 控制器的积分系数 `Ki` 适当减小,提高稳定性裕量
-- 多参数同时更新时,SystemC-AMS 桥接机制保证原子性,TDF 模块在同一采样周期读取所有新参数
-- 场景切换后进入短暂训练期(通常 100-200 UI),冻结误码统计,避免瞬态误触发冻结/回退
+**Solutions**:
+- DE→TDF bridge has 1 TDF cycle inherent delay, parameters take effect in the next TDF sampling cycle after DE event completion
+- Compensate delay impact by reducing update frequency: fast path updates every 10-100 UI, slow path updates every 1000-10000 UI
+- PI controller's integral coefficient `Ki` is appropriately reduced to increase stability margin
+- When multiple parameters update simultaneously, SystemC-AMS bridging mechanism guarantees atomicity, TDF modules read all new parameters in the same sampling cycle
+- After scenario switch, enter brief training period (usually 100-200 UI), freeze error statistics, avoid transient false triggering of freeze/rollback
 
-**实现要点**：
+**Implementation Points**:
 ```cpp
-// 快路径更新周期应远大于 TDF 时间步,避免竞争
+// Fast path update period should be much larger than TDF time step to avoid races
 fast_update_period = 10 * UI;  // 10 UI ≈ 250ps @ 40Gbps
 slow_update_period = 1000 * UI;  // 1000 UI ≈ 25ns @ 40Gbps
 ```
 
-### 7.2 多速率调度架构的实现细节
+### 7.2 Multi-Rate Scheduling Architecture Implementation Details
 
-**问题**：四大自适应算法(AGC、DFE、阈值、CDR PI)的更新频率需求不同,单速率调度会导致计算浪费或响应不足。
+**Problem**: The four major adaptive algorithms (AGC, DFE, Threshold, CDR PI) have different update frequency requirements, single-rate scheduling leads to computational waste or insufficient response.
 
-**解决方案**：
-- 采用分层多速率架构:快路径(CDR PI、阈值自适应,每 10-100 UI)与慢路径(AGC、DFE 抽头,每 1000-10000 UI)并行运行
-- 使用 SystemC DE 域的事件触发器,分别为快/慢路径创建定时事件
-- 快路径优先级高于慢路径,避免慢路径阻塞快路径响应
-- 更新计数器分别统计快/慢路径更新次数,用于诊断和性能分析
+**Solutions**:
+- Adopt hierarchical multi-rate architecture: fast path (CDR PI, threshold adaptation, every 10-100 UI) and slow path (AGC, DFE taps, every 1000-10000 UI) run in parallel
+- Use SystemC DE domain event triggers, create timed events for fast/slow paths separately
+- Fast path has higher priority than slow path, avoiding slow path blocking fast path response
+- Update counters separately count fast/slow path updates for diagnostics and performance analysis
 
-**实现要点**：
+**Implementation Points**:
 ```cpp
-// 快路径定时事件
+// Fast path timed event
 sc_core::sc_event fast_update_event;
 next_fast_trigger = current_time + fast_update_period;
 next_fast_trigger.notify(fast_update_period);
 
-// 慢路径定时事件
+// Slow path timed event
 sc_core::sc_event slow_update_event;
 next_slow_trigger = current_time + slow_update_period;
 next_slow_trigger.notify(slow_update_period);
 ```
 
-### 7.3 AGC PI 控制器的收敛性与稳定性
+### 7.3 AGC PI Controller Convergence and Stability
 
-**问题**：AGC PI 控制器需要在快速响应幅度变化的同时,避免增益振荡和过冲,确保稳态误差小。
+**Problem**: AGC PI controller needs to quickly respond to amplitude changes while avoiding gain oscillation and overshoot, ensuring small steady-state error.
 
-**解决方案**：
-- 比例系数 `Kp` 控制响应速度,积分系数 `Ki` 消除稳态误差,典型值 `Kp=0.01-0.1`, `Ki=10-1000`
-- 增益范围钳位至 `[gain_min, gain_max]`,防止过小增益导致信号丢失或过大增益导致饱和
-- 速率限制 `rate_limit` 防止单次更新增益变化过大,典型值 10.0 linear/s
-- 抗积分饱和策略:当增益超出范围时,停止积分项累积,避免积分器溢出
+**Solutions**:
+- Proportional coefficient `Kp` controls response speed, integral coefficient `Ki` eliminates steady-state error, typical values `Kp=0.01-0.1`, `Ki=10-1000`
+- Gain range clamped to `[gain_min, gain_max]`, preventing signal loss from too small gain or saturation from too large gain
+- Rate limit `rate_limit` prevents excessive gain change in single update, typical value 10.0 linear/s
+- Anti-windup strategy: when gain exceeds range, stop integral term accumulation, avoiding integrator overflow
 
-**收敛判定标准**：
-- 增益变化率 < 1% 持续 10 次更新
-- 幅度跟踪误差 < 5%
-- 收敛时间 < 5000 UI
+**Convergence Determination Criteria**:
+- Gain change rate < 1% for 10 consecutive updates
+- Amplitude tracking error < 5%
+- Convergence time < 5000 UI
 
-### 7.4 DFE Sign-LMS 算法的收敛性与稳定性
+### 7.4 DFE Sign-LMS Algorithm Convergence and Stability
 
-**问题**：DFE 抽头更新需要在快速收敛与稳态精度之间权衡,防止噪声累积导致抽头发散。
+**Problem**: DFE tap updates need to balance fast convergence and steady-state accuracy, preventing noise accumulation causing tap divergence.
 
-**解决方案**：
-- 默认采用 Sign-LMS 算法,仅需加法运算,硬件友好且鲁棒性强
-- 步长 `mu` 根据信号功率与噪声调整,典型值 `1e-5 - 1e-3`,满足稳定性条件 `0 < μ < 2 / (N * P_x)`
-- 泄漏系数 `leakage` (1e-6 - 1e-4) 防止噪声累积导致抽头发散,每次更新后应用 `tap[i] *= (1 - leakage)`
-- 抽头饱和钳位至 `[tap_min, tap_max]`,防止抽头系数过大或过小
-- 冻结条件:若判决误差 `|e(n)| > freeze_threshold`,暂停所有抽头更新,避免异常噪声干扰
+**Solutions**:
+- Default uses Sign-LMS algorithm, only requires addition operations, hardware-friendly and robust
+- Step size `mu` adjusted based on signal power and noise, typical value `1e-5 - 1e-3`, satisfying stability condition `0 < μ < 2 / (N * P_x)`
+- Leakage coefficient `leakage` (1e-6 - 1e-4) prevents noise accumulation causing tap divergence, applied as `tap[i] *= (1 - leakage)` after each update
+- Tap saturation clamped to `[tap_min, tap_max]`, preventing tap coefficients from being too large or too small
+- Freeze condition: If decision error `|e(n)| > freeze_threshold`, pause all tap updates, avoiding abnormal noise interference
 
-**收敛判定标准**：
-- 所有抽头变化 < 0.001 持续 10 次更新
-- 误码率改善 > 10x (vs 无 DFE)
-- 收敛时间 < 10000 UI
-- 长时间运行(1e6 UI)无发散
+**Convergence Determination Criteria**:
+- All tap changes < 0.001 for 10 consecutive updates
+- BER improvement > 10x (vs no DFE)
+- Convergence time < 10000 UI
+- No divergence during long-term operation (1e6 UI)
 
-### 7.5 阈值自适应算法的鲁棒性设计
+### 7.5 Threshold Adaptation Algorithm Robustness Design
 
-**问题**：阈值自适应需要在跟踪电平漂移的同时,避免异常噪声暴涨时误触发极端阈值。
+**Problem**: Threshold adaptation needs to track level drift while avoiding extreme threshold triggering during abnormal noise surges.
 
-**解决方案**：
-- 采用梯度下降或电平统计法调整阈值,向误码减小方向移动
-- 阈值调整步长 `adapt_step` 限制单次更新幅度,典型值 0.001V
-- 电平漂移阈值 `drift_threshold` (如 0.05V) 超过时触发阈值调整,避免频繁微调
-- 迟滞窗口根据噪声强度动态调整: `hysteresis = k * σ_noise`,其中 `k` 为系数(2-3),限制在 `[0.01, 0.1]` 范围内
-- 异常噪声暴涨时,冻结阈值更新,维持当前值
+**Solutions**:
+- Use gradient descent or level statistics method to adjust threshold, moving toward direction of decreasing errors
+- Threshold adjustment step `adapt_step` limits single update amplitude, typical value 0.001V
+- Level drift threshold `drift_threshold` (e.g., 0.05V) triggers threshold adjustment when exceeded, avoiding frequent fine-tuning
+- Hysteresis window dynamically adjusts based on noise intensity: `hysteresis = k * σ_noise`, where `k` is coefficient (2-3), limited to `[0.01, 0.1]` range
+- During abnormal noise surges, freeze threshold updates, maintain current value
 
-**鲁棒性验证**：
-- 阈值跟踪误差 < 10mV
-- 迟滞窗口自适应调整,平衡抗噪与灵敏度
-- 异常噪声暴涨时不误触发极端阈值
+**Robustness Verification**:
+- Threshold tracking error < 10mV
+- Hysteresis window adaptive adjustment, balancing noise immunity and sensitivity
+- No extreme threshold triggering during abnormal noise surges
 
-### 7.6 CDR PI 控制器的抗积分饱和处理
+### 7.6 CDR PI Controller Anti-Windup Handling
 
-**问题**：CDR PI 控制器在大相位扰动下,积分器可能累积过大导致相位命令溢出,影响锁定性能。
+**Problem**: Under large phase disturbance, CDR PI controller's integrator may accumulate too much causing phase command overflow, affecting lock performance.
 
-**解决方案**：
-- 相位命令范围钳位至 `±phase_range`,通常 5e-11 秒（±0.5 UI）
-- 抗积分饱和策略:当相位命令超出范围时,钳位并停止积分项累积
+**Solutions**:
+- Phase command range clamped to `±phase_range`, typically 5e-11 seconds (±0.5 UI)
+- Anti-windup strategy: when phase command exceeds range, clamp and stop integral term accumulation
 ```cpp
 if (phase_cmd > phase_range) {
     phase_cmd = phase_range;
-    // 停止积分累积,避免积分器溢出
+    // Stop integral accumulation, avoid integrator overflow
 } else if (phase_cmd < -phase_range) {
     phase_cmd = -phase_range;
-    // 停止积分累积
+    // Stop integral accumulation
 } else {
     I_cdr += ki_cdr * phase_error * dt;
 }
 ```
-- 相位命令按 `phase_resolution` 量化,匹配相位插值器的实际分辨率
-- 锁定后减小积分系数 `Ki`,提高稳态抖动抑制能力
+- Phase command quantized by `phase_resolution`, matching phase interpolator's actual resolution
+- Reduce integral coefficient `Ki` after locking, improving steady-state jitter suppression capability
 
-**锁定判定标准**：
-- 相位误差 RMS < 0.01 UI 持续 100 次更新
-- 锁定时间 < 1000 UI
-- 相位抖动 RMS < 0.01 UI
+**Lock Determination Criteria**:
+- Phase error RMS < 0.01 UI for 100 consecutive updates
+- Lock time < 1000 UI
+- Phase jitter RMS < 0.01 UI
 
-### 7.7 安全机制（Safety）的触发条件与恢复策略
+### 7.7 Safety Mechanism Trigger Conditions and Recovery Strategy
 
-**问题**：在异常场景(信号丢失、噪声暴涨、配置错误)下,算法可能发散,需要冻结更新并快速恢复。
+**Problem**: Under abnormal scenarios (signal loss, noise surge, configuration error), algorithms may diverge, requiring freeze updates and quick recovery.
 
-**解决方案**：
-- **冻结触发条件**:
-  - 误码暴涨: `error_count > error_burst_threshold`
-  - 幅度异常: `amplitude_rms` 超出 `[target_amplitude * 0.5, target_amplitude * 2.0]`
-  - 相位失锁: `|phase_error| > 5e-11`（0.5 UI）持续超过 1000 UI
-- **快照保存**:每隔 `snapshot_interval` (如 1 μs) 保存一次当前参数到历史缓冲区
-- **回退触发**:冻结持续时间超过阈值(如 `2 * snapshot_interval`)或关键指标持续劣化
-- **恢复策略**:从快照缓冲区恢复参数,重置积分器,清除冻结标志,进入训练模式
+**Solutions**:
+- **Freeze Trigger Conditions**:
+  - Error burst: `error_count > error_burst_threshold`
+  - Amplitude anomaly: `amplitude_rms` outside `[target_amplitude * 0.5, target_amplitude * 2.0]`
+  - Phase unlock: `|phase_error| > 5e-11` (0.5 UI) for more than 1000 UI
+- **Snapshot Save**: Save current parameters to history buffer every `snapshot_interval` (e.g., 1 μs)
+- **Rollback Trigger**: Freeze duration exceeds threshold (e.g., `2 * snapshot_interval`) or key metrics continue to degrade
+- **Recovery Strategy**: Restore parameters from snapshot buffer, reset integrator, clear freeze flag, enter training mode
 
-**恢复判定标准**：
-- 恢复时间 < 2000 UI
-- 恢复后参数收敛至稳定值
-- 冻结/回退事件 < 5 次(正常场景)
+**Recovery Determination Criteria**:
+- Recovery time < 2000 UI
+- Parameters converge to stable values after recovery
+- Freeze/rollback events < 5 times (normal scenarios)
 
-### 7.8 参数约束与钳位的设计
+### 7.8 Parameter Constraints and Clamping Design
 
-**问题**：所有输出参数必须在合理范围内,防止参数发散导致系统不稳定。
+**Problem**: All output parameters must be within reasonable ranges, preventing parameter divergence causing system instability.
 
-**解决方案**：
-- **AGC 增益**: `gain = clamp(gain, gain_min, gain_max)`,典型范围 `[0.5, 8.0]`
-- **DFE 抽头**: `tap[i] = clamp(tap[i], tap_min, tap_max)`,典型范围 `[-0.5, 0.5]`
-- **阈值**: `threshold = clamp(threshold, -vcm_out, vcm_out)`,防止超出共模电压范围
-- **相位命令**: `phase_cmd = clamp(phase_cmd, -phase_range, phase_range)`,典型范围 5e-11 秒（±0.5 UI）
-- **速率限制**:AGC 增益变化率限制 `rate_limit`,防止增益突变
+**Solutions**:
+- **AGC Gain**: `gain = clamp(gain, gain_min, gain_max)`, typical range `[0.5, 8.0]`
+- **DFE Taps**: `tap[i] = clamp(tap[i], tap_min, tap_max)`, typical range `[-0.5, 0.5]`
+- **Threshold**: `threshold = clamp(threshold, -vcm_out, vcm_out)`, preventing exceeding common-mode voltage range
+- **Phase Command**: `phase_cmd = clamp(phase_cmd, -phase_range, phase_range)`, typical range 5e-11 seconds (±0.5 UI)
+- **Rate Limit**: AGC gain change rate limit `rate_limit`, preventing gain突变
 
-**实现要点**：
+**Implementation Points**:
 ```cpp
 template<typename T>
 T clamp(T value, T min_val, T max_val) {
@@ -1978,77 +1981,77 @@ T clamp(T value, T min_val, T max_val) {
 }
 ```
 
-### 7.9 场景切换的原子性与防抖策略
+### 7.9 Scenario Switching Atomicity and Anti-Shake Strategy
 
-**问题**：多场景热切换时,参数不一致可能导致瞬态误码,影响系统稳定性。
+**Problem**: During multi-scenario hot-swap, parameter inconsistency may cause transient errors, affecting system stability.
 
-**解决方案**：
-- **原子切换**:所有参数(vga_gain、dfe_taps、sampler_threshold、phase_cmd)在同一 DE 事件内同时更新
-- **防抖策略**:切换后进入短暂训练期(通常 100-200 UI),冻结误码统计,避免瞬态误触发冻结/回退
-- **快照保存**:切换前保存当前参数快照,便于故障恢复
-- **模式控制**:通过 `mode` 信号控制切换流程(0=初始化,1=训练,2=数据,3=冻结)
+**Solutions**:
+- **Atomic Switching**: All parameters (vga_gain, dfe_taps, sampler_threshold, phase_cmd) update simultaneously within the same DE event
+- **Anti-Shake Strategy**: After switch, enter brief training period (usually 100-200 UI), freeze error statistics, avoid transient false triggering of freeze/rollback
+- **Snapshot Save**: Save current parameter snapshot before switching, facilitating fault recovery
+- **Mode Control**: Control switching flow through `mode` signal (0=initialization, 1=training, 2=data, 3=freeze)
 
-**切换判定标准**：
-- 切换时间 < 100 UI
-- 无参数不一致导致的瞬态误码
-- 切换成功率 100%
+**Switch Determination Criteria**:
+- Switch time < 100 UI
+- No transient errors due to parameter inconsistency
+- Switch success rate 100%
 
-### 7.10 已知限制与特殊要求
+### 7.10 Known Limitations and Special Requirements
 
-**限制1: DE-TDF 桥接延迟**
-- DE→TDF 桥接有 1 个 TDF 周期的固有延迟,无法避免
-- 算法设计需考虑此延迟对稳定性的影响,通过降低更新频率和增加阻尼系数补偿
+**Limitation 1: DE-TDF Bridge Delay**
+- DE→TDF bridge has 1 TDF cycle inherent delay, cannot be avoided
+- Algorithm design needs to consider this delay's impact on stability, compensated by reducing update frequency and increasing damping coefficient
 
-**限制2: Sign-LMS 算法稳态误差**
-- Sign-LMS 算法的稳态误差大于 LMS 算法
-- 可通过泄漏机制和冻结阈值补偿,或切换至 LMS/NLMS 算法
+**Limitation 2: Sign-LMS Algorithm Steady-State Error**
+- Sign-LMS algorithm's steady-state error is larger than LMS algorithm
+- Can be compensated through leakage mechanism and freeze threshold, or switch to LMS/NLMS algorithm
 
-**限制3: 多速率调度开销**
-- 快路径更新频率高,可能增加计算开销
-- 可通过动态调整更新频率优化,如训练阶段使用快更新,数据阶段使用慢更新
+**Limitation 3: Multi-Rate Scheduling Overhead**
+- High fast path update frequency may increase computational overhead
+- Can be optimized by dynamically adjusting update frequency, e.g., use fast update during training phase, slow update during data phase
 
-**特殊要求1: 仿真时间**
-- PSRR/CMRR 测试场景下,仿真时间必须不少于 3 μs,确保完整覆盖至少 3 个 1 MHz 周期的信号变化
-- DFE 收敛测试场景下,仿真时间必须不少于 10 μs,确保抽头充分收敛
+**Special Requirement 1: Simulation Time**
+- Under PSRR/CMRR test scenarios, simulation time must be no less than 3 μs, ensuring complete coverage of at least 3 cycles of 1 MHz signal changes
+- Under DFE convergence test scenarios, simulation time must be no less than 10 μs, ensuring sufficient tap convergence
 
-**特殊要求2: 端口连接**
-- 所有输入端口必须连接,即使对应算法未启用(SystemC-AMS 要求)
-- 建议连接到默认值或零信号,避免未定义行为
+**Special Requirement 2: Port Connections**
+- All input ports must be connected, even if corresponding algorithm is not enabled (SystemC-AMS requirement)
+- Recommended to connect to default values or zero signals to avoid undefined behavior
 
-**特殊要求3: 配置完整性**
-- 配置文件必须包含所有算法参数,缺失参数会导致加载失败
-- 建议使用配置验证工具,确保参数范围合规
+**Special Requirement 3: Configuration Completeness**
+- Configuration files must contain all algorithm parameters, missing parameters will cause loading failure
+- Recommended to use configuration validation tools to ensure parameter range compliance
 
 ---
 
-## 8. 参考信息
+## 8. Reference Information
 
-### 8.1 相关文件
+### 8.1 Related Files
 
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| 参数定义 | `/include/common/parameters.h` | AdaptionParams 结构体（包含 AGC、DFE、阈值、CDR PI、安全与回退子结构） |
-| 头文件 | `/include/de/adaption.h` | AdaptionDe 类声明（DE 域自适应控制中枢） |
-| 实现文件 | `/src/de/adaption.cpp` | AdaptionDe 类实现（四大算法与多速率调度） |
-| 测试平台 | `/tb/adaption/adaption_tran_tb.cpp` | 瞬态仿真测试（八种测试场景） |
-| 测试辅助 | `/tb/adaption/adaption_helpers.h` | 辅助模块（TraceMonitor、FaultInjector、ScenarioManager） |
-| 单元测试 | `/tests/unit/test_adaption_basic.cpp` | GoogleTest 单元测试（AGC、DFE、阈值、CDR PI） |
-| 配置文件 | `/config/default.json` | 默认配置（JSON 格式） |
-| 配置文件 | `/config/default.yaml` | 默认配置（YAML 格式） |
-| 波形绘图 | `/scripts/plot_adaption_results.py` | Python 可视化脚本（收敛曲线、眼图对比） |
+| File | Path | Description |
+|------|------|-------------|
+| Parameter Definition | `/include/common/parameters.h` | AdaptionParams structure (contains AGC, DFE, Threshold, CDR PI, Safety and Rollback sub-structures) |
+| Header File | `/include/de/adaption.h` | AdaptionDe class declaration (DE domain adaptive control hub) |
+| Implementation File | `/src/de/adaption.cpp` | AdaptionDe class implementation (four major algorithms and multi-rate scheduling) |
+| Testbench | `/tb/adaption/adaption_tran_tb.cpp` | Transient simulation test (eight test scenarios) |
+| Test Helpers | `/tb/adaption/adaption_helpers.h` | Helper modules (TraceMonitor, FaultInjector, ScenarioManager) |
+| Unit Test | `/tests/unit/test_adaption_basic.cpp` | GoogleTest unit tests (AGC, DFE, Threshold, CDR PI) |
+| Config File | `/config/default.json` | Default configuration (JSON format) |
+| Config File | `/config/default.yaml` | Default configuration (YAML format) |
+| Waveform Plotting | `/scripts/plot_adaption_results.py` | Python visualization script (convergence curves, eye diagram comparison) |
 
-### 8.2 依赖项
+### 8.2 Dependencies
 
-- SystemC 2.3.4（DE 域仿真核心）
-- SystemC-AMS 2.3.4（DE‑TDF 桥接机制）
-- C++11/C++14 标准（智能指针、lambda 表达式、chrono 库）
-- nlohmann/json（JSON 配置解析，版本 3.11+）
-- yaml-cpp（YAML 配置解析，可选，版本 0.7+）
-- GoogleTest 1.12.1（单元测试框架）
+- SystemC 2.3.4 (DE domain simulation core)
+- SystemC-AMS 2.3.4 (DE-TDF bridging mechanism)
+- C++11/C++14 standard (smart pointers, lambda expressions, chrono library)
+- nlohmann/json (JSON configuration parsing, version 3.11+)
+- yaml-cpp (YAML configuration parsing, optional, version 0.7+)
+- GoogleTest 1.12.1 (unit test framework)
 
-### 8.3 配置示例
+### 8.3 Configuration Example
 
-完整配置示例（JSON 格式）：
+Complete configuration example (JSON format):
 ```json
 {
   "global": {
@@ -2110,8 +2113,8 @@ T clamp(T value, T min_val, T max_val) {
 
 ---
 
-**文档版本**：v0.1  
-**最后更新**：2025-10-30  
-**作者**：Yizhe Liu
+**Document Version**: v0.1  
+**Last Updated**: 2025-10-30  
+**Author**: Yizhe Liu
 
 ---

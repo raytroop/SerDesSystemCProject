@@ -1,249 +1,249 @@
-# CTLE 模块技术文档
+# CTLE Module Technical Documentation
 
-🌐 **Languages**: [中文](ctle.md) | [English](../en/modules/ctle.md)
+🌐 **Languages**: [中文](../../modules/ctle.md) | [English](ctle.md)
 
-**级别**：AMS 子模块（RX）  
-**类名**：`RxCtleTdf`  
-**当前版本**：v0.4 (2025-12-07)  
-**状态**：生产就绪
+**Level**: AMS Submodule (RX)  
+**Class Name**: `RxCtleTdf`  
+**Current Version**: v0.4 (2025-12-07)  
+**Status**: Production Ready
 
 ---
 
-## 1. 概述
+## 1. Overview
 
-连续时间线性均衡器（CTLE）是SerDes接收端的核心模拟前端模块，主要功能是补偿高速信道引入的高频衰减，通过频率选择性放大恢复被信道损伤的信号质量。
+The Continuous-Time Linear Equalizer (CTLE) is a core analog front-end module in the SerDes receiver. Its primary function is to compensate for the high-frequency attenuation introduced by high-speed channels, restoring signal quality degraded by channel impairments through frequency-selective amplification.
 
-### 1.1 设计原理
+### 1.1 Design Principles
 
-CTLE的核心设计思想是利用零极点传递函数实现频率相关的增益特性：
+The core design concept of CTLE utilizes zero-pole transfer functions to achieve frequency-dependent gain characteristics:
 
-- **低频信号**：信道衰减较小，CTLE提供较低增益（DC增益）
-- **高频信号**：信道衰减较大，CTLE通过零点提升高频增益进行补偿
-- **极高频信号**：通过极点限制带宽，避免高频噪声放大
+- **Low-frequency signals**: Channels exhibit less attenuation at low frequencies, so CTLE provides lower gain (DC gain)
+- **High-frequency signals**: Channels exhibit significant attenuation at high frequencies, which CTLE compensates for by boosting high-frequency gain through its zeros
+- **Very high-frequency signals**: Bandwidth is limited through poles to avoid amplifying high-frequency noise
 
-传递函数的数学形式为：
+The mathematical form of the transfer function is:
 ```
 H(s) = dc_gain × ∏(1 + s/ωz_i) / ∏(1 + s/ωp_j)
 ```
-其中 ωz = 2π×fz（零点角频率），ωp = 2π×fp（极点角频率）。
+where ωz = 2π×fz (zero angular frequency) and ωp = 2π×fp (pole angular frequency).
 
-### 1.2 核心特性
+### 1.2 Core Features
 
-- **差分架构**：完整的差分信号路径，支持共模抑制
-- **灵活传递函数**：支持任意多零点/多极点配置
-- **非理想效应建模**：输入偏移、输入噪声、输出软饱和
-- **PSRR建模**：电源噪声通过可配置传递函数耦合到输出
-- **CMFB环路**：共模反馈环路，稳定输出共模电压
-- **CMRR建模**：输入共模到差分输出的泄漏路径
+- **Differential Architecture**: Complete differential signal path with common-mode rejection support
+- **Flexible Transfer Function**: Supports arbitrary multi-zero/multi-pole configurations
+- **Non-ideal Effects Modeling**: Input offset, input noise, and output soft saturation
+- **PSRR Modeling**: Power supply noise coupling to output through configurable transfer functions
+- **CMFB Loop**: Common-mode feedback loop to stabilize output common-mode voltage
+- **CMRR Modeling**: Input common-mode to differential output leakage path
 
-### 1.3 版本历史
+### 1.3 Version History
 
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.1 | 2025-09 | 初始版本，单端接口 |
-| v0.2 | 2025-10 | 新增PSRR/CMFB/CMRR功能 |
-| v0.3 | 2025-11-23 | 改为差分接口，统一共模控制 |
-| v0.4 | 2025-12-07 | 完善测试平台，支持多场景仿真 |
-
----
-
-## 2. 模块接口
-
-### 2.1 端口定义（TDF域）
-
-| 端口名 | 方向 | 类型 | 说明 |
-|-------|------|------|------|
-| `in_p` | 输入 | double | 差分输入正端 |
-| `in_n` | 输入 | double | 差分输入负端 |
-| `vdd` | 输入 | double | 电源电压（PSRR建模用） |
-| `out_p` | 输出 | double | 差分输出正端 |
-| `out_n` | 输出 | double | 差分输出负端 |
-
-> **重要**：即使不启用PSRR功能，`vdd`端口也必须连接（SystemC-AMS要求所有端口均需连接）。
-
-### 2.2 参数配置（RxCtleParams）
-
-#### 基本参数
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `dc_gain` | double | 1.0 | 直流增益（线性倍数） |
-| `zeros` | vector&lt;double&gt; | [] | 零点频率列表（Hz） |
-| `poles` | vector&lt;double&gt; | [] | 极点频率列表（Hz） |
-| `vcm_out` | double | 0.6 | 差分输出共模电压（V） |
-| `offset_enable` | bool | false | 启用输入偏移 |
-| `vos` | double | 0.0 | 输入偏移电压（V） |
-| `noise_enable` | bool | false | 启用输入噪声 |
-| `vnoise_sigma` | double | 0.0 | 噪声标准差（V，高斯分布） |
-| `sat_min` | double | -0.5 | 输出最小电压（V） |
-| `sat_max` | double | 0.5 | 输出最大电压（V） |
-
-#### PSRR子结构
-
-电源抑制比路径，建模VDD纹波对差分输出的影响。
-
-| 参数 | 说明 |
-|------|------|
-| `enable` | 启用PSRR建模 |
-| `gain` | PSRR路径增益（如0.01表示-40dB） |
-| `poles` | 低通滤波极点频率 |
-| `vdd_nom` | 名义电源电压 |
-
-工作原理：`vdd_ripple = vdd - vdd_nom` → PSRR传递函数 → 耦合到差分输出
-
-#### CMFB子结构
-
-共模反馈环路，稳定输出共模电压到目标值。
-
-| 参数 | 说明 |
-|------|------|
-| `enable` | 启用CMFB环路 |
-| `bandwidth` | 环路带宽（Hz） |
-| `loop_gain` | 环路增益 |
-
-工作原理：测量输出共模 → 与目标比较 → 环路滤波器 → 调整共模
-
-#### CMRR子结构
-
-共模抑制比路径，建模输入共模到差分输出的泄漏。
-
-| 参数 | 说明 |
-|------|------|
-| `enable` | 启用CMRR建模 |
-| `gain` | CM→DIFF泄漏增益 |
-| `poles` | 低通滤波极点频率 |
+| Version | Date | Major Changes |
+|---------|------|---------------|
+| v0.1 | 2025-09 | Initial version, single-ended interface |
+| v0.2 | 2025-10 | Added PSRR/CMFB/CMRR functionality |
+| v0.3 | 2025-11-23 | Changed to differential interface, unified common-mode control |
+| v0.4 | 2025-12-07 | Enhanced testbench, support for multi-scenario simulation |
 
 ---
 
-## 3. 核心实现机制
+## 2. Module Interface
 
-### 3.1 信号处理流程
+### 2.1 Port Definitions (TDF Domain)
 
-CTLE模块的`processing()`方法采用严格的多步骤流水线处理架构，确保信号处理的正确性和可维护性：
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `in_p` | Input | double | Differential input positive terminal |
+| `in_n` | Input | double | Differential input negative terminal |
+| `vdd` | Input | double | Supply voltage (for PSRR modeling) |
+| `out_p` | Output | double | Differential output positive terminal |
+| `out_n` | Output | double | Differential output negative terminal |
+
+> **Important**: Even if PSRR functionality is not enabled, the `vdd` port must be connected (SystemC-AMS requires all ports to be connected).
+
+### 2.2 Parameter Configuration (RxCtleParams)
+
+#### Basic Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dc_gain` | double | 1.0 | DC gain (linear scale) |
+| `zeros` | vector&lt;double&gt; | [] | List of zero frequencies (Hz) |
+| `poles` | vector&lt;double&gt; | [] | List of pole frequencies (Hz) |
+| `vcm_out` | double | 0.6 | Differential output common-mode voltage (V) |
+| `offset_enable` | bool | false | Enable input offset |
+| `vos` | double | 0.0 | Input offset voltage (V) |
+| `noise_enable` | bool | false | Enable input noise |
+| `vnoise_sigma` | double | 0.0 | Noise standard deviation (V, Gaussian distribution) |
+| `sat_min` | double | -0.5 | Output minimum voltage (V) |
+| `sat_max` | double | 0.5 | Output maximum voltage (V) |
+
+#### PSRR Substructure
+
+Power Supply Rejection Ratio path, modeling the effect of VDD ripple on differential output.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enable` | Enable PSRR modeling |
+| `gain` | PSRR path gain (e.g., 0.01 represents -40dB) |
+| `poles` | Low-pass filter pole frequencies |
+| `vdd_nom` | Nominal supply voltage |
+
+Working principle: `vdd_ripple = vdd - vdd_nom` → PSRR transfer function → coupled to differential output
+
+#### CMFB Substructure
+
+Common-Mode Feedback loop, stabilizing output common-mode voltage to the target value.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enable` | Enable CMFB loop |
+| `bandwidth` | Loop bandwidth (Hz) |
+| `loop_gain` | Loop gain |
+
+Working principle: Measure output common-mode → Compare with target → Loop filter → Adjust common-mode
+
+#### CMRR Substructure
+
+Common-Mode Rejection Ratio path, modeling the leakage from input common-mode to differential output.
+
+| Parameter | Description |
+|-----------|-------------|
+| `enable` | Enable CMRR modeling |
+| `gain` | CM→DIFF leakage gain |
+| `poles` | Low-pass filter pole frequencies |
+
+---
+
+## 3. Core Implementation Mechanisms
+
+### 3.1 Signal Processing Flow
+
+The CTLE module's `processing()` method adopts a strict multi-step pipeline processing architecture to ensure signal processing correctness and maintainability:
 
 ```
-输入读取 → 偏移注入 → 噪声注入 → CTLE滤波 → 软饱和 → PSRR路径 → CMRR路径 → 合成 → CMFB → 输出
+Input Reading → Offset Injection → Noise Injection → CTLE Filtering → Soft Saturation → PSRR Path → CMRR Path → Synthesis → CMFB → Output
 ```
 
-**步骤1-输入读取**：从差分输入端口读取信号，计算差分分量 `vin_diff = in_p - in_n` 和共模分量 `vin_cm = 0.5*(in_p + in_n)`。
+**Step 1 - Input Reading**: Read signals from differential input ports, calculate differential component `vin_diff = in_p - in_n` and common-mode component `vin_cm = 0.5*(in_p + in_n)`.
 
-**步骤2-偏移注入**：若启用`offset_enable`，将直流偏移电压`vos`叠加到差分信号，模拟实际放大器的失配引起的偏移。
+**Step 2 - Offset Injection**: If `offset_enable` is enabled, superimpose DC offset voltage `vos` onto the differential signal to simulate offset caused by actual amplifier mismatch.
 
-**步骤3-噪声注入**：若启用`noise_enable`，采用Mersenne Twister随机数生成器产生高斯分布噪声，标准差由`vnoise_sigma`指定。
+**Step 3 - Noise Injection**: If `noise_enable` is enabled, use the Mersenne Twister random number generator to produce Gaussian distributed noise with standard deviation specified by `vnoise_sigma`.
 
-**步骤4-CTLE核心滤波**：这是CTLE的核心功能。如果配置了零极点，使用SystemC-AMS的`sca_tdf::sca_ltf_nd`滤波器应用传递函数；否则直接应用DC增益。
+**Step 4 - CTLE Core Filtering**: This is the core function of CTLE. If zeros and poles are configured, apply the transfer function using SystemC-AMS's `sca_tdf::sca_ltf_nd` filter; otherwise apply DC gain directly.
 
-**步骤5-软饱和**：使用双曲正切函数`tanh(x/Vsat)*Vsat`实现平滑饱和，避免硬限幅带来的谐波失真，更真实地模拟模拟电路行为。
+**Step 5 - Soft Saturation**: Use hyperbolic tangent function `tanh(x/Vsat)*Vsat` to achieve smooth saturation, avoiding harmonic distortion from hard clipping and more realistically simulating analog circuit behavior.
 
-**步骤6-PSRR路径**：若启用，计算VDD偏离名义值的纹波，通过PSRR传递函数处理后耦合到差分输出。
+**Step 6 - PSRR Path**: If enabled, calculate ripple of VDD deviating from nominal value, process through PSRR transfer function, and couple to differential output.
 
-**步骤7-CMRR路径**：若启用，输入共模信号通过CMRR传递函数后泄漏到差分输出。
+**Step 7 - CMRR Path**: If enabled, input common-mode signal leaks to differential output through the CMRR transfer function.
 
-**步骤8-差分合成**：将主通道、PSRR路径、CMRR路径的贡献累加，形成总差分输出。
+**Step 8 - Differential Synthesis**: Accumulate contributions from main channel, PSRR path, and CMRR path to form total differential output.
 
-**步骤9-CMFB处理**：若启用共模反馈，测量前一周期的输出共模（避免代数环），与目标共模比较并通过环路滤波器调整。
+**Step 9 - CMFB Processing**: If common-mode feedback is enabled, measure output common-mode from previous cycle (to avoid algebraic loop), compare with target common-mode, and adjust through loop filter.
 
-**步骤10-输出生成**：基于有效共模电压和差分信号生成差分输出：`out_p = vcm + 0.5*vdiff`，`out_n = vcm - 0.5*vdiff`。
+**Step 10 - Output Generation**: Generate differential output based on effective common-mode voltage and differential signal: `out_p = vcm + 0.5*vdiff`, `out_n = vcm - 0.5*vdiff`.
 
-### 3.2 传递函数构建机制
+### 3.2 Transfer Function Construction Mechanism
 
-模块采用动态多项式卷积方法构建任意阶数的传递函数：
+The module uses dynamic polynomial convolution to construct transfer functions of arbitrary order:
 
-1. **初始化**：分子多项式以DC增益为常数项，分母为1
-2. **零点处理**：对每个零点频率fz，分子与`(1 + s/ωz)`卷积
-3. **极点处理**：对每个极点频率fp，分母与`(1 + s/ωp)`卷积
-4. **系数转换**：将多项式系数转换为`sca_util::sca_vector`格式
+1. **Initialization**: Numerator polynomial starts with DC gain as constant term, denominator starts with 1
+2. **Zero Processing**: For each zero frequency fz, convolve numerator with `(1 + s/ωz)`
+3. **Pole Processing**: For each pole frequency fp, convolve denominator with `(1 + s/ωp)`
+4. **Coefficient Conversion**: Convert polynomial coefficients to `sca_util::sca_vector` format
 
-多项式系数布局采用升幂顺序：`[a0, a1, a2, ...]` 表示 `a0 + a1*s + a2*s² + ...`
+Polynomial coefficient layout uses ascending power order: `[a0, a1, a2, ...]` represents `a0 + a1*s + a2*s² + ...`
 
-### 3.3 软饱和设计思想
+### 3.3 Soft Saturation Design Philosophy
 
-传统的硬限幅会引入丰富的谐波分量，不符合实际模拟电路行为。本模块采用`tanh`函数实现软饱和：
+Traditional hard clipping introduces rich harmonic components, which does not match actual analog circuit behavior. This module uses the `tanh` function to achieve soft saturation:
 
-- 当输入远小于饱和电压Vsat时，输出近似线性
-- 当输入接近Vsat时，增益渐进压缩
-- 输出渐近地趋近±Vsat，但永不达到
+- When input is much smaller than saturation voltage Vsat, output is approximately linear
+- When input approaches Vsat, gain is progressively compressed
+- Output asymptotically approaches ±Vsat but never reaches it
 
-这种设计更精确地模拟了跑稍对输出摆幅的自然限制。
+This design more accurately simulates the natural output swing limitation of actual amplifiers.
 
 ---
 
-## 4. 测试平台架构
+## 4. Testbench Architecture
 
-### 4.1 测试平台设计思想
+### 4.1 Testbench Design Philosophy
 
-CTLE测试平台（`CtleTransientTestbench`）采用模块化设计，支持多种测试场景的统一管理。核心设计理念：
+The CTLE testbench (`CtleTransientTestbench`) adopts a modular design supporting unified management of multiple test scenarios. Core design principles:
 
-1. **场景驱动**：通过枚举类型选择不同测试场景，每个场景自动配置相应的信号源和CTLE参数
-2. **组件复用**：差分信号源、VDD源、信号监控器等辅助模块可复用
-3. **结果分析**：根据场景类型自动选择合适的分析方法
+1. **Scenario-Driven**: Select different test scenarios through enumeration types, with each scenario automatically configuring corresponding signal sources and CTLE parameters
+2. **Component Reuse**: Differential signal source, VDD source, signal monitor and other auxiliary modules are reusable
+3. **Result Analysis**: Automatically select appropriate analysis methods based on scenario type
 
-### 4.2 测试场景定义
+### 4.2 Test Scenario Definitions
 
-测试平台支持五种核心测试场景：
+The testbench supports five core test scenarios:
 
-| 场景 | 命令行参数 | 测试目标 | 输出文件 |
-|------|----------|---------|----------|
-| BASIC_PRBS | `prbs` / `0` | 基本信号传输和增益特性 | ctle_tran_prbs.csv |
-| FREQUENCY_RESPONSE | `freq` / `1` | 频率响应特性 | ctle_tran_freq.csv |
-| PSRR_TEST | `psrr` / `2` | 电源抑制比测试 | ctle_tran_psrr.csv |
-| CMRR_TEST | `cmrr` / `3` | 共模抑制比测试 | ctle_tran_cmrr.csv |
-| SATURATION_TEST | `sat` / `4` | 大信号饱和测试 | ctle_tran_sat.csv |
+| Scenario | Command Line Parameter | Test Objective | Output File |
+|----------|------------------------|----------------|-------------|
+| BASIC_PRBS | `prbs` / `0` | Basic signal transmission and gain characteristics | ctle_tran_prbs.csv |
+| FREQUENCY_RESPONSE | `freq` / `1` | Frequency response characteristics | ctle_tran_freq.csv |
+| PSRR_TEST | `psrr` / `2` | Power Supply Rejection Ratio test | ctle_tran_psrr.csv |
+| CMRR_TEST | `cmrr` / `3` | Common-Mode Rejection Ratio test | ctle_tran_cmrr.csv |
+| SATURATION_TEST | `sat` / `4` | Large signal saturation test | ctle_tran_sat.csv |
 
-### 4.3 场景配置详解
+### 4.3 Scenario Configuration Details
 
-#### BASIC_PRBS - 基本PRBS测试
+#### BASIC_PRBS - Basic PRBS Test
 
-验证CTLE基本的差分信号传输和DC增益特性。
+Verify CTLE's basic differential signal transmission and DC gain characteristics.
 
-- **信号源**：PRBS-7伪随机序列
-- **输入幅度**：100mV
-- **符号率**：10 Gbps
-- **共模电压**：0.6V
-- **VDD**：1.0V稳定电源
-- **验证点**：输出幅度 ≈ 输入幅度 × DC增益
+- **Signal Source**: PRBS-7 pseudo-random sequence
+- **Input Amplitude**: 100mV
+- **Symbol Rate**: 10 Gbps
+- **Common-Mode Voltage**: 0.6V
+- **VDD**: 1.0V stable supply
+- **Verification Point**: Output amplitude ≈ Input amplitude × DC gain
 
-#### FREQUENCY_RESPONSE - 频率响应测试
+#### FREQUENCY_RESPONSE - Frequency Response Test
 
-验证CTLE在特定频率下的响应特性。
+Verify CTLE response characteristics at specific frequencies.
 
-- **信号源**：正弦波
-- **测试频率**：5 GHz
-- **输入幅度**：100mV
-- **验证点**：在零极点频率附近，增益应高于DC增益
+- **Signal Source**: Sine wave
+- **Test Frequency**: 5 GHz
+- **Input Amplitude**: 100mV
+- **Verification Point**: Near zero/pole frequencies, gain should be higher than DC gain
 
-#### PSRR_TEST - 电源抑制比测试
+#### PSRR_TEST - Power Supply Rejection Ratio Test
 
-验证VDD纹波对差分输出的影响。
+Verify the effect of VDD ripple on differential output.
 
-- **差分输入**：DC（无差分信号）
-- **VDD纹波**：100mV @ 1MHz正弦波
-- **PSRR增益**：0.01（-40dB）
-- **PSRR极点**：1MHz
-- **仿真时间**：必须≥3μs（褆3个完整周期）
-- **验证点**：输出差分纹波幅度应远小于VDD纹波
+- **Differential Input**: DC (no differential signal)
+- **VDD Ripple**: 100mV @ 1MHz sine wave
+- **PSRR Gain**: 0.01 (-40dB)
+- **PSRR Pole**: 1MHz
+- **Simulation Time**: Must be ≥3μs (3 complete cycles)
+- **Verification Point**: Output differential ripple amplitude should be much smaller than VDD ripple
 
-#### CMRR_TEST - 共模抑制比测试
+#### CMRR_TEST - Common-Mode Rejection Ratio Test
 
-验证输入共模变化对差分输出的影响。
+Verify the effect of input common-mode variation on differential output.
 
-- **差分输入**：100mV小差分信号
-- **CMRR增益**：0.001（-60dB）
-- **CMRR极点**：10MHz
-- **验证点**：输出中共模泄漏分量应符合设定CMRR
+- **Differential Input**: 100mV small differential signal
+- **CMRR Gain**: 0.001 (-60dB)
+- **CMRR Pole**: 10MHz
+- **Verification Point**: Common-mode leakage component in output should match configured CMRR
 
-#### SATURATION_TEST - 饱和测试
+#### SATURATION_TEST - Saturation Test
 
-验证CTLE在大信号输入下的饱和行为。
+Verify CTLE saturation behavior under large signal input.
 
-- **信号源**：方波
-- **输入幅度**：500mV（大信号）
-- **频率**：1 GHz
-- **验证点**：输出幅度应受限于sat_min/sat_max范围
+- **Signal Source**: Square wave
+- **Input Amplitude**: 500mV (large signal)
+- **Frequency**: 1 GHz
+- **Verification Point**: Output amplitude should be limited to sat_min/sat_max range
 
-### 4.4 信号连接拓扑
+### 4.4 Signal Connection Topology
 
-测试平台的模块连接关系如下：
+The module connection relationships in the testbench are as follows:
 
 ```
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -255,101 +255,101 @@ CTLE测试平台（`CtleTransientTestbench`）采用模块化设计，支持多�
                             │  out_p ───────────┼───────▶ in_p            │
 ┌─────────────────┐       │  out_n ───────────┼───────▶ in_n            │
 │    VddSource      │       │                   │       │                   │
-│                   │       │                   │       │  → 统计分析        │
-│  vdd ─────────────┼───────▶ vdd              │       │  → CSV保存         │
+│                   │       │                   │       │  → Statistical Analysis        │
+│  vdd ─────────────┼───────▶ vdd              │       │  → CSV Save         │
 └─────────────────┘       └─────────────────┘       └─────────────────┘
 ```
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Descriptions
 
-#### DiffSignalSource - 差分信号源
+#### DiffSignalSource - Differential Signal Source
 
-支持四种波形类型：
-- **DC**：直流信号
-- **SINE**：正弦波
-- **SQUARE**：方波
-- **PRBS**：伪随机序列
+Supports four waveform types:
+- **DC**: DC signal
+- **SINE**: Sine wave
+- **SQUARE**: Square wave
+- **PRBS**: Pseudo-random sequence
 
-可配置参数：幅度、频率、共模电压
+Configurable parameters: Amplitude, frequency, common-mode voltage
 
-#### VddSource - 电源模块
+#### VddSource - Power Supply Module
 
-支持两种模式：
-- **CONSTANT**：稳定电源
-- **SINUSOIDAL**：带正弦纹波的电源（用于PSRR测试）
+Supports two modes:
+- **CONSTANT**: Stable supply
+- **SINUSOIDAL**: Supply with sine wave ripple (for PSRR testing)
 
-#### SignalMonitor - 信号监控器
+#### SignalMonitor - Signal Monitor
 
-功能：
-- 实时记录波形数据
-- 计算统计信息（均值、RMS、峰峰值、最大/最小值）
-- 输出CSV格式波形文件
+Functions:
+- Real-time waveform data recording
+- Statistical calculation (mean, RMS, peak-to-peak, max/min)
+- CSV format waveform file output
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Result Analysis
 
-### 5.1 统计指标说明
+### 5.1 Statistical Metrics Description
 
-| 指标 | 计算方法 | 意义 |
-|------|----------|------|
-| 均值 (mean) | 所有采样点的算术平均 | 反映信号的直流分量 |
-| RMS | 均方根 | 反映信号的有效值/功率 |
-| 峰峰值 (peak_to_peak) | 最大值 - 最小值 | 反映信号的动态范围 |
-| 最大/最小值 | 极值统计 | 用于判断饱和等 |
+| Metric | Calculation Method | Significance |
+|--------|-------------------|--------------|
+| Mean | Arithmetic average of all sample points | Reflects DC component of signal |
+| RMS | Root Mean Square | Reflects effective value/power of signal |
+| Peak-to-Peak | Maximum - Minimum | Reflects dynamic range of signal |
+| Max/Min | Extreme value statistics | Used for saturation detection, etc. |
 
-### 5.2 典型测试结果解读
+### 5.2 Typical Test Result Interpretation
 
-#### BASIC_PRBS测试结果示例
+#### BASIC_PRBS Test Result Example
 
-配置：输入100mV，DC增益1.5，零点2GHz，极点30GHz
+Configuration: Input 100mV, DC gain 1.5, zero 2GHz, pole 30GHz
 
-期望结果：
-- 差分输出峰峰值 ≈ 291mV（输入200mV峰峰值 × 1.5 ≈ 300mV，略有差异由于频响特性）
-- 差分输出均值 ≈ 0（PRBS信号平均应为零）
-- 共模输出均值 ≈ 0.6V（等于vcm_out配置值）
+Expected Results:
+- Differential output peak-to-peak ≈ 291mV (Input 200mV peak-to-peak × 1.5 ≈ 300mV, slight difference due to frequency response characteristics)
+- Differential output mean ≈ 0 (PRBS signal average should be zero)
+- Common-mode output mean ≈ 0.6V (equals vcm_out configuration value)
 
-分析方法：DC增益 = 输出峰峰值 / 输入峰峰值
+Analysis Method: DC gain = Output peak-to-peak / Input peak-to-peak
 
-#### PSRR测试结果解读
+#### PSRR Test Result Interpretation
 
-- VDD纹波: 100mV @ 1MHz
-- 若输出差分纹波 < 1mV：VDD噪声被有效抑制
-- 若输出差分纹波较大：PSRR配置已生效，可计算实际PSRR值
+- VDD Ripple: 100mV @ 1MHz
+- If output differential ripple < 1mV: VDD noise is effectively suppressed
+- If output differential ripple is larger: PSRR configuration is active, actual PSRR value can be calculated
 
-PSRR计算：`PSRR_dB = 20 * log10(Vdd_ripple / Vout_diff_ripple)`
+PSRR Calculation: `PSRR_dB = 20 * log10(Vdd_ripple / Vout_diff_ripple)`
 
-#### 饱和测试结果解读
+#### Saturation Test Result Interpretation
 
-- 输入幅度: 500mV
-- 若线性: 输出应为500mV × 1.5 = 750mV
-- 实际输出峰峰值 < 750mV × 某比例：说明进入饱和区
+- Input Amplitude: 500mV
+- If linear: Output should be 500mV × 1.5 = 750mV
+- Actual output peak-to-peak < 750mV × some ratio: Indicates entry into saturation region
 
-### 5.3 波形数据文件格式
+### 5.3 Waveform Data File Format
 
-CSV输出格式：
+CSV output format:
 ```
-时间(s),差分信号(V),共模信号(V)
+Time(s),Differential Signal(V),Common-Mode Signal(V)
 0.000000e+00,0.000000,0.600000
 1.000000e-11,0.001234,0.600000
 ...
 ```
 
-采样点数依据仿真时间和时间步长决定（默认10ps步长）。
+Number of sample points depends on simulation time and time step (default 10ps step).
 
 ---
 
-## 6. 运行指南
+## 6. Running Guide
 
-### 6.1 环境配置
+### 6.1 Environment Configuration
 
-运行测试前需要配置环境变量：
+Configure environment variables before running tests:
 
 ```bash
 source scripts/setup_env.sh
 ```
 
-### 6.2 构建与运行
+### 6.2 Build and Run
 
 ```bash
 cd build
@@ -359,16 +359,16 @@ cd tb
 ./ctle_tran_tb [scenario]
 ```
 
-场景参数：
-- `prbs` 或 `0` - 基本PRBS测试（默认）
-- `freq` 或 `1` - 频率响应测试
-- `psrr` 或 `2` - PSRR测试
-- `cmrr` 或 `3` - CMRR测试
-- `sat` 或 `4` - 饱和测试
+Scenario parameters:
+- `prbs` or `0` - Basic PRBS test (default)
+- `freq` or `1` - Frequency response test
+- `psrr` or `2` - PSRR test
+- `cmrr` or `3` - CMRR test
+- `sat` or `4` - Saturation test
 
-### 6.3 结果查看
+### 6.3 Result Viewing
 
-测试完成后，控制台输出统计结果，波形数据保存到CSV文件。使用Python进行可视化：
+After test completion, console outputs statistical results, waveform data is saved to CSV files. Use Python for visualization:
 
 ```bash
 python scripts/plot_ctle_waveform.py
@@ -376,65 +376,65 @@ python scripts/plot_ctle_waveform.py
 
 ---
 
-## 7. 技术要点
+## 7. Technical Points
 
-**问题**：CMFB环路如果直接使用当前周期输出进行测量，会造成代数环（输出依赖于输出）。
+**Problem**: If CMFB loop directly uses current cycle output for measurement, it creates an algebraic loop (output depends on output).
 
-**解决方案**：
-- CMFB使用**前一周期的输出**（`m_out_p_prev`, `m_out_n_prev`）进行测量
-- 这引入了一个时间步的延迟，但避免了代数环
-- 对于低频CMFB（带宽通常为1MHz），这个延迟可以忽略不计
+**Solution**:
+- CMFB uses **previous cycle output** (`m_out_p_prev`, `m_out_n_prev`) for measurement
+- This introduces a one time-step delay, but avoids the algebraic loop
+- For low-frequency CMFB (bandwidth typically 1MHz), this delay is negligible
 
-### 7.2 多零点/多极点传递函数
+### 7.2 Multi-Zero/Multi-Pole Transfer Functions
 
-支持任意数量的零点和极点，自动处理多项式卷积。零极点总数建议 ≤ 10，过高阶滤波器可能导致数值不稳定。
+Supports arbitrary number of zeros and poles, automatically handles polynomial convolution. Total number of zeros and poles recommended ≤ 10, higher order filters may cause numerical instability.
 
-### 7.3 软饱和
+### 7.3 Soft Saturation
 
-使用`tanh(x/Vsat)*Vsat`实现平滑饱和特性，减少谐波失真，符合实际电路行为。
+Uses `tanh(x/Vsat)*Vsat` to achieve smooth saturation characteristics, reducing harmonic distortion and matching actual circuit behavior.
 
-### 7.4 可选功能独立控制
+### 7.4 Optional Function Independent Control
 
-PSRR、CMFB、CMRR均可独立启用/禁用，未启用时不创建对应的滤波器对象，节省内存和计算。
+PSRR, CMFB, and CMRR can all be independently enabled/disabled. When not enabled, corresponding filter objects are not created, saving memory and computation.
 
-### 7.5 时间步设置
+### 7.5 Time Step Setting
 
-默认10ps（100GHz采样率）。采样率应远高于最高极点频率，建议 f_sample ≥ 20-50 × f_pole_max。
+Default 10ps (100GHz sampling rate). Sampling rate should be much higher than highest pole frequency, recommended f_sample ≥ 20-50 × f_pole_max.
 
-### 7.6 PSRR测试特殊要求
+### 7.6 PSRR Test Special Requirements
 
-PSRR测试场景下，仿真时间必须不少于3微秒，以确保完整覆盖至少3个1MHz周期的信号变化。
+For PSRR test scenarios, simulation time must be at least 3 microseconds to ensure complete coverage of at least 3 cycles of the 1MHz signal variation.
 
-### 7.7 VDD端口必须连接
+### 7.7 VDD Port Must Be Connected
 
-即使不使用PSRR功能，`vdd`端口也必须连接（SystemC-AMS要求）。
+Even if PSRR functionality is not used, the `vdd` port must be connected (SystemC-AMS requirement).
 
 ---
 
-## 8. 参考信息
+## 8. Reference Information
 
-### 8.1 相关文件
+### 8.1 Related Files
 
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| 参数定义 | `/include/common/parameters.h` | RxCtleParams结构体 |
-| 头文件 | `/include/ams/rx_ctle.h` | RxCtleTdf类声明 |
-| 实现文件 | `/src/ams/rx_ctle.cpp` | RxCtleTdf类实现 |
-| 测试平台 | `/tb/rx/ctle/ctle_tran_tb.cpp` | 瞬态仿真测试 |
-| 测试辅助 | `/tb/rx/ctle/ctle_helpers.h` | 信号源和监控器 |
-| 单元测试 | `/tests/unit/test_ctle_basic.cpp` | GoogleTest单元测试 |
-| 波形绘图 | `/scripts/plot_ctle_waveform.py` | Python可视化脚本 |
+| File | Path | Description |
+|------|------|-------------|
+| Parameter Definition | `/include/common/parameters.h` | RxCtleParams structure |
+| Header File | `/include/ams/rx_ctle.h` | RxCtleTdf class declaration |
+| Implementation File | `/src/ams/rx_ctle.cpp` | RxCtleTdf class implementation |
+| Testbench | `/tb/rx/ctle/ctle_tran_tb.cpp` | Transient simulation test |
+| Test Helpers | `/tb/rx/ctle/ctle_helpers.h` | Signal sources and monitor |
+| Unit Test | `/tests/unit/test_ctle_basic.cpp` | GoogleTest unit tests |
+| Waveform Plotting | `/scripts/plot_ctle_waveform.py` | Python visualization script |
 
-### 8.2 依赖项
+### 8.2 Dependencies
 
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
-- C++11标准
-- GoogleTest 1.12.1（单元测试）
+- C++11 Standard
+- GoogleTest 1.12.1 (Unit tests)
 
-### 8.3 配置示例
+### 8.3 Configuration Example
 
-基本配置：
+Basic configuration:
 ```json
 {
   "ctle": {
@@ -448,6 +448,6 @@ PSRR测试场景下，仿真时间必须不少于3微秒，以确保完整覆盖
 
 ---
 
-**文档版本**：v0.4  
-**最后更新**：2025-12-07  
-**作者**：Yizhe Liu
+**Document Version**: v0.4  
+**Last Updated**: 2025-12-07  
+**Author**: Yizhe Liu

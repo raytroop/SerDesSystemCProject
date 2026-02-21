@@ -1,186 +1,186 @@
-# TX FFE 模块技术文档
+# TX FFE Module Technical Documentation
 
-🌐 **Languages**: [中文](ffe.md) | [English](../en/modules/ffe.md)
+🌐 **Languages**: [中文](../../modules/ffe.md) | [English](ffe.md)
 
-**级别**：AMS 子模块（TX）  
-**类名**：`TxFfeTdf`  
-**当前版本**：v0.1 (2026-01-13)  
-**状态**：开发中
+**Level**: AMS Sub-module (TX)  
+**Class Name**: `TxFfeTdf`  
+**Current Version**: v0.1 (2026-01-13)  
+**Status**: Under Development
 
 ---
 
-## 1. 概述
+## 1. Overview
 
-前置均衡器（FFE，Feed-Forward Equalizer）是SerDes发送端的核心信号调理模块，位于WaveGen之后、Mux之前，主要功能是在发送端提前补偿信道引入的码间干扰（ISI），通过对数据进行预失真处理，使信号在经过信道衰减后能够在接收端恢复为更加清晰的眼图，降低接收端均衡器的负担。
+The Feed-Forward Equalizer (FFE) is a core signal conditioning module in the SerDes transmitter, located between the WaveGen and the Mux. Its primary function is to pre-compensate for the Inter-Symbol Interference (ISI) introduced by the channel at the transmitter side. By pre-distorting the data, the signal can be recovered into a clearer eye diagram at the receiver after passing through the channel attenuation, reducing the burden on the receiver equalizer.
 
-### 1.1 设计原理
+### 1.1 Design Principles
 
-FFE的核心设计思想是利用有限冲激响应（FIR）滤波器结构，根据信道的频率响应特性，在发送端对信号进行频率选择性的预加重（Pre-emphasis）或去加重（De-emphasis），实现ISI的预补偿。
+The core design concept of FFE utilizes a Finite Impulse Response (FIR) filter structure. Based on the frequency response characteristics of the channel, it performs frequency-selective pre-emphasis or de-emphasis at the transmitter side to achieve ISI pre-compensation.
 
-#### 1.1.1 ISI形成机制与预补偿策略
+#### 1.1.1 ISI Formation Mechanism and Pre-compensation Strategy
 
-在高速串行链路中，信道的频率相关损耗会导致高频分量衰减更严重，使得信号边沿变缓，相邻码元之间产生相互干扰（ISI）。ISI可以分解为：
+In high-speed serial links, frequency-dependent channel losses cause more severe attenuation of high-frequency components, slowing down the signal edges and creating interference between adjacent symbols (ISI). ISI can be decomposed into:
 
-- **前游标（Pre-cursor）ISI**：当前码元受到前一个码元的干扰，表现为信号上升/下降沿提前出现的拖尾效应。
-- **后游标（Post-cursor）ISI**：当前码元受到后续码元的干扰，表现为信号跳变后未能完全稳定到目标电平。
+- **Pre-cursor ISI**: The current symbol is interfered with by the previous symbol, manifesting as a tailing effect that appears ahead of the signal rising/falling edges.
+- **Post-cursor ISI**: The current symbol is interfered with by subsequent symbols, manifesting as the signal failing to fully stabilize to the target level after a transition.
 
-FFE通过FIR结构实现预补偿：
+FFE implements pre-compensation through the FIR structure:
 
-- **前置抽头（Pre-tap）**：对应前游标补偿，通过提前注入反向极性的信号分量，抵消信道产生的前游标ISI。
-- **主抽头（Main tap）**：对应当前码元的主要能量，通常具有最大的权重系数。
-- **后置抽头（Post-tap）**：对应后游标补偿，通过叠加延迟码元的反向分量，预先消除信道的后游标ISI。
+- **Pre-tap**: Corresponds to pre-cursor compensation, canceling the pre-cursor ISI produced by the channel by injecting a signal component with opposite polarity in advance.
+- **Main tap**: Corresponds to the main energy of the current symbol, typically having the largest weighting coefficient.
+- **Post-tap**: Corresponds to post-cursor compensation, pre-eliminating the post-cursor ISI of the channel by superimposing the inverse component of the delayed symbol.
 
-#### 1.1.2 FIR滤波器实现
+#### 1.1.2 FIR Filter Implementation
 
-FFE采用离散时间FIR滤波器结构，数学表达式为：
+FFE adopts a discrete-time FIR filter structure, with the mathematical expression:
 
 ```
 y[n] = Σ c[k] × x[n-k]
        k=0 to N-1
 ```
 
-其中：
-- `y[n]`：第n个输出码元
-- `x[n-k]`：延迟k个符号间隔（UI）的输入码元
-- `c[k]`：第k个抽头的权重系数
-- `N`：抽头总数
+Where:
+- `y[n]`: The nth output symbol
+- `x[n-k]`: The input symbol delayed by k symbol intervals (UI)
+- `c[k]`: The weighting coefficient of the kth tap
+- `N`: The total number of taps
 
-抽头系数的设置遵循以下原则：
+The tap coefficients follow these principles:
 
-- **归一化约束**：为保证输出信号的平均功率与输入一致，通常要求 `Σ|c[k]| ≈ 1`。
-- **主抽头最大原则**：主抽头（通常为c[1]或c[2]）具有最大幅值，确保主要信号能量集中在当前码元。
-- **对称性考虑**：对于对称的信道冲激响应，FFE抽头系数也可能呈现对称或准对称分布，但实际应用中通常后置抽头权重大于前置抽头（因为因果系统中后游标ISI更严重）。
+- **Normalization Constraint**: To ensure the output signal's average power is consistent with the input, it is usually required that `Σ|c[k]| ≈ 1`.
+- **Main Tap Maximization Principle**: The main tap (typically c[1] or c[2]) has the largest magnitude, ensuring that the main signal energy is concentrated on the current symbol.
+- **Symmetry Consideration**: For symmetric channel impulse responses, FFE tap coefficients may also exhibit symmetric or quasi-symmetric distributions, but in practical applications, post-tap weights are usually greater than pre-taps (because post-cursor ISI is more severe in causal systems).
 
-#### 1.1.3 预加重与去加重
+#### 1.1.3 Pre-emphasis and De-emphasis
 
-FFE有两种常见的实现策略，区别在于主抽头的相对位置和功率分配：
+There are two common implementation strategies for FFE, differing in the relative position of the main tap and power distribution:
 
-- **预加重（Pre-emphasis）**：主抽头位于中间或靠后，前置抽头系数为正，后置抽头系数为负。这种方式会在跳变边沿提前注入能量，增强高频分量，但会增加发送端功耗（因为峰值电流增大）。典型应用于短距离、低损耗信道。
+- **Pre-emphasis**: The main tap is located in the middle or towards the rear, with positive pre-tap coefficients and negative post-tap coefficients. This method injects energy ahead of the transition edge, enhancing high-frequency components but increasing transmitter power consumption (due to increased peak current). Typically used in short-distance, low-loss channels.
 
-- **去加重（De-emphasis）**：主抽头系数为1，后置抽头系数为负，前置抽头为0或很小。这种方式通过衰减非跳变符号的幅度，相对提升跳变边沿的能量比例，降低了发送端的峰值功耗，但平均信号幅度降低。广泛应用于PCIe、USB等标准。
+- **De-emphasis**: The main tap coefficient is 1, with negative post-tap coefficients and zero or very small pre-taps. This method relatively increases the energy proportion at transition edges by attenuating the amplitude of non-transition symbols, reducing the transmitter's peak power consumption but lowering the average signal amplitude. Widely used in PCIe, USB, and other standards.
 
-#### 1.1.4 抽头系数优化方法
+#### 1.1.4 Tap Coefficient Optimization Methods
 
-FFE抽头系数的设计可以通过以下方法获得：
+FFE tap coefficient design can be obtained through the following methods:
 
-- **信道逆滤波法**：根据信道的频率响应H(f)，设计FFE传递函数F(f)使得 `F(f) × H(f) ≈ 1`，即FFE与信道的级联近似全通特性。实际中通过时域脉冲响应的最小均方误差（MMSE）准则求解抽头系数。
+- **Channel Inverse Filtering**: Design the FFE transfer function F(f) based on the channel's frequency response H(f) such that `F(f) × H(f) ≈ 1`, meaning the cascade of FFE and channel approximates an all-pass characteristic. In practice, tap coefficients are solved using the Minimum Mean Square Error (MMSE) criterion for the time-domain impulse response.
 
-- **零强制（Zero-Forcing）**：强制接收端采样点的ISI为零，通过求解线性方程组得到FFE系数。该方法在高SNR场景下性能最优，但可能导致噪声放大。
+- **Zero-Forcing**: Force the ISI at the receiver sampling points to zero, obtaining FFE coefficients by solving a system of linear equations. This method is optimal in high SNR scenarios but may lead to noise amplification.
 
-- **自适应算法**：在系统运行过程中，通过接收端反馈的误差信号（如眼高、BER），利用LMS（最小均方）或RLS（递归最小二乘）算法在线调整FFE系数。这种方法适用于时变信道或需要动态优化的场景。
+- **Adaptive Algorithms**: During system operation, use feedback error signals from the receiver (such as eye height, BER) to adjust FFE coefficients online using LMS (Least Mean Squares) or RLS (Recursive Least Squares) algorithms. This method is suitable for time-varying channels or scenarios requiring dynamic optimization.
 
-- **查表法**：对于标准化的信道（如PCIe规范定义的参考信道），预先仿真得到一组典型的FFE系数并存储为配置表，系统初始化时根据信道类型选择对应的系数组。
+- **Look-up Table**: For standardized channels (such as reference channels defined by PCIe specifications), pre-simulate a set of typical FFE coefficients and store them as a configuration table. During system initialization, select the corresponding coefficient group based on the channel type.
 
-### 1.2 核心特性
+### 1.2 Core Features
 
-- **FIR滤波器结构**：采用N抽头有限冲激响应滤波器，支持灵活配置抽头数量（通常3-7抽头）和权重系数，满足不同信道损耗的补偿需求。
+- **FIR Filter Structure**: Adopts an N-tap finite impulse response filter, supporting flexible configuration of the number of taps (typically 3-7 taps) and weighting coefficients to meet compensation requirements for different channel losses.
 
-- **符号速率同步**：FFE工作在符号速率（Symbol Rate）时钟域，每个UI处理一个码元，抽头延迟线的间隔精确等于一个符号周期，确保ISI补偿的时间对齐精度。
+- **Symbol Rate Synchronization**: FFE operates in the Symbol Rate clock domain, processing one symbol per UI. The tap delay line interval is precisely equal to one symbol period, ensuring time alignment accuracy for ISI compensation.
 
-- **可配置抽头系数**：抽头权重系数通过配置参数灵活设置，支持预加重、去加重、混合模式等多种均衡策略，可根据信道特性和系统需求进行优化。
+- **Configurable Tap Coefficients**: Tap weighting coefficients are flexibly set through configuration parameters, supporting pre-emphasis, de-emphasis, mixed mode, and other equalization strategies that can be optimized according to channel characteristics and system requirements.
 
-- **归一化输出摆幅**：通过抽头系数的归一化或显式的增益调整，确保FFE输出信号的摆幅在合理范围内，避免后级Driver饱和或信噪比恶化。
+- **Normalized Output Swing**: Through normalization of tap coefficients or explicit gain adjustment, ensures that the FFE output signal swing is within a reasonable range, avoiding saturation in the downstream Driver or signal-to-noise ratio degradation.
 
-- **低延迟特性**：FFE仅引入固定的抽头延迟（通常为半个抽头数量的UI），相比接收端DFE（需要判决反馈）具有更低的延迟和更简单的时序约束。
+- **Low Latency Characteristic**: FFE only introduces fixed tap delays (typically half the number of taps in UI), offering lower latency and simpler timing constraints compared to receiver-side DFE (which requires decision feedback).
 
-- **适应信道变化**：抽头系数可在运行时通过外部控制接口（如Adaption模块）动态更新，支持自适应均衡和信道追踪功能，适应温度漂移、老化等导致的信道特性变化。
+- **Channel Variation Adaptation**: Tap coefficients can be dynamically updated at runtime through an external control interface (such as an Adaption module), supporting adaptive equalization and channel tracking functions to adapt to channel characteristic changes caused by temperature drift, aging, etc.
 
-### 1.3 典型应用场景
+### 1.3 Typical Application Scenarios
 
-FFE在不同SerDes标准和应用中的配置要求：
+FFE configuration requirements in different SerDes standards and applications:
 
-| 应用标准 | 抽头数量 | 典型系数示例 | 均衡策略 | 备注 |
+| Application Standard | Tap Count | Typical Coefficient Example | Equalization Strategy | Remarks |
 |---------|---------|-------------|---------|------|
-| PCIe Gen3 (8Gbps) | 3-tap | [0.0, 1.0, -0.25] | 去加重 | 3.5dB或6dB去加重 |
-| PCIe Gen4 (16Gbps) | 3-tap | [0.0, 1.0, -0.35] | 去加重 | 强制去加重，适配长信道 |
-| USB 3.2 (10Gbps) | 3-tap | [0.0, 1.0, -0.2] | 去加重 | 可选均衡，短信道可禁用 |
-| 10G/25G Ethernet | 5-tap | [0.05, 0.15, 0.6, -0.15, -0.05] | 混合 | 平衡前后游标补偿 |
-| 56G SerDes (PAM4) | 7-tap | [0.02, 0.08, 0.15, 0.5, -0.15, -0.08, -0.02] | 混合 | 超长信道，配合接收端DFE |
+| PCIe Gen3 (8Gbps) | 3-tap | [0.0, 1.0, -0.25] | De-emphasis | 3.5dB or 6dB de-emphasis |
+| PCIe Gen4 (16Gbps) | 3-tap | [0.0, 1.0, -0.35] | De-emphasis | Mandatory de-emphasis for long channels |
+| USB 3.2 (10Gbps) | 3-tap | [0.0, 1.0, -0.2] | De-emphasis | Optional equalization, can be disabled for short channels |
+| 10G/25G Ethernet | 5-tap | [0.05, 0.15, 0.6, -0.15, -0.05] | Mixed | Balanced pre/post-cursor compensation |
+| 56G SerDes (PAM4) | 7-tap | [0.02, 0.08, 0.15, 0.5, -0.15, -0.08, -0.02] | Mixed | Ultra-long channel, works with receiver DFE |
 
-> **注**：抽头系数归一化后应满足 `Σ|c[k]| ≈ 1`，具体数值需根据信道S参数仿真优化。
+> **Note**: After normalization, tap coefficients should satisfy `Σ|c[k]| ≈ 1`. Specific values need to be optimized based on channel S-parameter simulation.
 
-### 1.4 与其他模块的关系
+### 1.4 Relationship with Other Modules
 
-- **上游：WaveGen**  
-  FFE接收来自WaveGen模块的基带PRBS或自定义码型信号，输入通常为理想的NRZ或PAM-N电平（如±1V），不包含信道损耗效应。
+- **Upstream: WaveGen**  
+  FFE receives baseband PRBS or custom pattern signals from the WaveGen module. The input is typically an ideal NRZ or PAM-N level (such as ±1V) without channel loss effects.
 
-- **下游：Mux → Driver**  
-  FFE输出经过预失真处理的信号，送入Mux（多通道复用器）进行通道选择，最后由Driver放大并驱动到信道。Driver的带宽限制和非线性效应会进一步影响FFE的补偿效果，因此需要联合优化。
+- **Downstream: Mux → Driver**  
+  FFE outputs pre-distorted signals to the Mux (multiplexer) for channel selection, and finally amplified by the Driver to drive the channel. The Driver's bandwidth limitations and nonlinear effects further impact FFE compensation effectiveness, requiring joint optimization.
 
-- **信道**  
-  FFE的设计目标是预补偿信道的频率响应特性，因此其抽头系数的选择必须基于目标信道的S参数或脉冲响应进行优化。信道特性的变化（如温度、老化）可能需要动态调整FFE系数。
+- **Channel**  
+  FFE's design goal is to pre-compensate the frequency response characteristics of the channel; therefore, the selection of its tap coefficients must be optimized based on the target channel's S-parameters or impulse response. Changes in channel characteristics (such as temperature, aging) may require dynamic adjustment of FFE coefficients.
 
-- **接收端均衡器（CTLE/DFE）**  
-  FFE与接收端均衡器形成协同补偿关系。FFE处理低频和中频的ISI，减轻接收端负担；CTLE处理高频衰减；DFE处理残余的后游标ISI。合理的均衡预算分配可以优化系统整体的功耗和性能。
+- **Receiver Equalizer (CTLE/DFE)**  
+  FFE forms a synergistic compensation relationship with the receiver equalizer. FFE handles low and mid-frequency ISI, reducing the burden on the receiver side; CTLE handles high-frequency attenuation; DFE handles residual post-cursor ISI. Reasonable equalization budget allocation can optimize overall system power consumption and performance.
 
 ---
 
-## 2. 模块接口
+## 2. Module Interface
 
-### 2.1 端口定义
+### 2.1 Port Definitions
 
-FFE模块采用单端信号架构，简化建模复杂度，满足行为级仿真需求。
+The FFE module adopts a single-ended signal architecture, simplifying modeling complexity to meet behavioral-level simulation requirements.
 
-#### TDF域端口
+#### TDF Domain Ports
 
-| 端口名 | 方向 | 类型 | 说明 |
+| Port Name | Direction | Type | Description |
 |-------|------|------|------|
-| `in` | 输入 | double | 单端输入，接收来自WaveGen的基带信号 |
-| `out` | 输出 | double | 单端输出，输出经过FFE预失真处理的信号 |
+| `in` | Input | double | Single-ended input, receiving baseband signals from WaveGen |
+| `out` | Output | double | Single-ended output, outputting pre-distorted signals from FFE |
 
-> **设计说明**：单端架构适用于行为级建模，聚焦于FIR滤波器的ISI补偿算法验证。实际硬件中FFE通常采用差分实现，但在行为仿真阶段单端建模已足够表征均衡效果。
+> **Design Note**: The single-ended architecture is suitable for behavioral-level modeling, focusing on verifying the ISI compensation algorithm of the FIR filter. In actual hardware, FFE is typically implemented differentially, but single-ended modeling is sufficient to characterize the equalization effect during behavioral simulation.
 
-### 2.2 参数配置
+### 2.2 Parameter Configuration
 
-FFE模块的配置参数通过 `TxFfeParams` 结构体进行管理，定义在 `include/common/parameters.h` 中。
+FFE module configuration parameters are managed through the `TxFfeParams` struct, defined in `include/common/parameters.h`.
 
-#### 2.2.1 基本参数结构
+#### 2.2.1 Basic Parameter Structure
 
 ```cpp
 struct TxFfeParams {
-    std::vector<double> taps;      // FFE抽头权重系数
+    std::vector<double> taps;      // FFE tap weighting coefficients
     
     TxFfeParams() : taps({0.2, 0.6, 0.2}) {}
 };
 ```
 
-#### 2.2.2 抽头系数参数 (taps)
+#### 2.2.2 Tap Coefficient Parameters (taps)
 
-抽头系数是FFE模块的核心配置参数，定义了FIR滤波器的时域响应特性。
+Tap coefficients are the core configuration parameters of the FFE module, defining the time-domain response characteristics of the FIR filter.
 
-| 参数 | 类型 | 默认值 | 说明 |
+| Parameter | Type | Default | Description |
 |------|------|--------|------|
-| `taps` | vector&lt;double&gt; | [0.2, 0.6, 0.2] | FFE抽头权重系数数组，索引从0开始 |
+| `taps` | vector&lt;double&gt; | [0.2, 0.6, 0.2] | FFE tap weighting coefficient array, indexed from 0 |
 
-**抽头含义**：
-- `taps[0], taps[1], ..., taps[N-2]`：前置抽头，补偿前游标ISI（Pre-cursor）
-- `taps[主抽头索引]`：主抽头，携带当前码元的主要能量，通常为最大值
-- `taps[主抽头+1], ..., taps[N-1]`：后置抽头，补偿后游标ISI（Post-cursor）
+**Tap Meanings**:
+- `taps[0], taps[1], ..., taps[N-2]`: Pre-taps, compensating for pre-cursor ISI
+- `taps[main tap index]`: Main tap, carrying the main energy of the current symbol, typically the maximum value
+- `taps[main tap+1], ..., taps[N-1]`: Post-taps, compensating for post-cursor ISI
 
-**典型配置**：
-- **3抽头**：`[c0, c1, c2]`，其中c1为主抽头
-- **5抽头**：`[c0, c1, c2, c3, c4]`，其中c2为主抽头
-- **7抽头**：`[c0, c1, c2, c3, c4, c5, c6]`，其中c3为主抽头
+**Typical Configurations**:
+- **3-tap**: `[c0, c1, c2]`, where c1 is the main tap
+- **5-tap**: `[c0, c1, c2, c3, c4]`, where c2 is the main tap
+- **7-tap**: `[c0, c1, c2, c3, c4, c5, c6]`, where c3 is the main tap
 
-#### 2.2.3 抽头系数约束与验证
+#### 2.2.3 Tap Coefficient Constraints and Validation
 
-为确保FFE输出信号的合理性和物理可实现性，抽头系数需满足以下约束条件：
+To ensure the rationality and physical realizability of the FFE output signal, tap coefficients must satisfy the following constraints:
 
-##### 归一化约束
+##### Normalization Constraint
 
-归一化约束的具体形式取决于均衡模式：
+The specific form of the normalization constraint depends on the equalization mode:
 
-**去加重模式（De-emphasis）**：
-- 主抽头固定为1.0，后抽头为负值
-- 约束条件：`c[main] = 1.0`，`Σ|c[k]| > 1.0`（后抽头"吸收"能量）
-- 典型配置：`[0, 1.0, -0.2, -0.1]`（3-tap FFE）
+**De-emphasis Mode**:
+- Main tap fixed at 1.0, post-taps are negative values
+- Constraint: `c[main] = 1.0`, `Σ|c[k]| > 1.0` (post-taps "absorb" energy)
+- Typical configuration: `[0, 1.0, -0.2, -0.1]` (3-tap FFE)
 
-**预加重/平衡模式（Pre-emphasis/Balanced）**：
-- 所有抽头系数之和接近1.0
-- 约束条件：`Σ c[k] ≈ 1.0`（保持直流增益）
-- 典型配置：`[0.15, 0.7, 0.15]`（3-tap FFE）
+**Pre-emphasis/Balanced Mode**:
+- Sum of all tap coefficients is close to 1.0
+- Constraint: `Σ c[k] ≈ 1.0` (maintaining DC gain)
+- Typical configuration: `[0.15, 0.7, 0.15]` (3-tap FFE)
 
-**验证方法**：
+**Validation Method**:
 ```cpp
 double sum_abs = 0.0;
 double sum_algebraic = 0.0;
@@ -189,191 +189,191 @@ for (auto c : taps) {
     sum_algebraic += c;
 }
 
-// 去加重模式：检查主抽头≈1.0
+// De-emphasis mode: check main tap ≈ 1.0
 if (taps[main_idx] > 0.95 && taps[main_idx] < 1.05) {
-    // 允许 sum_abs > 1.0
+    // Allow sum_abs > 1.0
 }
-// 预加重/平衡模式：检查代数和≈1.0
+// Pre-emphasis/Balanced mode: check algebraic sum ≈ 1.0
 else if (std::abs(sum_algebraic - 1.0) < 0.2) {
-    // 允许 0.8 < sum_algebraic < 1.2
+    // Allow 0.8 < sum_algebraic < 1.2
 }
 ```
 
-##### 主抽头最大原则
+##### Main Tap Maximization Principle
 
-主抽头系数的绝对值应为所有抽头中最大的，确保主要信号能量集中在当前码元：
+The absolute value of the main tap coefficient should be the largest among all taps, ensuring that the main signal energy is concentrated on the current symbol:
 
 ```
 |c[main]| = max(|c[0]|, |c[1]|, ..., |c[N-1]|)
 ```
 
-**典型位置**：
-- 3抽头：主抽头位于索引1
-- 5抽头：主抽头位于索引2
-- 7抽头：主抽头位于索引3
+**Typical Positions**:
+- 3-tap: Main tap at index 1
+- 5-tap: Main tap at index 2
+- 7-tap: Main tap at index 3
 
-##### 动态范围约束
+##### Dynamic Range Constraint
 
-单个抽头系数的绝对值不应超过1.0，避免输出饱和：
+The absolute value of a single tap coefficient should not exceed 1.0 to avoid output saturation:
 
 ```
 |c[k]| ≤ 1.0, ∀k
 ```
 
-#### 2.2.4 典型应用配置示例
+#### 2.2.4 Typical Application Configuration Examples
 
-以下配置示例针对不同SerDes标准和信道损耗场景进行优化：
+The following configuration examples are optimized for different SerDes standards and channel loss scenarios:
 
-##### PCIe Gen3 (8Gbps) - 3.5dB去加重
+##### PCIe Gen3 (8Gbps) - 3.5dB De-emphasis
 
 ```cpp
 TxFfeParams ffe_pcie_gen3;
-ffe_pcie_gen3.taps = {0.0, 1.0, -0.25};  // 去加重策略
+ffe_pcie_gen3.taps = {0.0, 1.0, -0.25};  // De-emphasis strategy
 ```
 
-**特点**：
-- 主抽头归一化为1.0
-- 后置抽头为负值，实现3.5dB去加重
-- 前置抽头为0（无前游标补偿）
-- 适用场景：PCIe短信道（<20cm背板走线）
+**Features**:
+- Main tap normalized to 1.0
+- Post-tap is negative, achieving 3.5dB de-emphasis
+- Pre-tap is 0 (no pre-cursor compensation)
+- Applicable scenario: PCIe short channel (<20cm backplane trace)
 
-##### PCIe Gen4/Gen5 (16Gbps/32Gbps) - 6dB去加重
+##### PCIe Gen4/Gen5 (16Gbps/32Gbps) - 6dB De-emphasis
 
 ```cpp
 TxFfeParams ffe_pcie_gen4;
-ffe_pcie_gen4.taps = {0.0, 1.0, -0.4};  // 强去加重
+ffe_pcie_gen4.taps = {0.0, 1.0, -0.4};  // Strong de-emphasis
 ```
 
-**特点**：
-- 后置抽头增大到-0.4，实现6dB去加重
-- 适用于更高损耗信道（20-40cm）
-- 与接收端DFE协同工作
+**Features**:
+- Post-tap increased to -0.4, achieving 6dB de-emphasis
+- Suitable for higher loss channels (20-40cm)
+- Works with receiver DFE
 
-##### 10G/25G Ethernet - 平衡模式
+##### 10G/25G Ethernet - Balanced Mode
 
 ```cpp
 TxFfeParams ffe_ethernet;
-ffe_ethernet.taps = {0.05, 0.2, 0.5, -0.15, -0.1};  // 5抽头
+ffe_ethernet.taps = {0.05, 0.2, 0.5, -0.15, -0.1};  // 5-tap
 ```
 
-**特点**：
-- 主抽头c[2]=0.5
-- 前置抽头c[0]=0.05, c[1]=0.2提供前游标补偿
-- 后置抽头c[3]=-0.15, c[4]=-0.1补偿后游标
-- 归一化和：|0.05|+|0.2|+|0.5|+|0.15|+|0.1|=1.0
-- 适用场景：中等损耗信道（10-15dB @ Nyquist）
+**Features**:
+- Main tap c[2]=0.5
+- Pre-taps c[0]=0.05, c[1]=0.2 provide pre-cursor compensation
+- Post-taps c[3]=-0.15, c[4]=-0.1 compensate for post-cursor
+- Normalization sum: |0.05|+|0.2|+|0.5|+|0.15|+|0.1|=1.0
+- Applicable scenario: Medium loss channel (10-15dB @ Nyquist)
 
-##### 56G PAM4 - 长信道
+##### 56G PAM4 - Long Channel
 
 ```cpp
 TxFfeParams ffe_pam4;
-ffe_pam4.taps = {0.02, 0.08, 0.15, 0.5, -0.15, -0.1, -0.05};  // 7抽头
+ffe_pam4.taps = {0.02, 0.08, 0.15, 0.5, -0.15, -0.1, -0.05};  // 7-tap
 ```
 
-**特点**：
-- 7抽头设计，主抽头c[3]=0.5
-- 对称的前后游标补偿结构
-- 归一化和：|0.02|+|0.08|+|0.15|+|0.5|+|0.15|+|0.1|+|0.05|=1.05
-- 适用场景：超长信道（>20dB损耗），配合接收端CTLE+DFE
+**Features**:
+- 7-tap design, main tap c[3]=0.5
+- Symmetric pre/post-cursor compensation structure
+- Normalization sum: |0.02|+|0.08|+|0.15|+|0.5|+|0.15|+|0.1|+|0.05|=1.05
+- Applicable scenario: Ultra-long channel (>20dB loss), works with receiver CTLE+DFE
 
-##### 自定义预加重模式
+##### Custom Pre-emphasis Mode
 
 ```cpp
 TxFfeParams ffe_custom;
 ffe_custom.taps = {0.15, 0.25, 0.6, -0.2, -0.1};
 ```
 
-**特点**：
-- 前置抽头为正值，实现预加重
-- 主抽头c[2]=0.6
-- 平衡前后游标补偿
-- 适用于时域反射严重的信道（多次阻抗不连续）
+**Features**:
+- Pre-taps are positive values, achieving pre-emphasis
+- Main tap c[2]=0.6
+- Balanced pre/post-cursor compensation
+- Suitable for channels with severe time-domain reflections (multiple impedance discontinuities)
 
-#### 2.2.5 抽头系数优化方法论
+#### 2.2.5 Tap Coefficient Optimization Methodology
 
-##### 基于信道S参数的优化
+##### Optimization Based on Channel S-parameters
 
-**步骤1**：提取信道脉冲响应  
-通过IFFT将S参数S21(f)转换为时域冲激响应h(t)：
+**Step 1**: Extract channel impulse response  
+Convert S-parameter S21(f) to time-domain impulse response h(t) through IFFT:
 
 ```python
 import numpy as np
 from scipy.fft import ifft
 
-# S21频域响应 → 时域脉冲响应
-freq = np.array([...])  # 频率点
-S21 = np.array([...])   # 复数S参数
+# S21 frequency response → time-domain impulse response
+freq = np.array([...])  # frequency points
+S21 = np.array([...])   # complex S-parameters
 h_t = ifft(S21)
 ```
 
-**步骤2**：MMSE准则求解  
-最小化接收端输出信号与期望信号之间的均方误差（MSE）：
+**Step 2**: MMSE criterion solution  
+Minimize the mean square error (MSE) between the receiver output signal and the desired signal:
 
-**时域表达式**：
+**Time-domain expression**:
 ```
 min Σ |y[n] - d[n]|²
 ```
-其中：
-- `y[n] = (h[n] ⊗ c[n])` 为信道与FFE级联后的输出
-- `d[n]` 为期望的发送数据序列
-- `⊗` 表示卷积运算
+Where:
+- `y[n] = (h[n] ⊗ c[n])` is the output after channel and FFE cascade
+- `d[n]` is the desired transmitted data sequence
+- `⊗` denotes convolution operation
 
-**频域表达式（考虑噪声功率）**：
+**Frequency-domain expression (considering noise power)**:
 ```
 H_FFE(f) = H*_channel(f) / (|H_channel(f)|² + N₀/Ps)
 ```
-其中：
-- `H*_channel(f)` 为信道频率响应的共轭
-- `N₀` 为噪声功率谱密度
-- `Ps` 为信号功率
-- 该公式平衡了ISI消除与噪声放大的折衷
+Where:
+- `H*_channel(f)` is the conjugate of the channel frequency response
+- `N₀` is the noise power spectral density
+- `Ps` is the signal power
+- This formula balances the trade-off between ISI elimination and noise amplification
 
-**步骤3**：归一化与量化  
-将求解的抽头系数归一化到合理范围，并考虑硬件实现的量化位数（如6-bit量化）。
+**Step 3**: Normalization and quantization  
+Normalize the solved tap coefficients to a reasonable range, and consider hardware implementation quantization bits (e.g., 6-bit quantization).
 
-##### 自适应在线优化
+##### Adaptive Online Optimization
 
-在系统运行过程中，通过接收端反馈的误差信号（如眼高、BER估计），使用LMS算法实时调整FFE系数：
+During system operation, use feedback error signals from the receiver (such as eye height, BER estimation) to adjust FFE coefficients in real-time using the LMS algorithm:
 
 ```
 c[k](n+1) = c[k](n) + μ × e(n) × x(n-k)
 ```
 
-其中：
-- `e(n)`：接收端判决误差
-- `μ`：步长参数（0.001~0.01）
-- `x(n-k)`：延迟k个UI的输入信号
+Where:
+- `e(n)`: Receiver decision error
+- `μ`: Step size parameter (0.001~0.01)
+- `x(n-k)`: Input signal delayed by k UIs
 
-### 2.3 构造函数
+### 2.3 Constructor
 
-FFE模块的构造函数遵循SystemC-AMS的标准命名规则，初始化端口和参数。
+The FFE module constructor follows the standard naming conventions of SystemC-AMS, initializing ports and parameters.
 
-#### 构造函数签名
+#### Constructor Signature
 
 ```cpp
 class TxFfeTdf : public sca_tdf::sca_module {
 public:
-    // 单端输入输出端口
+    // Single-ended input/output ports
     sca_tdf::sca_in<double> in;
     sca_tdf::sca_out<double> out;
     
-    // 构造函数
+    // Constructor
     TxFfeTdf(sc_core::sc_module_name name, const TxFfeParams& params);
     
 private:
     TxFfeParams m_params;
     
-    // SystemC-AMS回调函数
+    // SystemC-AMS callback functions
     void set_attributes() override;
     void initialize() override;
     void processing() override;
     
-    // 内部状态：延迟线缓存
+    // Internal state: delay line buffer
     std::vector<double> m_delay_line;
 };
 ```
 
-#### 构造函数实现示例
+#### Constructor Implementation Example
 
 ```cpp
 TxFfeTdf::TxFfeTdf(sc_core::sc_module_name name, const TxFfeParams& params)
@@ -381,166 +381,166 @@ TxFfeTdf::TxFfeTdf(sc_core::sc_module_name name, const TxFfeParams& params)
     , in("in")
     , out("out")
     , m_params(params)
-    , m_delay_line(params.taps.size(), 0.0)  // 初始化延迟线为0
+    , m_delay_line(params.taps.size(), 0.0)  // Initialize delay line to 0
 {
-    // 参数验证
+    // Parameter validation
     if (m_params.taps.empty()) {
         SC_REPORT_ERROR("TxFfeTdf", "FFE taps cannot be empty");
     }
 }
 ```
 
-#### 端口连接示例
+#### Port Connection Example
 
-在顶层测试平台或系统级模块中，FFE模块的连接方式如下：
+In the top-level testbench or system-level module, the FFE module connection is as follows:
 
 ```cpp
-// 上游模块：WaveGen（单端信号源）
+// Upstream module: WaveGen (single-ended signal source)
 WaveGenTdf wave_gen("wave_gen", wave_params);
 
-// FFE模块
+// FFE module
 TxFfeTdf tx_ffe("tx_ffe", ffe_params);
 
-// 下游模块：Driver（单端输入）
+// Downstream module: Driver (single-ended input)
 TxDriverTdf tx_driver("tx_driver", driver_params);
 
-// 单端信号连接
+// Single-ended signal connections
 sca_tdf::sca_signal<double> sig_ffe_in, sig_ffe_out;
 
-// 连接拓扑
+// Connection topology
 wave_gen.out(sig_ffe_in);
 tx_ffe.in(sig_ffe_in);
 tx_ffe.out(sig_ffe_out);
 tx_driver.in(sig_ffe_out);
 ```
 
-> **重要提示**：SystemC-AMS要求所有端口必须连接,不允许悬空端口。
+> **Important Note**: SystemC-AMS requires all ports to be connected; dangling ports are not allowed.
 
 ---
 
-## 3. 核心实现机制
+## 3. Core Implementation Mechanism
 
-### 3.1 信号处理流程
+### 3.1 Signal Processing Flow
 
-FFE模块的`processing()`方法在每个符号周期（UI）执行一次FIR滤波计算，实现信号的预失真处理。
+The FFE module's `processing()` method executes FIR filter calculations once per symbol period (UI), implementing signal pre-distortion.
 
-**处理流水线**：
+**Processing Pipeline**:
 ```
-输入读取 → 延迟线更新 → FIR卷积计算 → 输出写入
+Input Read → Delay Line Update → FIR Convolution Calculation → Output Write
 ```
 
-**步骤1-输入读取**：从单端输入端口`in`读取当前码元值，输入信号通常来自WaveGen模块，摆幅为±1V。
+**Step 1 - Input Read**: Read the current symbol value from the single-ended input port `in`. The input signal typically comes from the WaveGen module with a swing of ±1V.
 
-**步骤2-延迟线更新**：将当前输入码元存入抽头延迟线（`std::vector<double> m_delay_line`），采用FIFO结构，新数据从索引0进入，旧数据依次后移。
+**Step 2 - Delay Line Update**: Store the current input symbol in the tap delay line (`std::vector<double> m_delay_line`), using a FIFO structure where new data enters at index 0 and old data shifts backward.
 
-**步骤3-FIR卷积**：根据配置的抽头系数和延迟线数据执行加权求和：
+**Step 3 - FIR Convolution**: Perform weighted summation based on the configured tap coefficients and delay line data:
 ```
 y[n] = Σ c[k] × x[n-k]  (k=0 to N-1)
 ```
-其中`c[k]`为抽头权重系数，`x[n-k]`为延迟k个UI的历史输入。
+Where `c[k]` is the tap weighting coefficient and `x[n-k]` is the historical input delayed by k UIs.
 
-**步骤4-输出写入**：将FIR滤波结果写入输出端口`out`，输出信号送往下游Mux和Driver模块。
+**Step 4 - Output Write**: Write the FIR filter result to the output port `out`, sending the output signal downstream to the Mux and Driver modules.
 
-### 3.2 FIR滤波器机制
+### 3.2 FIR Filter Mechanism
 
-FFE采用直接形式（Direct Form）FIR滤波器结构，通过N个抽头的加权求和实现ISI预补偿。
+FFE adopts a Direct Form FIR filter structure, implementing ISI pre-compensation through the weighted summation of N taps.
 
-**时域表达式**：
+**Time-domain expression**:
 ```
 y[n] = c[0]×x[n] + c[1]×x[n-1] + ... + c[N-1]×x[n-N+1]
 ```
 
-**频率响应（离散时间傅里叶变换）**：
+**Frequency response (Discrete-Time Fourier Transform)**:
 ```
 H(f) = Σ c[k] × e^(-j2πfkT)  (k=0 to N-1)
 ```
-其中`T`为符号周期（UI），`f`为频率。
+Where `T` is the symbol period (UI) and `f` is frequency.
 
-**典型配置示例**（3抽头）：
-- 去加重模式：`c = [0, 1.0, -0.25]`，频率响应 `H(f) = 1 - 0.25×e^(-j4πfT)`，低频增益0.75（-2.5dB），Nyquist频率增益1.25（+1.9dB）
-- 平衡模式：`c = [0.15, 0.7, 0.15]`，低通特性，低频增益1.0，高频增益0.4（-7.96dB）
+**Typical Configuration Example** (3-tap):
+- De-emphasis mode: `c = [0, 1.0, -0.25]`, frequency response `H(f) = 1 - 0.25×e^(-j4πfT)`, low-frequency gain 0.75 (-2.5dB), Nyquist frequency gain 1.25 (+1.9dB)
+- Balanced mode: `c = [0.15, 0.7, 0.15]`, low-pass characteristic, low-frequency gain 1.0, high-frequency gain 0.4 (-7.96dB)
 
-**延迟线管理**：采用简单的数组移位实现（抽头数通常≤7，性能开销可接受）。每个UI更新一次，延迟线在初始化时填充0值。
+**Delay Line Management**: Implemented using simple array shifting (tap count typically ≤7, performance overhead is acceptable). Updated once per UI, delay line filled with 0 values during initialization.
 
-### 3.3 归一化与饱和处理
+### 3.3 Normalization and Saturation Handling
 
-**归一化策略**：根据均衡模式选择是否归一化输出。去加重模式（主抽头≈1.0）通常不归一化；预加重/平衡模式可采用幅度归一化（除以`Σ|c[k]|`）保证输出峰值不超过输入摆幅。
+**Normalization Strategy**: Choose whether to normalize the output based on the equalization mode. De-emphasis mode (main tap ≈ 1.0) typically does not normalize; pre-emphasis/balanced mode can use amplitude normalization (dividing by `Σ|c[k]|`) to ensure output peak does not exceed input swing.
 
-**饱和限制**：通过硬限幅或软饱和（tanh函数）防止输出超出后级Driver的输入范围，典型饱和电平设置为Driver输入范围的80-90%。
+**Saturation Limiting**: Prevent output from exceeding the input range of the downstream Driver through hard clipping or soft saturation (tanh function). Typical saturation levels are set to 80-90% of the Driver input range.
 
 ---
 
-## 4. 测试平台架构
+## 4. Testbench Architecture
 
-### 4.1 测试平台设计思想
+### 4.1 Testbench Design Philosophy
 
-FFE测试平台（`FfeTransientTestbench`）采用场景驱动的模块化设计，验证FFE在不同均衡策略和信道条件下的预失真性能。核心设计理念：
+The FFE testbench (`FfeTransientTestbench`) adopts a scenario-driven modular design to verify the pre-distortion performance of FFE under different equalization strategies and channel conditions. Core design concepts:
 
-1. **场景驱动**：通过枚举类型选择不同测试场景，每个场景自动配置相应的信号源和FFE抽头系数
-2. **组件复用**：单端信号源、信号监控器等辅助模块可在多个测试场景间复用
-3. **结果分析**：根据场景类型自动选择合适的分析方法（时域波形、频域特性）
+1. **Scenario-driven**: Select different test scenarios through enumeration types; each scenario automatically configures corresponding signal sources and FFE tap coefficients
+2. **Component reuse**: Single-ended signal sources, signal monitors, and other auxiliary modules can be reused across multiple test scenarios
+3. **Result analysis**: Automatically select appropriate analysis methods (time-domain waveform, frequency-domain characteristics) based on scenario type
 
-### 4.2 测试场景定义
+### 4.2 Test Scenario Definitions
 
-测试平台支持五种核心测试场景：
+The testbench supports five core test scenarios:
 
-| 场景 | 命令行参数 | 测试目标 | 输出文件 |
+| Scenario | Command Line Parameter | Test Objective | Output File |
 |------|----------|---------|----------|
-| BASIC_PRBS | `prbs` / `0` | 基本FIR滤波和抽头加权特性 | ffe_tran_prbs.csv |
-| DEEMPHASIS_TEST | `deemp` / `1` | 去加重模式补偿效果 | ffe_tran_deemp.csv |
-| PREEMPHASIS_TEST | `preemp` / `2` | 预加重模式高频增强 | ffe_tran_preemp.csv |
-| TAP_SWEEP | `sweep` / `3` | 抽头系数扫描与优化 | ffe_tran_sweep.csv |
-| CHANNEL_COMBO | `combo` / `4` | FFE+信道级联补偿验证 | ffe_tran_combo.csv |
+| BASIC_PRBS | `prbs` / `0` | Basic FIR filtering and tap weighting characteristics | ffe_tran_prbs.csv |
+| DEEMPHASIS_TEST | `deemp` / `1` | De-emphasis mode compensation effect | ffe_tran_deemp.csv |
+| PREEMPHASIS_TEST | `preemp` / `2` | Pre-emphasis mode high-frequency enhancement | ffe_tran_preemp.csv |
+| TAP_SWEEP | `sweep` / `3` | Tap coefficient sweep and optimization | ffe_tran_sweep.csv |
+| CHANNEL_COMBO | `combo` / `4` | FFE+channel cascade compensation verification | ffe_tran_combo.csv |
 
-### 4.3 场景配置详解
+### 4.3 Scenario Configuration Details
 
-#### BASIC_PRBS - 基本PRBS测试
+#### BASIC_PRBS - Basic PRBS Test
 
-验证FFE基本的FIR滤波功能和抽头加权正确性。
+Verify FFE's basic FIR filtering function and tap weighting correctness.
 
-- **信号源**：PRBS-7伪随机序列
-- **输入幅度**：±1.0V（单端）
-- **符号率**：10 Gbps
-- **FFE系数**：`[0.2, 0.6, 0.2]`（3抽头平衡模式）
-- **验证点**：输出波形应为输入与FIR系数的卷积结果
+- **Signal source**: PRBS-7 pseudo-random sequence
+- **Input amplitude**: ±1.0V (single-ended)
+- **Symbol rate**: 10 Gbps
+- **FFE coefficients**: `[0.2, 0.6, 0.2]` (3-tap balanced mode)
+- **Verification point**: Output waveform should be the convolution result of input and FIR coefficients
 
-#### DEEMPHASIS_TEST - 去加重测试
+#### DEEMPHASIS_TEST - De-emphasis Test
 
-验证去加重模式的后游标ISI预补偿能力。
+Verify de-emphasis mode's post-cursor ISI pre-compensation capability.
 
-- **信号源**：交替"0-1-1-1"与"1-0-0-0"码型（强制后游标ISI）
-- **FFE系数**：`[0.0, 1.0, -0.35]`（PCIe Gen4典型去加重）
-- **验证点**：跳变后的符号幅度应降低35%，预补偿信道的后游标衰减
+- **Signal source**: Alternating "0-1-1-1" and "1-0-0-0" patterns (forcing post-cursor ISI)
+- **FFE coefficients**: `[0.0, 1.0, -0.35]` (PCIe Gen4 typical de-emphasis)
+- **Verification point**: Symbol amplitude after transition should be reduced by 35%, pre-compensating for channel post-cursor attenuation
 
-#### PREEMPHASIS_TEST - 预加重测试
+#### PREEMPHASIS_TEST - Pre-emphasis Test
 
-验证预加重模式的高频增强效果。
+Verify pre-emphasis mode's high-frequency enhancement effect.
 
-- **信号源**：方波（1 GHz）
-- **FFE系数**：`[0.15, 0.7, 0.15]`
-- **验证点**：边沿陡峭度提升，上升/下降时间缩短
+- **Signal source**: Square wave (1 GHz)
+- **FFE coefficients**: `[0.15, 0.7, 0.15]`
+- **Verification point**: Edge steepness increased, rise/fall times shortened
 
-#### TAP_SWEEP - 抽头扫描
+#### TAP_SWEEP - Tap Sweep
 
-通过扫描不同抽头系数组合，寻找最优均衡配置。
+Find optimal equalization configuration by sweeping different tap coefficient combinations.
 
-- **信号源**：PRBS-7
-- **扫描范围**：后置抽头从-0.5到0（步长0.05）
-- **固定系数**：主抽头=1.0，前置抽头=0
-- **验证点**：记录每组系数对应的输出眼高/眼宽
+- **Signal source**: PRBS-7
+- **Sweep range**: Post-tap from -0.5 to 0 (step 0.05)
+- **Fixed coefficients**: Main tap = 1.0, Pre-tap = 0
+- **Verification point**: Record output eye height/eye width for each coefficient group
 
-#### CHANNEL_COMBO - 信道级联测试
+#### CHANNEL_COMBO - Channel Cascade Test
 
-验证FFE与典型信道级联后的整体补偿效果。
+Verify overall compensation effect after FFE cascade with a typical channel.
 
-- **信号源**：PRBS-7
-- **FFE系数**：根据信道脉冲响应优化
-- **信道模型**：简化的一阶低通滤波器（模拟10dB@Nyquist损耗）
-- **验证点**：级联后的眼图开口面积应大于无FFE场景
+- **Signal source**: PRBS-7
+- **FFE coefficients**: Optimized based on channel impulse response
+- **Channel model**: Simplified first-order low-pass filter (simulating 10dB@Nyquist loss)
+- **Verification point**: Eye diagram opening area after cascade should be larger than without FFE scenario
 
-### 4.4 信号连接拓扑
+### 4.4 Signal Connection Topology
 
-测试平台的模块连接关系如下：
+The module connection relationships in the testbench are as follows:
 
 ```
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -550,114 +550,114 @@ FFE测试平台（`FfeTransientTestbench`）采用场景驱动的模块化设计
 │                 │       │                 │       │                 │
 │                 │       │  out ───────────┼───────▶ in             │
 └─────────────────┘       │                 │       │                 │
-                          └─────────────────┘       │  → 统计分析     │
-                                                     │  → CSV保存      │
+                          └─────────────────┘       │  → Statistical Analysis     │
+                                                     │  → CSV Save      │
                                                      └─────────────────┘
 ```
 
-**可选级联（CHANNEL_COMBO场景）**：
+**Optional Cascade (CHANNEL_COMBO scenario)**:
 ```
 SignalSource → TxFfeTdf → ChannelModel → SignalMonitor
 ```
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Description
 
-#### SignalSource - 单端信号源
+#### SignalSource - Single-ended Signal Source
 
-支持四种波形类型：
-- **DC**：直流信号
-- **SINE**：正弦波
-- **SQUARE**：方波
-- **PRBS**：伪随机序列（PRBS-7/15/23/31）
+Supports four waveform types:
+- **DC**: DC signal
+- **SINE**: Sine wave
+- **SQUARE**: Square wave
+- **PRBS**: Pseudo-random sequence (PRBS-7/15/23/31)
 
-可配置参数：幅度、频率、符号率
+Configurable parameters: amplitude, frequency, symbol rate
 
-#### SignalMonitor - 信号监控器
+#### SignalMonitor - Signal Monitor
 
-功能：
-- 实时记录输入/输出波形
-- 计算统计信息（均值、RMS、峰峰值）
-- 输出CSV格式波形文件
-- 可选：计算眼图指标（眼高、眼宽、抖动）
+Functions:
+- Real-time recording of input/output waveforms
+- Calculating statistical information (mean, RMS, peak-to-peak)
+- Outputting CSV format waveform files
+- Optional: calculating eye diagram metrics (eye height, eye width, jitter)
 
-#### ChannelModel - 简化信道模型（CHANNEL_COMBO场景专用）
+#### ChannelModel - Simplified Channel Model (CHANNEL_COMBO scenario only)
 
-采用一阶或二阶低通滤波器模拟信道频率响应，用于快速验证FFE补偿效果。实际应用中应替换为基于S参数的精确信道模型。
+Uses first-order or second-order low-pass filters to simulate channel frequency response for quick verification of FFE compensation effects. In actual applications, it should be replaced with precise channel models based on S-parameters.
 
-### 4.6 编译与运行
+### 4.6 Compilation and Execution
 
-测试平台代码位于 `tb/tx/ffe/` 目录（如果未创建目录结构，则位于 `tb/` 根目录），编译与运行步骤：
+Testbench code is located in the `tb/tx/ffe/` directory (if directory structure is not created, in `tb/` root directory), compilation and execution steps:
 
 ```bash
-# 构建测试平台
+# Build testbench
 cd build
 cmake ..
 make ffe_tran_tb
 
-# 运行指定场景
+# Run specified scenario
 cd tb
 ./ffe_tran_tb [scenario]
 ```
 
-场景参数：
-- `prbs` 或 `0` - 基本PRBS测试（默认）
-- `deemp` 或 `1` - 去加重测试
-- `preemp` 或 `2` - 预加重测试
-- `sweep` 或 `3` - 抽头扫描
-- `combo` 或 `4` - 信道级联测试
+Scenario parameters:
+- `prbs` or `0` - Basic PRBS test (default)
+- `deemp` or `1` - De-emphasis test
+- `preemp` or `2` - Pre-emphasis test
+- `sweep` or `3` - Tap sweep
+- `combo` or `4` - Channel cascade test
 
-### 4.7 测试平台验证目标
+### 4.7 Testbench Verification Objectives
 
-各测试场景的核心验证指标：
+Core verification metrics for each test scenario:
 
-| 场景 | 验证指标 | 通过标准 |
+| Scenario | Verification Metric | Pass Criteria |
 |------|---------|---------|
-| BASIC_PRBS | 输出与理论卷积结果误差 | < 1% |
-| DEEMPHASIS_TEST | 后游标抑制比 | 符合配置值±5% |
-| PREEMPHASIS_TEST | 边沿斜率提升比 | > 1.3× |
-| TAP_SWEEP | 最优系数点识别 | 眼高最大处 |
-| CHANNEL_COMBO | 级联后眼高改善 | > 30% vs 无FFE |
+| BASIC_PRBS | Output error vs. theoretical convolution result | < 1% |
+| DEEMPHASIS_TEST | Post-cursor suppression ratio | Within configured value ±5% |
+| PREEMPHASIS_TEST | Edge slope enhancement ratio | > 1.3× |
+| TAP_SWEEP | Optimal coefficient point identification | At maximum eye height |
+| CHANNEL_COMBO | Eye height improvement after cascade | > 30% vs. no FFE |
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Results Analysis
 
-本章介绍FFE各测试场景的典型仿真结果、关键性能指标及分析方法。通过时域波形、频域特性和ISI消除效果的定量评估，验证FFE预失真功能的正确性和有效性。
+This chapter introduces typical simulation results, key performance metrics, and analysis methods for various FFE test scenarios. The correctness and effectiveness of FFE pre-distortion functionality are verified through quantitative assessment of time-domain waveforms, frequency-domain characteristics, and ISI elimination effects.
 
-### 5.1 仿真环境说明
+### 5.1 Simulation Environment Description
 
-#### 5.1.1 通用配置参数
+#### 5.1.1 General Configuration Parameters
 
-所有测试场景共享的基础配置：
+Basic configurations shared by all test scenarios:
 
-| 参数类别 | 参数名 | 典型值 | 说明 |
+| Parameter Category | Parameter Name | Typical Value | Description |
 |---------|--------|--------|------|
-| **全局仿真** | 采样率（Fs） | 100 GHz | 等于符号速率，满足离散时间FIR滤波 |
-| | 仿真时长 | 10-50 ns | PRBS测试需≥2000 UI以统计 |
-| | 时间步长（UI） | 10 ps | 对应10 Gbps符号率 |
-| **信号源** | 输入幅度 | ±1 V | 归一化单端输入 |
-| | 数据速率 | 10 Gbps | 标准测试速率 |
-| | PRBS类型 | PRBS7 | 快速收敛，用于基础测试 |
-| **FFE** | 抽头数量 | 3-5 | 根据场景选择 |
-| | 主抽头位置 | 索引1或2 | 取决于抽头总数 |
+| **Global Simulation** | Sampling Rate (Fs) | 100 GHz | Equal to symbol rate, satisfies discrete-time FIR filtering |
+| | Simulation Duration | 10-50 ns | PRBS tests require ≥2000 UI for statistics |
+| | Time Step (UI) | 10 ps | Corresponds to 10 Gbps symbol rate |
+| **Signal Source** | Input Amplitude | ±1 V | Normalized single-ended input |
+| | Data Rate | 10 Gbps | Standard test rate |
+| | PRBS Type | PRBS7 | Fast convergence, for basic tests |
+| **FFE** | Tap Count | 3-5 | Selected based on scenario |
+| | Main Tap Position | Index 1 or 2 | Depends on total tap count |
 
-#### 5.1.2 性能评估指标
+#### 5.1.2 Performance Evaluation Metrics
 
-FFE性能通过以下量化指标衡量：
+FFE performance is measured by the following quantitative metrics:
 
-| 指标 | 定义 | 计算方法 | 典型目标 |
+| Metric | Definition | Calculation Method | Typical Target |
 |------|------|----------|---------|
-| **眼高改善** | FFE输出相对输入的眼高提升 | (EH_out - EH_in) / EH_in | > 20% |
-| **眼宽改善** | FFE输出相对输入的眼宽增加 | (EW_out - EW_in) / EW_in | > 10% |
-| **ISI消除比** | 前/后游标ISI幅度降低比例 | (ISI_in - ISI_out) / ISI_in | > 50% |
-| **频域增强** | 高频/低频能量比提升 | 20*log10(H(fNyq)/H(DC)) | 去加重：+3~6dB |
-| **卷积误差** | 输出与理论FIR卷积的偏差 | RMS(y_meas - y_theory) / RMS(y_theory) | < 1% |
+| **Eye Height Improvement** | Eye height improvement of FFE output relative to input | (EH_out - EH_in) / EH_in | > 20% |
+| **Eye Width Improvement** | Eye width increase of FFE output relative to input | (EW_out - EW_in) / EW_in | > 10% |
+| **ISI Elimination Ratio** | ISI amplitude reduction ratio of pre/post-cursors | (ISI_in - ISI_out) / ISI_in | > 50% |
+| **Frequency Enhancement** | High-frequency/low-frequency energy ratio improvement | 20*log10(H(fNyq)/H(DC)) | De-emphasis: +3~6dB |
+| **Convolution Error** | Deviation of output from theoretical FIR convolution | RMS(y_meas - y_theory) / RMS(y_theory) | < 1% |
 
-### 5.2 基础功能验证
+### 5.2 Basic Function Verification
 
-#### 5.2.1 BASIC_PRBS测试结果
+#### 5.2.1 BASIC_PRBS Test Results
 
-**测试配置**：
+**Test Configuration**:
 ```json
 {
   "signal_source": {"type": "PRBS7", "amplitude": 1.0},
@@ -665,60 +665,60 @@ FFE性能通过以下量化指标衡量：
 }
 ```
 
-**期望结果分析**：
+**Expected Results Analysis**:
 
-**时域波形特征**：
-- **输入信号**：PRBS7序列，电平±1V，边沿理想（无ISI）
-- **输出信号**：经过3抽头FIR滤波后的波形，码元跳变处产生可见的预加重/去加重效应
-  - 例如："0→1"跳变时，输出在第1个UI达到峰值（主抽头c[1]=0.6），前后各有20%的预/后游标
-  - 连续"1"序列时，输出稳态值 = c[0]×1 + c[1]×1 + c[2]×1 = 1.0V（满足归一化）
+**Time-domain Waveform Characteristics**:
+- **Input signal**: PRBS7 sequence, levels ±1V, ideal edges (no ISI)
+- **Output signal**: Waveform after 3-tap FIR filtering, visible pre-emphasis/de-emphasis effects at symbol transitions
+  - For example: during "0→1" transition, output reaches peak in the 1st UI (main tap c[1]=0.6), with 20% pre/post-cursors on either side
+  - During continuous "1" sequence, output steady-state value = c[0]×1 + c[1]×1 + c[2]×1 = 1.0V (satisfies normalization)
 
-**关键验证点**：
+**Key Verification Points**:
 
-| 测试项 | 理论值 | 测量方法 | 通过标准 |
+| Test Item | Theoretical Value | Measurement Method | Pass Criteria |
 |--------|--------|----------|---------|
-| 输出峰值（跳变UI） | 0.6V | 单次跳变幅度 | 误差 < 1% |
-| 稳态电平（连续码） | 1.0V | 连续3个"1"的平均值 | 误差 < 1% |
-| FIR卷积误差 | 0 | RMS(y_out - conv(x_in, c)) | < 1% |
+| Output Peak (transition UI) | 0.6V | Single transition amplitude | Error < 1% |
+| Steady-state Level (continuous symbols) | 1.0V | Average of 3 consecutive "1"s | Error < 1% |
+| FIR Convolution Error | 0 | RMS(y_out - conv(x_in, c)) | < 1% |
 
-**波形示意**（时域）：
+**Waveform Diagram** (time-domain):
 ```
-输入码型:   0  0  1  1  1  0  0  1  0  1
+Input pattern:   0  0  1  1  1  0  0  1  0  1
             ___     ________     __  __  
-输出波形:  |   |___|        |___|  ||  |___
+Output waveform:  |   |___|        |___|  ||  |___
            ↑ ↑ ↑
-         前游标 主抽头 后游标
-          0.2  0.6   0.2
+        Pre-cursor Main tap Post-cursor
+         0.2  0.6   0.2
 ```
 
-#### 5.2.2 卷积正确性验证
+#### 5.2.2 Convolution Correctness Verification
 
-**Python分析脚本**：
+**Python Analysis Script**:
 ```python
 import numpy as np
 
-# 读取trace文件
+# Read trace file
 data = np.loadtxt('ffe_tran_prbs.csv', delimiter=',', skiprows=1)
 time = data[:, 0]
 vin = data[:, 1]
 vout = data[:, 2]
 
-# FFE抽头系数
+# FFE tap coefficients
 taps = np.array([0.2, 0.6, 0.2])
 
-# 理论卷积输出
+# Theoretical convolution output
 vout_theory = np.convolve(vin, taps, mode='same')
 
-# 计算误差
+# Calculate error
 rms_error = np.sqrt(np.mean((vout - vout_theory)**2)) / np.sqrt(np.mean(vout_theory**2))
-print(f"卷积RMS误差: {rms_error*100:.2f}% (应 < 1%)")
+print(f"Convolution RMS error: {rms_error*100:.2f}% (should be < 1%)")
 ```
 
-### 5.3 去加重模式分析
+### 5.3 De-emphasis Mode Analysis
 
-#### 5.3.1 DEEMPHASIS_TEST测试结果
+#### 5.3.1 DEEMPHASIS_TEST Results
 
-**测试配置**：
+**Test Configuration**:
 ```json
 {
   "signal_source": {"type": "pattern", "sequence": "0111_1000"},
@@ -726,40 +726,40 @@ print(f"卷积RMS误差: {rms_error*100:.2f}% (应 < 1%)")
 }
 ```
 
-**期望结果**：
+**Expected Results**:
 
-**时域波形分析**：
-- **跳变UI（n=0）**：输出幅度 = c[1]×1 = 1.0V（主抽头保持满摆幅）
-- **跳变后UI（n=1）**：输出幅度 = c[1]×1 + c[2]×1 = 1.0 - 0.35 = 0.65V（去加重35%）
-- **稳态UI（n≥2）**：输出幅度 = 1.0V（所有抽头对齐）
+**Time-domain Waveform Analysis**:
+- **Transition UI (n=0)**: Output amplitude = c[1]×1 = 1.0V (main tap maintains full swing)
+- **Post-transition UI (n=1)**: Output amplitude = c[1]×1 + c[2]×1 = 1.0 - 0.35 = 0.65V (35% de-emphasis)
+- **Steady-state UI (n≥2)**: Output amplitude = 1.0V (all taps aligned)
 
-**关键测量**：
+**Key Measurements**:
 
-| 指标 | 理论值 | 测量方法 | 通过标准 |
+| Metric | Theoretical Value | Measurement Method | Pass Criteria |
 |------|--------|----------|---------|
-| 去加重比例 | 35% | (V_n0 - V_n1) / V_n0 | 35% ± 2% |
-| 主抽头幅度 | 1.0V | 跳变UI峰值 | 误差 < 5% |
-| 频域提升（@ Nyquist） | +6.35dB | \|H(fNyq)\| / \|H(DC)\| | 6.0~6.5dB |
+| De-emphasis Ratio | 35% | (V_n0 - V_n1) / V_n0 | 35% ± 2% |
+| Main Tap Amplitude | 1.0V | Transition UI peak | Error < 5% |
+| Frequency Enhancement (@ Nyquist) | +6.35dB | |H(fNyq)| / |H(DC)| | 6.0~6.5dB |
 
-**频域特性**：
+**Frequency-domain Characteristics**:
 
-对于3抽头FIR滤波器，频率响应为：
+For a 3-tap FIR filter, the frequency response is:
 ```
 H(f) = Σ c[k] × e^(-j2πfkT)   (k=0,1,2)
 ```
 
-代入抽头系数 `c = [0.0, 1.0, -0.35]`：
+Substituting tap coefficients `c = [0.0, 1.0, -0.35]`:
 ```
 H(f) = 0 + 1.0 × e^(-j2πfT) - 0.35 × e^(-j4πfT)
 ```
 
-**DC增益**（f=0）：
+**DC Gain** (f=0):
 ```
 H(0) = 1.0 × e^0 - 0.35 × e^0 = 1.0 - 0.35 = 0.65
 |H(0)| = 0.65 → 20log₁₀(0.65) = -3.74 dB
 ```
 
-**Nyquist增益**（f = fₙ = 1/(2T)）：
+**Nyquist Gain** (f = fₙ = 1/(2T)):
 ```
 H(fₙ) = 1.0 × e^(-jπ) - 0.35 × e^(-j2π)
       = 1.0 × (-1) - 0.35 × 1
@@ -767,19 +767,19 @@ H(fₙ) = 1.0 × e^(-jπ) - 0.35 × e^(-j2π)
 |H(fₙ)| = 1.35 → 20log₁₀(1.35) = +2.61 dB
 ```
 
-**高频增强**：
+**High-frequency Enhancement**:
 ```
-高频增强 = |H(fₙ)|_dB - |H(0)|_dB = 2.61 - (-3.74) = 6.35 dB
+High-frequency enhancement = |H(fₙ)|_dB - |H(0)|_dB = 2.61 - (-3.74) = 6.35 dB
 ```
 
-**物理意义**：
-去加重模式通过降低连续码元的幅度，相对提升跳变边沿的能量占比，预补偿信道对高频的衰减，适用于PCIe Gen3/Gen4等标准。
+**Physical Meaning**:
+De-emphasis mode relatively increases the energy proportion at transition edges by reducing the amplitude of continuous symbols, pre-compensating for high-frequency attenuation of the channel. It is suitable for PCIe Gen3/Gen4 and other standards.
 
-### 5.4 预加重模式分析
+### 5.4 Pre-emphasis Mode Analysis
 
-#### 5.4.1 PREEMPHASIS_TEST测试结果
+#### 5.4.1 PREEMPHASIS_TEST Results
 
-**测试配置**：
+**Test Configuration**:
 ```json
 {
   "signal_source": {"type": "SQUARE", "frequency": 1e9},
@@ -787,268 +787,268 @@ H(fₙ) = 1.0 × e^(-jπ) - 0.35 × e^(-j2π)
 }
 ```
 
-**期望结果**：
+**Expected Results**:
 
-**边沿特性**：
-- **输入方波**：1GHz（跳变周期500ps），理想边沿（瞬时翻转）
-- **输出波形**：边沿陡峭度提升，上升/下降时间缩短约20-30%
-  - 前置抽头（c[0]=0.15）提前注入能量，预先抬升/压低电平
-  - 主抽头（c[1]=0.7）携带主要能量
-  - 后置抽头（c[2]=0.15）补偿后游标ISI
+**Edge Characteristics**:
+- **Input square wave**: 1GHz (transition period 500ps), ideal edges (instantaneous flip)
+- **Output waveform**: Edge steepness increased, rise/fall times shortened by approximately 20-30%
+  - Pre-tap (c[0]=0.15) injects energy in advance, pre-raising/lowering the level
+  - Main tap (c[1]=0.7) carries the main energy
+  - Post-tap (c[2]=0.15) compensates for post-cursor ISI
 
-**测量指标**：
+**Measurement Metrics**:
 
-| 指标 | 理论 | 测量方法 | 通过标准 |
+| Metric | Theoretical | Measurement Method | Pass Criteria |
 |------|------|----------|---------|
-| 上升时间（10%-90%） | 减少20% | 输出/输入上升时间比 | 0.7~0.85 |
-| 边沿过冲 | < 10% | (V_peak - V_final) / V_final | < 10% |
-| 高频增强 | 0dB | 1GHz处增益无明显提升（平衡模式） | -3~0dB |
+| Rise Time (10%-90%) | Reduced by 20% | Output/Input rise time ratio | 0.7~0.85 |
+| Edge Overshoot | < 10% | (V_peak - V_final) / V_final | < 10% |
+| High-frequency Enhancement | 0dB | No significant gain boost at 1GHz (balanced mode) | -3~0dB |
 
-**频域特性**（平衡模式）：
+**Frequency-domain Characteristics** (balanced mode):
 ```
 H(f) = 0.15 + 0.7 + 0.15 = 1.0 (DC)
-|H(fNyq)| ≈ 0.4 (低通特性)
+|H(fNyq)| ≈ 0.4 (low-pass characteristic)
 ```
 
-**应用场景**：
-平衡模式适用于信道反射严重的场景，通过对称的前后游标补偿，同时抑制前游标ISI（反射导致）和后游标ISI（色散导致）。
+**Application Scenarios**:
+Balanced mode is suitable for scenarios with severe channel reflections, using symmetric pre/post-cursor compensation to simultaneously suppress pre-cursor ISI (caused by reflection) and post-cursor ISI (caused by dispersion).
 
-### 5.5 抽头扫描优化
+### 5.5 Tap Sweep Optimization
 
-#### 5.5.1 TAP_SWEEP测试结果
+#### 5.5.1 TAP_SWEEP Results
 
-**测试配置**：
-- 固定前置抽头：c[0] = 0
-- 固定主抽头：c[1] = 1.0
-- 扫描后置抽头：c[2] = -0.5 ~ 0（步长0.05）
-- 信号源：PRBS7
+**Test Configuration**:
+- Fixed pre-tap: c[0] = 0
+- Fixed main tap: c[1] = 1.0
+- Sweep post-tap: c[2] = -0.5 ~ 0 (step 0.05)
+- Signal source: PRBS7
 
-**典型结果示意**：
+**Typical Results Illustration**:
 
-| c[2] | 眼高(V) | 眼宽(ps) | ISI(mV) | 评分 |
+| c[2] | Eye Height(V) | Eye Width(ps) | ISI(mV) | Score |
 |------|---------|----------|---------|------|
-| 0.0  | 0.85    | 75       | 45      | 基准 |
+| 0.0  | 0.85    | 75       | 45      | Baseline |
 | -0.1 | 0.90    | 78       | 35      | ↑ |
 | -0.2 | 0.93    | 80       | 28      | ↑↑ |
-| -0.3 | 0.95    | 81       | 22      | 最优 |
+| -0.3 | 0.95    | 81       | 22      | Optimal |
 | -0.4 | 0.92    | 78       | 25      | ↓ |
 | -0.5 | 0.87    | 72       | 38      | ↓↓ |
 
-**分析结论**：
-- **最优系数**：c[2] ≈ -0.3，此时眼高最大、ISI最小
-- **欠补偿（c[2] > -0.3）**：后游标ISI残留，眼高降低
-- **过补偿（c[2] < -0.3）**：引入新的预失真误差，反而恶化信号质量
+**Analysis Conclusions**:
+- **Optimal coefficient**: c[2] ≈ -0.3, where eye height is maximum and ISI is minimum
+- **Under-compensation (c[2] > -0.3)**: Residual post-cursor ISI, reduced eye height
+- **Over-compensation (c[2] < -0.3)**: Introduces new pre-distortion errors, degrading signal quality
 
-**优化建议**：
-实际应用中，通过类似的扫描方法（结合信道S参数仿真），可快速找到最优FFE系数组合，平衡ISI消除与噪声放大的折衷。
+**Optimization Suggestions**:
+In practical applications, optimal FFE coefficient combinations can be quickly found through similar sweep methods (combined with channel S-parameter simulation), balancing the trade-off between ISI elimination and noise amplification.
 
-### 5.6 信道级联验证
+### 5.6 Channel Cascade Verification
 
-#### 5.6.1 CHANNEL_COMBO测试结果
+#### 5.6.1 CHANNEL_COMBO Results
 
-**测试配置**：
+**Test Configuration**:
 ```
 SignalSource → TxFfeTdf → ChannelModel → Measurement
 ```
-- 信道模型：一阶低通滤波器，-3dB @ 5GHz（模拟10dB@Nyquist损耗）
-- FFE系数：通过信道脉冲响应优化，例如 [0.05, 0.8, -0.25]
+- Channel model: First-order low-pass filter, -3dB @ 5GHz (simulating 10dB@Nyquist loss)
+- FFE coefficients: Optimized through channel impulse response, e.g., [0.05, 0.8, -0.25]
 
-**对比实验**：
+**Comparison Experiment**:
 
-| 配置 | 输入眼高 | 输出眼高 | 眼高改善 | 眼宽改善 |
+| Configuration | Input Eye Height | Output Eye Height | Eye Height Improvement | Eye Width Improvement |
 |------|---------|---------|---------|---------|
-| 无FFE | 2.0V | 1.2V | — | — |
-| 启用FFE | 2.0V | 1.65V | +37.5% | +15% |
+| No FFE | 2.0V | 1.2V | — | — |
+| FFE Enabled | 2.0V | 1.65V | +37.5% | +15% |
 
-**结论**：
-FFE将信道输出的眼高从1.2V提升至1.65V，改善37.5%，证明预失真有效补偿了信道的频率选择性衰减，降低了接收端均衡器（CTLE/DFE）的压力。
+**Conclusion**:
+FFE improves the channel output eye height from 1.2V to 1.65V, a 37.5% improvement, demonstrating that pre-distortion effectively compensates for the channel's frequency-selective attenuation and reduces the burden on the receiver equalizer (CTLE/DFE).
 
-### 5.7 波形数据文件格式
+### 5.7 Waveform Data File Format
 
-CSV输出格式：
+CSV output format:
 ```
-时间(s),输入信号(V),输出信号(V)
+Time(s),Input Signal(V),Output Signal(V)
 0.000000e+00,0.000000,0.000000
 1.000000e-11,1.000000,0.600000
 2.000000e-11,1.000000,1.000000
 ...
 ```
 
-采样点数 = 仿真时长 / UI（例如50ns / 10ps = 5000点）。
+Number of sample points = Simulation duration / UI (e.g., 50ns / 10ps = 5000 points).
 
 ---
 
-## 7. 技术要点
+## 6. Technical Points
 
-### 7.1 单端架构的设计权衡
+### 6.1 Single-ended Architecture Design Trade-offs
 
-**设计决策**：FFE采用单端信号架构进行行为级建模，而非差分架构。
+**Design Decision**: FFE adopts a single-ended signal architecture for behavioral-level modeling rather than a differential architecture.
 
-**理由**：
-- **建模简化**：单端架构聚焦于FIR滤波器的核心算法验证，避免差分信号建模带来的额外复杂度（共模抑制、增益失配、相位偏斜等）
-- **仿真效率**：减少端口数量和信号路径，降低SystemC-AMS仿真的计算开销（单端比差分减少约40%端口连接）
-- **算法通用性**：ISI预补偿的FIR卷积算法本质上是标量运算，单端建模已足够表征均衡效果
+**Rationale**:
+- **Simplified Modeling**: Single-ended architecture focuses on core algorithm verification of the FIR filter, avoiding additional complexity from differential signal modeling (common-mode rejection, gain mismatch, phase skew, etc.)
+- **Simulation Efficiency**: Reduces port count and signal paths, lowering SystemC-AMS simulation computational overhead (single-ended reduces port connections by approximately 40% compared to differential)
+- **Algorithm Universality**: The ISI pre-compensation FIR convolution algorithm is essentially a scalar operation; single-ended modeling is sufficient to characterize the equalization effect
 
-**实际硬件对应**：
-- 实际SerDes中的FFE通常采用差分实现（差分对驱动、差分延迟线）
-- 单端行为模型的验证结果可直接映射到差分硬件（差分信号可视为两路单端信号的线性组合）
-- 如需评估差分特有的非理想效应（如共模噪声、失配），可在后续设计阶段扩展为差分架构
+**Actual Hardware Correspondence**:
+- Actual SerDes FFE is typically implemented differentially (differential pair driver, differential delay line)
+- Single-ended behavioral model verification results can be directly mapped to differential hardware (differential signals can be viewed as a linear combination of two single-ended signals)
+- If evaluation of differential-specific non-ideal effects (such as common-mode noise, mismatch) is needed, it can be extended to a differential architecture in subsequent design stages
 
-### 7.2 符号速率处理的关键约束
+### 6.2 Key Constraints of Symbol Rate Processing
 
-**设计特点**：FFE工作在符号速率（Symbol Rate）时钟域，每个UI处理一次。
+**Design Characteristic**: FFE operates in the Symbol Rate clock domain, processing once per UI.
 
-**时序约束**：
-- 抽头延迟线的时间间隔必须精确等于一个符号周期（UI）
-- SystemC-AMS的采样率设置：`set_rate(symbol_rate)`
-- 时间步长误差会累积导致ISI补偿失准，建议时间分辨率 ≤ UI/1000
+**Timing Constraints**:
+- The time interval of the tap delay line must precisely equal one symbol period (UI)
+- SystemC-AMS sampling rate setting: `set_rate(symbol_rate)`
+- Time step errors accumulate and cause ISI compensation misalignment; recommended time resolution ≤ UI/1000
 
-**与其他模块的时钟域关系**：
-- **上游WaveGen**：必须同步于相同符号率，确保每个UI输出一个码元
-- **下游Driver**：可工作在更高采样率（过采样模式），通过插值器桥接
-- **跨时钟域风险**：如WaveGen与FFE采样率不匹配，会导致码元错位或重复采样
+**Clock Domain Relationships with Other Modules**:
+- **Upstream WaveGen**: Must be synchronized to the same symbol rate to ensure one symbol output per UI
+- **Downstream Driver**: Can operate at higher sampling rates (oversampling mode), bridged through an interpolator
+- **Cross-clock domain risk**: If WaveGen and FFE sampling rates do not match, it causes symbol misalignment or repeated sampling
 
-**调试建议**：
-- 使用trace文件验证输入/输出码元时间戳严格对齐
-- 检查延迟线缓存大小与抽头数量一致：`m_delay_line.size() == m_params.taps.size()`
+**Debug Suggestions**:
+- Use trace files to verify that input/output symbol timestamps are strictly aligned
+- Check that delay line buffer size matches tap count: `m_delay_line.size() == m_params.taps.size()`
 
-### 7.3 归一化策略选择
+### 6.3 Normalization Strategy Selection
 
-**核心问题**：如何确保FFE输出信号摆幅在合理范围，避免后级Driver饱和或信噪比恶化？
+**Core Issue**: How to ensure FFE output signal swing is within a reasonable range to avoid saturation or SNR degradation in the downstream Driver?
 
-**三种归一化策略**：
+**Three Normalization Strategies**:
 
-**策略1 - 绝对值归一化**：
+**Strategy 1 - Absolute Value Normalization**:
 ```
-归一化因子 = 1.0 / Σ|c[k]|
-输出 = (Σ c[k] × x[n-k]) × 归一化因子
+Normalization factor = 1.0 / Σ|c[k]|
+Output = (Σ c[k] × x[n-k]) × Normalization factor
 ```
-- 优点：保证输出峰值不超过输入峰值，适合预加重/平衡模式
-- 缺点：去加重模式下会降低主抽头幅度（失去去加重定义的物理意义）
+- Advantages: Guarantees output peak does not exceed input peak, suitable for pre-emphasis/balanced modes
+- Disadvantages: In de-emphasis mode, it reduces main tap amplitude (losing the physical meaning of de-emphasis definition)
 
-**策略2 - 主抽头归一化（推荐用于去加重）**：
+**Strategy 2 - Main Tap Normalization (Recommended for De-emphasis)**:
 ```
-主抽头固定为1.0，后抽头为负值
-无需额外归一化，保持去加重比例定义的直观性
+Main tap fixed at 1.0, post-taps are negative values
+No additional normalization needed, maintaining intuitive de-emphasis ratio definition
 ```
-- 优点：符合PCIe/USB等标准的去加重定义（如3.5dB/6dB de-emphasis）
-- 缺点：输出峰值可能略超输入（当后抽头较大时）
+- Advantages: Complies with de-emphasis definitions in PCIe/USB standards (e.g., 3.5dB/6dB de-emphasis)
+- Disadvantages: Output peak may slightly exceed input (when post-taps are large)
 
-**策略3 - 无归一化（需后级增益调整）**：
+**Strategy 3 - No Normalization (Requires Post-stage Gain Adjustment)**:
 ```
-直接输出FIR卷积结果，由下游Driver的dc_gain参数统一调整
+Directly output FIR convolution result, with overall link gain uniformly adjusted by downstream Driver's dc_gain parameter
 ```
-- 优点：最大灵活性，可根据信道特性动态调整整体链路增益
-- 缺点：需要精细的系统级增益预算管理
+- Advantages: Maximum flexibility, can dynamically adjust overall link gain based on channel characteristics
+- Disadvantages: Requires careful system-level gain budget management
 
-**推荐配置准则**：
-- 去加重模式：采用策略2，主抽头=1.0
-- 预加重/平衡模式：采用策略1或策略3，结合Driver增益联合优化
+**Recommended Configuration Guidelines**:
+- De-emphasis mode: Use Strategy 2, main tap = 1.0
+- Pre-emphasis/Balanced mode: Use Strategy 1 or 3, combined with Driver gain for joint optimization
 
-### 7.4 抽头数量与性能的折衷
+### 6.4 Trade-offs Between Tap Count and Performance
 
-**抽头数量选择依据**：
+**Tap Count Selection Criteria**:
 
-| 信道损耗(@Nyquist) | 推荐抽头数 | 典型应用 | 补偿能力 |
+| Channel Loss (@Nyquist) | Recommended Tap Count | Typical Application | Compensation Capability |
 |------------------|----------|---------|---------|
-| < 6dB | 3-tap | PCIe Gen3短信道 | 基础后游标补偿 |
-| 6-12dB | 5-tap | 10G/25G Ethernet | 平衡前后游标ISI |
-| 12-20dB | 7-tap | 56G PAM4中距离 | 扩展ISI范围 |
-| > 20dB | 9-tap及以上 | 112G超长信道 | 需配合接收端DFE |
+| < 6dB | 3-tap | PCIe Gen3 short channel | Basic post-cursor compensation |
+| 6-12dB | 5-tap | 10G/25G Ethernet | Balanced pre/post-cursor ISI |
+| 12-20dB | 7-tap | 56G PAM4 medium distance | Extended ISI range |
+| > 20dB | 9-tap and above | 112G ultra-long channel | Requires receiver DFE |
 
-**计算复杂度**：
-- FIR滤波器计算量：O(N)每符号，N为抽头数
-- 延迟线更新：O(N)内存移位
-- 对于N≤7的典型配置，计算开销可忽略
+**Computational Complexity**:
+- FIR filter computation: O(N) per symbol, N is tap count
+- Delay line update: O(N) memory shifting
+- For typical configurations with N≤7, computational overhead is negligible
 
-**边际收益递减**：
-- 3→5抽头：眼高改善显著（典型+30%）
-- 5→7抽头：眼高改善中等（典型+15%）
-- 7→9抽头：眼高改善有限（典型+5%），且引入更多噪声放大
+**Diminishing Marginal Returns**:
+- 3→5 taps: Significant eye height improvement (typically +30%)
+- 5→7 taps: Moderate eye height improvement (typically +15%)
+- 7→9 taps: Limited eye height improvement (typically +5%), and introduces more noise amplification
 
-**设计建议**：
-- 短距离应用（<10cm PCB）：3-tap足够
-- 标准应用（10-30cm背板）：5-tap平衡性能与复杂度
-- 极端应用（>40cm或高速率）：7-tap，需配合CTLE/DFE协同优化
+**Design Suggestions**:
+- Short-distance applications (<10cm PCB): 3-tap is sufficient
+- Standard applications (10-30cm backplane): 5-tap balances performance and complexity
+- Extreme applications (>40cm or high rate): 7-tap, requires CTLE/DFE co-optimization
 
-### 7.5 FFE与接收端均衡器的协同优化
+### 6.5 Co-optimization of FFE and Receiver Equalizer
 
-**均衡预算分配原则**：
+**Equalization Budget Allocation Principles**:
 
-SerDes链路的总ISI补偿需求应在TX FFE、RX CTLE、RX DFE之间合理分配：
+Total ISI compensation requirements in the SerDes link should be reasonably allocated among TX FFE, RX CTLE, and RX DFE:
 
-**TX FFE的优势与局限**：
-- ✅ 优势：预补偿不放大接收端噪声，改善接收端SNR
-- ✅ 优势：降低接收端均衡器功耗（CTLE/DFE可采用更低增益）
-- ❌ 局限：仅能补偿静态或慢变信道特性，无法追踪快速变化
-- ❌ 局限：发送端功耗增加（峰值电流上升，Driver设计复杂）
+**Advantages and Limitations of TX FFE**:
+- ✅ Advantages: Pre-compensation does not amplify receiver noise, improving receiver SNR
+- ✅ Advantages: Reduces receiver equalizer power consumption (CTLE/DFE can use lower gain)
+- ❌ Limitations: Can only compensate for static or slow-varying channel characteristics, cannot track rapid changes
+- ❌ Limitations: Increased transmitter power consumption (rising peak current, complex Driver design)
 
-**CTLE的优势与局限**：
-- ✅ 优势：连续时间均衡，补偿高频衰减，无符号间干扰累积
-- ✅ 优势：可动态调整增益，适应信道变化
-- ❌ 局限：零极点设计有限，难以精确匹配复杂信道响应
-- ❌ 局限：高频增益放大噪声，SNR恶化
+**Advantages and Limitations of CTLE**:
+- ✅ Advantages: Continuous-time equalization, compensates for high-frequency attenuation, no inter-symbol interference accumulation
+- ✅ Advantages: Can dynamically adjust gain to adapt to channel changes
+- ❌ Limitations: Zero-pole design is limited, difficult to precisely match complex channel responses
+- ❌ Limitations: High-frequency gain amplifies noise, SNR degradation
 
-**DFE的优势与局限**：
-- ✅ 优势：精确消除后游标ISI，不放大噪声
-- ✅ 优势：适应性强，可通过LMS算法在线优化
-- ❌ 局限：判决反馈延迟限制速率（首抽头必须在1 UI内完成）
-- ❌ 局限：错误传播风险（前一判决错误影响后续抽头）
+**Advantages and Limitations of DFE**:
+- ✅ Advantages: Precisely eliminates post-cursor ISI, does not amplify noise
+- ✅ Advantages: Strong adaptability, can be optimized online through LMS algorithm
+- ❌ Limitations: Decision feedback delay limits rate (first tap must complete within 1 UI)
+- ❌ Limitations: Error propagation risk (previous decision error affects subsequent taps)
 
-**协同优化策略**：
+**Co-optimization Strategies**:
 
-| 场景 | FFE策略 | CTLE策略 | DFE策略 | 理由 |
+| Scenario | FFE Strategy | CTLE Strategy | DFE Strategy | Rationale |
 |------|---------|---------|---------|------|
-| 低损耗信道(<6dB) | 轻度去加重(3-tap) | 低增益或禁用 | 1-2抽头DFE | 避免过度均衡放大噪声 |
-| 中等损耗(6-12dB) | 中度预加重(5-tap) | 中等增益CTLE | 3-5抽头DFE | 平衡分配，各自承担部分ISI |
-| 高损耗(>12dB) | 强预加重(7-tap) | 高增益CTLE | 5-8抽头DFE | 最大化利用所有均衡手段 |
+| Low-loss channel (<6dB) | Light de-emphasis (3-tap) | Low gain or disabled | 1-2 tap DFE | Avoid over-equalization amplifying noise |
+| Medium loss (6-12dB) | Moderate pre-emphasis (5-tap) | Medium gain CTLE | 3-5 tap DFE | Balanced allocation, each bears part of ISI |
+| High loss (>12dB) | Strong pre-emphasis (7-tap) | High gain CTLE | 5-8 tap DFE | Maximize use of all equalization means |
 
-**设计流程建议**：
-1. 通过信道脉冲响应分析，确定总ISI能量分布（前游标vs后游标）
-2. 优先使用FFE补偿后游标ISI（TX端预补偿SNR最优）
-3. CTLE补偿高频衰减（零极点匹配信道斜率）
-4. DFE处理残余后游标ISI和非线性效应
+**Design Process Suggestions**:
+1. Analyze channel impulse response to determine total ISI energy distribution (pre-cursor vs. post-cursor)
+2. Prioritize using FFE to compensate for post-cursor ISI (optimal SNR at TX side)
+3. CTLE compensates for high-frequency attenuation (zero-poles match channel slope)
+4. DFE handles residual post-cursor ISI and nonlinear effects
 
-### 7.6 抽头系数的动态更新机制
+### 6.6 Dynamic Update Mechanism for Tap Coefficients
 
-**静态配置 vs 动态自适应**：
+**Static Configuration vs. Dynamic Adaptation**:
 
-**静态配置**（当前实现）：
-- 抽头系数在仿真/系统初始化时加载，运行期间固定
-- 适用场景：信道特性已知且稳定（实验室测试、标准信道模型）
-- 优点：简单可靠，无收敛时间开销
-- 缺点：无法适应温度漂移、老化、负载变化
+**Static Configuration** (current implementation):
+- Tap coefficients are loaded at simulation/system initialization and remain fixed during operation
+- Applicable scenarios: Channel characteristics are known and stable (laboratory testing, standard channel models)
+- Advantages: Simple and reliable, no convergence time overhead
+- Disadvantages: Cannot adapt to temperature drift, aging, load changes
 
-**动态自适应**（扩展功能）：
-- 通过接收端反馈（如眼高监测、BER估计），实时调整FFE系数
-- 常用算法：LMS（最小均方）、RLS（递归最小二乘）
-- 收敛时间：通常1000-10000 UI
-- 实现复杂度：需要DE-TDF桥接模块传递反馈信号
+**Dynamic Adaptation** (extended function):
+- Adjust FFE coefficients in real-time through receiver feedback (such as eye height monitoring, BER estimation)
+- Common algorithms: LMS (Least Mean Squares), RLS (Recursive Least Squares)
+- Convergence time: Typically 1000-10000 UI
+- Implementation complexity: Requires DE-TDF bridge module to transfer feedback signals
 
-**如何在当前架构中扩展自适应功能**：
-1. 添加控制端口：`sca_de::sca_in<std::vector<double>> tap_update`
-2. 在`processing()`中检测更新事件：`if (tap_update.event()) { m_taps = tap_update.read(); }`
-3. 连接Adaption模块（DE域，实现LMS算法）与FFE的控制端口
+**How to Extend Adaptive Functionality in Current Architecture**:
+1. Add control port: `sca_de::sca_in<std::vector<double>> tap_update`
+2. Detect update events in `processing()`: `if (tap_update.event()) { m_taps = tap_update.read(); }`
+3. Connect Adaption module (DE domain, implementing LMS algorithm) with FFE control port
 
-### 7.7 参数验证与边界条件处理
+### 6.7 Parameter Validation and Boundary Condition Handling
 
-**核心验证规则**：
+**Core Validation Rules**:
 
-**规则1 - 非空验证**：
+**Rule 1 - Non-empty Validation**:
 ```cpp
 if (m_params.taps.empty()) {
     SC_REPORT_ERROR("TxFfeTdf", "FFE taps cannot be empty");
 }
 ```
 
-**规则2 - 主抽头识别**：
+**Rule 2 - Main Tap Identification**:
 ```cpp
 auto max_it = std::max_element(taps.begin(), taps.end(), 
     [](double a, double b) { return std::abs(a) < std::abs(b); });
 size_t main_idx = std::distance(taps.begin(), max_it);
 ```
 
-**规则3 - 动态范围检查**：
+**Rule 3 - Dynamic Range Check**:
 ```cpp
 for (auto c : taps) {
     if (std::abs(c) > 1.0) {
@@ -1057,44 +1057,44 @@ for (auto c : taps) {
 }
 ```
 
-**边界条件处理**：
-- **初始化阶段**：延迟线填充0值，前N-1个输出码元会有启动瞬态（可通过预填充历史数据消除）
-- **抽头系数为0**：自动跳过计算，优化性能
-- **单抽头模式**（N=1）：退化为简单增益调整，无ISI补偿效果
+**Boundary Condition Handling**:
+- **Initialization phase**: Delay line filled with 0 values; first N-1 output symbols will have startup transients (can be eliminated by pre-filling historical data)
+- **Tap coefficient is 0**: Automatically skip calculation for performance optimization
+- **Single-tap mode** (N=1): Degrades to simple gain adjustment, no ISI compensation effect
 
-### 7.8 仿真性能优化技巧
+### 6.8 Simulation Performance Optimization Tips
 
-**优化1 - 延迟线实现选择**：
-- 简单数组移位：`std::rotate(delay_line.begin(), delay_line.begin()+1, delay_line.end())`
-- 循环缓冲区：避免移位，通过索引环绕实现O(1)更新
-- 推荐：抽头数≤5时用数组移位（代码简洁），>5时用循环缓冲区
+**Optimization 1 - Delay Line Implementation Choice**:
+- Simple array shifting: `std::rotate(delay_line.begin(), delay_line.begin()+1, delay_line.end())`
+- Circular buffer: Avoids shifting, achieves O(1) update through index wrapping
+- Recommendation: Use array shifting when tap count ≤5 (code simplicity), use circular buffer when >5
 
-**优化2 - 条件执行**：
+**Optimization 2 - Conditional Execution**:
 ```cpp
-// 跳过系数为0的抽头
+// Skip taps with coefficient 0
 for (size_t i = 0; i < taps.size(); ++i) {
-    if (std::abs(taps[i]) < 1e-10) continue;  // 避免无效计算
+    if (std::abs(taps[i]) < 1e-10) continue;  // Avoid invalid computation
     output += taps[i] * delay_line[i];
 }
 ```
 
-**优化3 - 向量化计算**（需编译器支持）：
+**Optimization 3 - Vectorized Computation** (requires compiler support):
 ```cpp
-// 使用SIMD指令加速FIR卷积
+// Use SIMD instructions to accelerate FIR convolution
 output = std::inner_product(taps.begin(), taps.end(), delay_line.begin(), 0.0);
 ```
 
-**优化4 - 减少trace开销**：
-- 仅在需要波形分析时启用trace
-- 使用抽样trace（如每10个UI记录一次）降低文件大小
+**Optimization 4 - Reduce Trace Overhead**:
+- Only enable trace when waveform analysis is needed
+- Use sampled trace (e.g., record once every 10 UIs) to reduce file size
 
 ---
 
-## 6. 运行指南
+## 7. Running Guide
 
-### 6.1 环境配置
+### 7.1 Environment Configuration
 
-运行测试前需要配置SystemC和SystemC-AMS环境变量：
+Before running tests, configure SystemC and SystemC-AMS environment variables:
 
 ```bash
 export SYSTEMC_HOME=/usr/local/systemc-2.3.4
@@ -1102,42 +1102,42 @@ export SYSTEMC_AMS_HOME=/usr/local/systemc-ams-2.3.4
 source scripts/setup_env.sh
 ```
 
-### 6.2 构建与运行
+### 7.2 Build and Run
 
-#### 使用CMake（推荐）
+#### Using CMake (Recommended)
 
 ```bash
-# 进入构建目录
+# Enter build directory
 cd build
 cmake ..
 make ffe_tran_tb
 
-# 运行测试平台
+# Run testbench
 cd tb
 ./ffe_tran_tb [scenario]
 ```
 
-#### 使用Makefile
+#### Using Makefile
 
 ```bash
-# 构建FFE测试平台
+# Build FFE testbench
 make ffe_tran_tb
 
-# 运行指定场景
+# Run specified scenario
 cd tb
 ./ffe_tran_tb [scenario]
 ```
 
-场景参数：
-- `prbs` 或 `0` - 基本PRBS测试（默认）
-- `deemp` 或 `1` - 去加重测试
-- `preemp` 或 `2` - 预加重测试
-- `sweep` 或 `3` - 抽头扫描
-- `combo` 或 `4` - 信道级联测试
+Scenario parameters:
+- `prbs` or `0` - Basic PRBS test (default)
+- `deemp` or `1` - De-emphasis test
+- `preemp` or `2` - Pre-emphasis test
+- `sweep` or `3` - Tap sweep
+- `combo` or `4` - Channel cascade test
 
-### 6.3 配置文件管理
+### 7.3 Configuration File Management
 
-FFE模块的参数通过JSON配置文件管理，典型配置位于 `config/` 目录：
+FFE module parameters are managed through JSON configuration files; typical configurations are located in the `config/` directory:
 
 ```json
 {
@@ -1149,77 +1149,77 @@ FFE模块的参数通过JSON配置文件管理，典型配置位于 `config/` �
 }
 ```
 
-修改配置后需重新构建测试平台以使配置生效。
+After modifying the configuration, the testbench needs to be rebuilt for the changes to take effect.
 
-### 6.4 结果查看
+### 7.4 Results Viewing
 
-测试完成后，波形数据保存到CSV文件（`ffe_tran_*.csv`）。使用Python脚本进行可视化：
+After testing is complete, waveform data is saved to CSV files (`ffe_tran_*.csv`). Use Python scripts for visualization:
 
 ```bash
-# 绘制时域波形
+# Plot time-domain waveform
 python scripts/plot_ffe_waveform.py
 
-# 频域分析（需scipy）
+# Frequency-domain analysis (requires scipy)
 python scripts/analyze_ffe_frequency.py
 ```
 
-控制台输出关键统计指标：
-- 输出峰峰值
-- 卷积误差（BASIC_PRBS场景）
-- 去加重比例（DEEMPHASIS_TEST场景）
-- 最优抽头系数（TAP_SWEEP场景）
+Console output key statistical metrics:
+- Output peak-to-peak
+- Convolution error (BASIC_PRBS scenario)
+- De-emphasis ratio (DEEMPHASIS_TEST scenario)
+- Optimal tap coefficients (TAP_SWEEP scenario)
 
 ---
 
-## 8. 参考信息
+## 8. Reference Information
 
-### 8.1 相关文件
+### 8.1 Related Files
 
-| 文件类型 | 路径 | 说明 |
+| File Type | Path | Description |
 |---------|------|------|
-| 参数定义 | `include/common/parameters.h` | TxFfeParams 结构体 |
-| 头文件 | `include/ams/tx_ffe.h` | TxFfeTdf 类声明 |
-| 实现文件 | `src/ams/tx_ffe.cpp` | TxFfeTdf 类实现 |
-| 测试平台 | `tb/tx/ffe/ffe_tran_tb.cpp` | 瞬态仿真测试平台（待实现） |
-| 测试辅助 | `tb/tx/ffe/ffe_helpers.h` | 信号源和监控器（待实现） |
-| 单元测试 | `tests/unit/test_ffe_basic.cpp` | GoogleTest 单元测试（待实现） |
-| 波形绘图 | `scripts/plot_ffe_waveform.py` | Python 可视化脚本（待实现） |
+| Parameter Definition | `include/common/parameters.h` | TxFfeParams struct |
+| Header File | `include/ams/tx_ffe.h` | TxFfeTdf class declaration |
+| Implementation File | `src/ams/tx_ffe.cpp` | TxFfeTdf class implementation |
+| Testbench | `tb/tx/ffe/ffe_tran_tb.cpp` | Transient simulation testbench (to be implemented) |
+| Test Helpers | `tb/tx/ffe/ffe_helpers.h` | Signal sources and monitors (to be implemented) |
+| Unit Tests | `tests/unit/test_ffe_basic.cpp` | GoogleTest unit tests (to be implemented) |
+| Waveform Plotting | `scripts/plot_ffe_waveform.py` | Python visualization script (to be implemented) |
 
-### 8.2 相关模块文档
+### 8.2 Related Module Documentation
 
-| 模块 | 文档路径 | 关联关系 |
+| Module | Documentation Path | Relationship |
 |------|---------|---------|
-| WaveGen | `/docs/modules/waveGen.md` | 上游模块，提供PRBS数据源 |
-| TX Mux | `/docs/modules/mux.md` | 下游模块，接收FFE输出 |
-| TX Driver | `/docs/modules/driver.md` | TX链路末端，最终输出到信道 |
-| Channel | `/docs/modules/channel.md` | 信道特性决定FFE系数设置 |
-| RX CTLE | `/docs/modules/ctle.md` | 接收端均衡器，与FFE协同工作 |
-| RX DFE | `/docs/modules/dfesummer.md` | 接收端反馈均衡器 |
+| WaveGen | `/docs/modules/waveGen.md` | Upstream module, provides PRBS data source |
+| TX Mux | `/docs/modules/mux.md` | Downstream module, receives FFE output |
+| TX Driver | `/docs/modules/driver.md` | TX link end, final output to channel |
+| Channel | `/docs/modules/channel.md` | Channel characteristics determine FFE coefficient settings |
+| RX CTLE | `/docs/modules/ctle.md` | Receiver equalizer, works with FFE |
+| RX DFE | `/docs/modules/dfesummer.md` | Receiver feedback equalizer |
 
-### 8.3 依赖项
+### 8.3 Dependencies
 
-**编译时依赖**：
+**Compile-time Dependencies**:
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
-- C++14 标准
+- C++14 Standard
 
-**测试依赖**：
-- GoogleTest 1.12.1（单元测试）
-- NumPy/SciPy（Python 分析工具）
-- Matplotlib（波形绘图）
+**Test Dependencies**:
+- GoogleTest 1.12.1 (unit tests)
+- NumPy/SciPy (Python analysis tools)
+- Matplotlib (waveform plotting)
 
-### 8.4 相关标准与规范
+### 8.4 Related Standards and Specifications
 
-| 标准 | 版本 | 相关内容 |
+| Standard | Version | Related Content |
 |------|------|---------|
-| IEEE 802.3 | 2018 | 以太网FFE规范（100GBASE-KR4等） |
-| PCIe | Gen 4/5/6 | 发送端预加重要求（TX Preset） |
-| USB4 | v2.0 | FFE系数范围和步长定义 |
-| OIF CEI | 56G/112G | 常见均衡器模板（Template） |
+| IEEE 802.3 | 2018 | Ethernet FFE specifications (100GBASE-KR4, etc.) |
+| PCIe | Gen 4/5/6 | Transmitter pre-emphasis requirements (TX Preset) |
+| USB4 | v2.0 | FFE coefficient range and step definitions |
+| OIF CEI | 56G/112G | Common equalizer templates |
 
-### 8.5 配置示例
+### 8.5 Configuration Examples
 
-#### 基本配置（3抽头FFE）
+#### Basic Configuration (3-tap FFE)
 
 ```json
 {
@@ -1232,12 +1232,12 @@ python scripts/analyze_ffe_frequency.py
 }
 ```
 
-**参数说明**：
-- `taps[0] = 0.0`：无前置抽头
-- `taps[1] = 1.0`：主抽头（归一化）
-- `taps[2] = -0.35`：第一后置抽头（35%去加重）
+**Parameter Description**:
+- `taps[0] = 0.0`: No pre-tap
+- `taps[1] = 1.0`: Main tap (normalized)
+- `taps[2] = -0.35`: First post-tap (35% de-emphasis)
 
-#### 高损耗信道配置（5抽头）
+#### High-loss Channel Configuration (5-tap)
 
 ```json
 {
@@ -1250,12 +1250,12 @@ python scripts/analyze_ffe_frequency.py
 }
 ```
 
-**应用场景**：
-- 背板信道（>30dB插损@Nyquist频率）
-- 长电缆链路
-- 需要强预补偿的场景
+**Application Scenarios**:
+- Backplane channel (>30dB insertion loss @ Nyquist frequency)
+- Long cable links
+- Scenarios requiring strong pre-compensation
 
-#### 预加重配置
+#### Pre-emphasis Configuration
 
 ```json
 {
@@ -1268,34 +1268,34 @@ python scripts/analyze_ffe_frequency.py
 }
 ```
 
-**应用场景**：
-- 补偿信道的前游标ISI
-- 特殊的反射或谐振特性
+**Application Scenarios**:
+- Compensating for channel pre-cursor ISI
+- Special reflection or resonance characteristics
 
-### 8.6 学术参考
+### 8.6 Academic References
 
-**FIR滤波器理论**：
+**FIR Filter Theory**:
 - Alan V. Oppenheim, *Discrete-Time Signal Processing*, 3rd Edition
-- 第6章：离散时间系统的频率响应
+- Chapter 6: Frequency Response of Discrete-Time Systems
 
-**均衡技术**：
+**Equalization Techniques**:
 - S. Gondi and B. Razavi, "Equalization and Clock Recovery for a 2.5-10 Gb/s 2-PAM/4-PAM Backplane Transceiver", IEEE JSSC 2009
 - A. Emami-Neyestanak et al., "A 6 Gb/s Voltage-Mode Transmitter", IEEE JSSC 2007
 
-**SystemC-AMS建模**：
+**SystemC-AMS Modeling**:
 - *SystemC AMS User's Guide*, Accellera, Version 2.3
-- 第4章：TDF（Timed Data Flow）建模方法
+- Chapter 4: TDF (Timed Data Flow) Modeling Methods
 
-### 8.7 外部资源
+### 8.7 External Resources
 
-- **Accellera官网**：https://systemc.org/（SystemC-AMS标准下载）
-- **SerDes设计指南**：Xilinx UG476, Altera AN 529（商用FPGA SerDes设计参考）
-- **IBIS-AMI建模**：IBIS Open Forum（行为级建模标准，与本模块互补）
+- **Accellera Website**: https://systemc.org/ (SystemC-AMS standard downloads)
+- **SerDes Design Guides**: Xilinx UG476, Altera AN 529 (Commercial FPGA SerDes design references)
+- **IBIS-AMI Modeling**: IBIS Open Forum (Behavioral modeling standard, complementary to this module)
 
 ---
 
-**文档版本**：v0.1  
-**最后更新**：2026-01-13  
-**作者**：Yizhe Liu
+**Document Version**: v0.1  
+**Last Updated**: 2026-01-13  
+**Author**: Yizhe Liu
 
 ---

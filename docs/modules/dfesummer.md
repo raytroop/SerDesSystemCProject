@@ -1,158 +1,158 @@
-# DFE Summer 模块技术文档
+# DFE Summer Module Technical Documentation
 
-🌐 **Languages**: [中文](dfesummer.md) | [English](../en/modules/dfesummer.md)
+🌐 **Languages**: [中文](../../modules/dfesummer.md) | [English](dfesummer.md)
 
-**级别**：AMS 子模块（RX）  
-**类名**：`RxDfeSummerTdf`  
-**当前版本**：v0.5 (2025-12-21)  
-**状态**：开发中
+**Level**: AMS Sub-module (RX)  
+**Class Name**: `RxDfeSummerTdf`  
+**Current Version**: v0.5 (2025-12-21)  
+**Status**: In Development
 
 ---
 
-## 1. 概述
+## 1. Overview
 
-DFE Summer（判决反馈均衡求和器）位于 RX 接收链的 CTLE/VGA 之后、Sampler 之前，是实现判决反馈均衡（Decision Feedback Equalization）的核心模块。其主要功能是将主路径的差分信号与基于历史判决比特生成的反馈信号进行求和（减法），从而抵消后游符号间干扰（post-cursor ISI），增大眼图开度并降低误码率。
+DFE Summer (Decision Feedback Equalization Summation) is located in the RX receive chain after CTLE/VGA and before the Sampler, and is the core module for implementing Decision Feedback Equalization (DFE). Its main function is to sum (subtract) the differential signal from the main path with the feedback signal generated based on historical decision bits, thereby canceling post-cursor inter-symbol interference (ISI), increasing eye opening, and reducing bit error rate.
 
-### 1.1 设计原理
+### 1.1 Design Principles
 
-DFE 的核心设计思想是利用已判决的历史符号来预测并抵消当前符号受到的后游 ISI：
+The core design concept of DFE is to use already-decided historical symbols to predict and cancel the post-cursor ISI affecting the current symbol:
 
-- **后游 ISI 来源**：高速信道的频率相关衰减和群延迟导致每个发送符号在时域上"拖尾"，影响后续符号的采样点电压
-- **反馈补偿机制**：已判决的历史符号（b[n-1], b[n-2], ...）通过 FIR 滤波器结构生成反馈电压，从当前输入信号中减去
-- **因果性约束**：反馈路径必须至少延迟 1 UI，避免形成代数环（当前判决依赖当前输出，当前输出又依赖当前判决）
+- **Source of Post-cursor ISI**: Frequency-dependent attenuation and group delay of high-speed channels cause each transmitted symbol to "smear" in the time domain, affecting the sampling point voltage of subsequent symbols
+- **Feedback Compensation Mechanism**: Already-decided historical symbols (b[n-1], b[n-2], ...) generate feedback voltage through an FIR filter structure, which is subtracted from the current input signal
+- **Causality Constraint**: The feedback path must have at least 1 UI delay to avoid forming an algebraic loop (current decision depends on current output, and current output depends on current decision)
 
-反馈电压的数学表达式为：
+The mathematical expression for the feedback voltage is:
 ```
 v_fb = Σ_{k=1}^{N} c_k × map(b[n-k]) × vtap
 ```
-其中：
-- c_k：第 k 个抽头系数（tap coefficient）
-- b[n-k]：第 n-k 个 UI 的判决比特（0 或 1）
-- map()：比特映射函数（0→-1, 1→+1 或 0→0, 1→1）
-- vtap：电压缩放因子，将比特映射值转换为伏特
+Where:
+- c_k: The k-th tap coefficient
+- b[n-k]: The decision bit at the n-k-th UI (0 or 1)
+- map(): Bit mapping function (0→-1, 1→+1 or 0→0, 1→1)
+- vtap: Voltage scaling factor, converting bit mapping value to volts
 
-均衡后的输出为：`v_eq = v_main - v_fb`
+The equalized output is: `v_eq = v_main - v_fb`
 
-### 1.2 核心特性
+### 1.2 Core Features
 
-- **差分架构**：完整的差分信号路径，与前级 CTLE/VGA 和后级 Sampler 兼容
-- **多抽头支持**：支持 1-9 个抽头（典型配置为 3-5 个），可根据信道特性灵活配置
-- **比特映射模式**：支持 ±1 映射（推荐，抗直流偏置更稳健）和 0/1 映射
-- **自适应接口**：通过 DE→TDF 桥接端口接收来自 Adaption 模块的实时抽头更新
-- **软饱和机制**：可选的输出限幅，防止过补偿导致的信号失真
-- **历史比特接口**：通过 data_in 端口接收外部维护的历史判决数组，简化模块职责
+- **Differential Architecture**: Complete differential signal path, compatible with preceding CTLE/VGA and subsequent Sampler
+- **Multi-tap Support**: Supports 1-9 taps (typical configuration is 3-5), flexibly configurable according to channel characteristics
+- **Bit Mapping Modes**: Supports ±1 mapping (recommended, more robust against DC offset) and 0/1 mapping
+- **Adaptive Interface**: Receives real-time tap updates from the Adaption module through DE→TDF bridging ports
+- **Soft Saturation Mechanism**: Optional output limiting to prevent signal distortion caused by over-compensation
+- **Historical Bit Interface**: Receives externally maintained historical decision array through data_in port, simplifying module responsibilities
 
-### 1.3 版本历史
+### 1.3 Version History
 
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.1 | 2025-10-22 | 初始版本，基本 DFE 求和功能 |
-| v0.2 | 2025-10-22 | 配置键 `taps` 重命名为 `tap_coeffs` |
-| v0.3 | 2025-12-18 | 新增 DE→TDF 抽头更新端口，与 Adaption 模块对接 |
-| v0.4 | 2025-12-18 | 改进 `data_in` 接口为数组形式，明确长度约束 |
-| v0.5 | 2025-12-21 | 完善文档结构，新增测试平台架构和仿真分析章节 |
-
----
-
-## 2. 模块接口
-
-### 2.1 端口定义（TDF域）
-
-| 端口名 | 方向 | 类型 | 说明 |
-|--------|------|------|------|
-| `in_p` | 输入 | double | 差分输入正端（来自 VGA） |
-| `in_n` | 输入 | double | 差分输入负端（来自 VGA） |
-| `data_in` | 输入 | vector&lt;int&gt; | 历史判决数据数组 |
-| `out_p` | 输出 | double | 差分输出正端（送往 Sampler） |
-| `out_n` | 输出 | double | 差分输出负端（送往 Sampler） |
-
-**DE→TDF 参数更新端口**（可选）：
-
-| 端口名 | 方向 | 类型 | 说明 |
-|--------|------|------|------|
-| `tap_coeffs_de` | 输入 | vector&lt;double&gt; | 来自 Adaption 的抽头系数更新 |
-
-> **关于 data_in 端口**：
-> - 数组长度由 `tap_coeffs` 的长度 N 决定
-> - `data_in[0]` 为最近一次判决 b[n-1]，`data_in[1]` 为 b[n-2]，...，`data_in[N-1]` 为 b[n-N]
-> - 数组由 RX 顶层模块或 Sampler 维护更新，DFE Summer 只读取不修改
-
-### 2.2 参数配置（RxDfeSummerParams）
-
-#### 基本参数
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `tap_coeffs` | vector&lt;double&gt; | [] | 后游抽头系数列表，按 k=1...N 顺序 |
-| `ui` | double | 2.5e-11 | 单位间隔（秒），用于 TDF 时间步 |
-| `vcm_out` | double | 0.0 | 差分输出共模电压（V） |
-| `vtap` | double | 1.0 | 比特映射电压缩放因子 |
-| `map_mode` | string | "pm1" | 比特映射模式："pm1"（±1）或 "01" |
-| `enable` | bool | true | 模块使能，false 时为直通模式 |
-
-#### 饱和限幅参数（可选）
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `sat_enable` | bool | false | 启用输出限幅 |
-| `sat_min` | double | -0.5 | 输出最小电压（V） |
-| `sat_max` | double | 0.5 | 输出最大电压（V） |
-
-#### 初始化参数（可选）
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `init_bits` | vector&lt;double&gt; | [0,...] | 历史比特初始化值，长度必须等于 N |
-
-#### 派生参数
-
-| 参数 | 说明 |
-|------|------|
-| `tap_count` | 抽头数量 N，等于 `tap_coeffs.size()`，决定 `data_in` 数组长度 |
-
-#### 比特映射模式说明
-
-- **pm1 模式**（推荐）：0 → -1，1 → +1
-  - 反馈电压对称，抗直流偏置
-  - 当所有历史比特为 0 时，反馈电压为负值
-
-- **01 模式**：0 → 0，1 → 1
-  - 反馈电压非对称
-  - 需要额外的直流偏置补偿
+| Version | Date | Major Changes |
+|---------|------|---------------|
+| v0.1 | 2025-10-22 | Initial version, basic DFE summation function |
+| v0.2 | 2025-10-22 | Configuration key `taps` renamed to `tap_coeffs` |
+| v0.3 | 2025-12-18 | Added DE→TDF tap update port for integration with Adaption module |
+| v0.4 | 2025-12-18 | Improved `data_in` interface to array form, clarified length constraints |
+| v0.5 | 2025-12-21 | Improved document structure, added testbench architecture and simulation analysis chapters |
 
 ---
 
-## 3. 核心实现机制
+## 2. Module Interface
 
-### 3.1 信号处理流程
+### 2.1 Port Definition (TDF Domain)
 
-DFE Summer 模块的 `processing()` 方法采用严格的多步骤处理架构：
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `in_p` | Input | double | Differential input positive (from VGA) |
+| `in_n` | Input | double | Differential input negative (from VGA) |
+| `data_in` | Input | vector&lt;int&gt; | Historical decision data array |
+| `out_p` | Output | double | Differential output positive (to Sampler) |
+| `out_n` | Output | double | Differential output negative (to Sampler) |
+
+**DE→TDF Parameter Update Port** (Optional):
+
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `tap_coeffs_de` | Input | vector&lt;double&gt; | Tap coefficient updates from Adaption |
+
+> **About data_in Port**:
+> - Array length is determined by the length N of `tap_coeffs`
+> - `data_in[0]` is the most recent decision b[n-1], `data_in[1]` is b[n-2], ..., `data_in[N-1]` is b[n-N]
+> - Array is maintained and updated by RX top-level module or Sampler, DFE Summer only reads and does not modify
+
+### 2.2 Parameter Configuration (RxDfeSummerParams)
+
+#### Basic Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tap_coeffs` | vector&lt;double&gt; | [] | Post-cursor tap coefficient list, in k=1...N order |
+| `ui` | double | 2.5e-11 | Unit interval (seconds), for TDF timestep |
+| `vcm_out` | double | 0.0 | Differential output common-mode voltage (V) |
+| `vtap` | double | 1.0 | Bit mapping voltage scaling factor |
+| `map_mode` | string | "pm1" | Bit mapping mode: "pm1" (±1) or "01" |
+| `enable` | bool | true | Module enable, false for pass-through mode |
+
+#### Saturation Limiting Parameters (Optional)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sat_enable` | bool | false | Enable output limiting |
+| `sat_min` | double | -0.5 | Minimum output voltage (V) |
+| `sat_max` | double | 0.5 | Maximum output voltage (V) |
+
+#### Initialization Parameters (Optional)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `init_bits` | vector&lt;double&gt; | [0,...] | Historical bit initialization values, length must equal N |
+
+#### Derived Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `tap_count` | Number of taps N, equals `tap_coeffs.size()`, determines `data_in` array length |
+
+#### Bit Mapping Mode Description
+
+- **pm1 Mode** (Recommended): 0 → -1, 1 → +1
+  - Feedback voltage is symmetric, resistant to DC offset
+  - When all historical bits are 0, feedback voltage is negative
+
+- **01 Mode**: 0 → 0, 1 → 1
+  - Feedback voltage is asymmetric
+  - Requires additional DC offset compensation
+
+---
+
+## 3. Core Implementation Mechanism
+
+### 3.1 Signal Processing Flow
+
+DFE Summer module's `processing()` method adopts a strict multi-step processing architecture:
 
 ```
-输入读取 → 使能检查 → 历史数据验证 → 反馈计算 → 差分求和 → 可选限幅 → 共模合成 → 输出
+Input reading → Enable check → Historical data validation → Feedback calculation → Differential summation → Optional limiting → Common-mode synthesis → Output
 ```
 
-**步骤 1 - 输入读取**：从差分输入端口读取信号，计算差分分量 `v_main = in_p - in_n`。
+**Step 1 - Input Reading**: Read signals from differential input ports, calculate differential component `v_main = in_p - in_n`.
 
-**步骤 2 - 使能检查**：若 `enable=false`，直接将输入信号进行共模合成后输出（直通模式）。
+**Step 2 - Enable Check**: If `enable=false`, directly pass input signals through common-mode synthesis to output (pass-through mode).
 
-**步骤 3 - 历史数据验证**：读取 `data_in` 数组，验证长度是否等于 `tap_count`。若不匹配：
-- 长度不足：用 0 填充
-- 长度过多：截断
-- 应输出警告日志
+**Step 3 - Historical Data Validation**: Read `data_in` array, validate if length equals `tap_count`. If mismatched:
+- Length insufficient: Pad with 0
+- Length excessive: Truncate
+- Warning log should be output
 
-**步骤 4 - 反馈计算**：遍历所有抽头，计算总反馈电压：
+**Step 4 - Feedback Calculation**: Iterate through all taps, calculate total feedback voltage:
 ```cpp
 v_fb = 0.0;
 for (int k = 0; k < tap_count; k++) {
-    double bit_val = map(data_in[k], map_mode);  // 比特映射
+    double bit_val = map(data_in[k], map_mode);  // Bit mapping
     v_fb += tap_coeffs[k] * bit_val * vtap;
 }
 ```
 
-**步骤 5 - 差分求和**：从主路径信号减去反馈电压：`v_eq = v_main - v_fb`
+**Step 5 - Differential Summation**: Subtract feedback voltage from main path signal: `v_eq = v_main - v_fb`
 
-**步骤 6 - 可选限幅**：若启用 `sat_enable`，使用软饱和函数：
+**Step 6 - Optional Limiting**: If `sat_enable` is enabled, use soft saturation function:
 ```cpp
 if (sat_enable) {
     double Vsat = 0.5 * (sat_max - sat_min);
@@ -160,138 +160,138 @@ if (sat_enable) {
 }
 ```
 
-**步骤 7 - 共模合成**：基于共模电压生成差分输出：
+**Step 7 - Common-mode Synthesis**: Generate differential output based on common-mode voltage:
 ```
 out_p = vcm_out + 0.5 * v_eq
 out_n = vcm_out - 0.5 * v_eq
 ```
 
-### 3.2 抽头更新机制
+### 3.2 Tap Update Mechanism
 
-DFE Summer 支持两种抽头配置模式：
+DFE Summer supports two tap configuration modes:
 
-#### 静态模式（无自适应）
+#### Static Mode (No Adaptation)
 
-- 内部 `tap_coeffs` 保持为配置文件中的初始值
-- 适用于信道特性已知且稳定的场景
-- 抽头系数可通过离线训练或信道仿真预先确定
+- Internal `tap_coeffs` maintains initial values from configuration file
+- Applicable to scenarios where channel characteristics are known and stable
+- Tap coefficients can be pre-determined through offline training or channel simulation
 
-#### 动态模式（与 Adaption 联动）
+#### Dynamic Mode (Linked with Adaption)
 
-1. **初始化阶段**：DFE Summer 按配置中的 `tap_coeffs` 初始化内部系数
-2. **运行时更新**：
-   - Adaption 模块在 DE 域执行 LMS/Sign-LMS 等算法
-   - 新抽头通过 `tap_coeffs_de` 端口传入
-   - DFE Summer 在每个 TDF 周期读取最新系数
-   - 更新在下一 UI 开始生效
+1. **Initialization Phase**: DFE Summer initializes internal coefficients according to `tap_coeffs` in configuration
+2. **Runtime Update**:
+   - Adaption module executes LMS/Sign-LMS algorithms in DE domain
+   - New taps are passed through `tap_coeffs_de` port
+   - DFE Summer reads latest coefficients in each TDF period
+   - Updates take effect at the start of next UI
 
-**长度一致性约束**：运行时更新的抽头数组长度必须与初始配置一致，若不匹配应报错或截断/填充。
+**Length Consistency Constraint**: Runtime updated tap array length must match initial configuration, if mismatched should error or truncate/pad.
 
-### 3.3 零延迟环路规避
+### 3.3 Zero-delay Loop Avoidance
 
-**问题本质**：
-若当前比特 b[n] 直接用于当前输出的反馈计算，会形成代数环：
-- 当前输出 v_eq[n] 依赖反馈 v_fb[n]
-- 反馈 v_fb[n] 依赖判决 b[n]
-- 判决 b[n] 依赖采样值，而采样值来自 v_eq[n]
+**Problem Essence**:
+If current bit b[n] is directly used for current output feedback calculation, an algebraic loop forms:
+- Current output v_eq[n] depends on feedback v_fb[n]
+- Feedback v_fb[n] depends on decision b[n]
+- Decision b[n] depends on sampling value, which comes from v_eq[n]
 
-**后果**：
-- 数值不稳定、仿真步长急剧缩小
-- 可能导致仿真停滞或发散
-- 物理上出现"瞬时完美抵消"的非真实行为
+**Consequences**:
+- Numerical instability, simulation timestep drastically reduced
+- May cause simulation stall or divergence
+- Physically unrealistic "instantaneous perfect cancellation" behavior
 
-**规避方案**：
-- 严格使用历史符号 b[n-k] (k≥1) 进行反馈计算
-- `data_in` 数组机制天然保证这一点：`data_in[0]` 最早也是 b[n-1]
-- 数组更新由外部模块在当前 UI 判决完成后、下一 UI 开始前执行
+**Avoidance Solution**:
+- Strictly use historical symbols b[n-k] (k≥1) for feedback calculation
+- `data_in` array mechanism naturally guarantees this: `data_in[0]` is at least b[n-1]
+- Array update is performed by external module after current UI decision completes, before next UI processing
 
-### 3.4 直通模式设计
+### 3.4 Pass-through Mode Design
 
-当满足以下任一条件时，DFE Summer 等效为直通：
+DFE Summer is equivalent to pass-through when any of the following conditions are met:
 
-1. **显式禁用**：`enable = false`
-2. **全零抽头**：`tap_coeffs` 所有元素均为 0
-3. **空抽头配置**：`tap_coeffs` 为空数组
+1. **Explicit Disable**: `enable = false`
+2. **All-zero Taps**: All elements of `tap_coeffs` are 0
+3. **Empty Tap Configuration**: `tap_coeffs` is empty array
 
-直通模式下：
-- `v_fb = 0`，输出 = 输入（经共模合成）
-- `data_in` 数组的值不影响输出
-- 但 `data_in` 仍应保持有效长度，以兼容后续自适应启用
+In pass-through mode:
+- `v_fb = 0`, output = input (after common-mode synthesis)
+- `data_in` array values do not affect output
+- But `data_in` should still maintain valid length for compatibility with subsequent adaptive enablement
 
 ---
 
-## 4. 测试平台架构
+## 4. Testbench Architecture
 
-### 4.1 测试平台设计思想
+### 4.1 Testbench Design Philosophy
 
-DFE Summer 测试平台（`DfeSummerTransientTestbench`）采用模块化设计，核心理念：
+DFE Summer testbench (`DfeSummerTransientTestbench`) adopts modular design with core concepts:
 
-1. **场景驱动**：通过枚举类型选择不同测试场景，每个场景自动配置信号源、抽头系数和历史比特
-2. **组件复用**：差分信号源、历史比特生成器、信号监控器等辅助模块可复用
-3. **眼图对比**：重点验证 DFE 开启前后的眼图开度变化
+1. **Scenario-driven**: Select different test scenarios through enumeration types, each scenario automatically configures signal source, tap coefficients, and historical bits
+2. **Component Reuse**: Differential signal source, historical bit generator, signal monitor and other auxiliary modules are reusable
+3. **Eye Diagram Comparison**: Focus on verifying eye opening changes before and after DFE enablement
 
-### 4.2 测试场景定义
+### 4.2 Test Scenario Definitions
 
-| 场景 | 命令行参数 | 测试目标 | 输出文件 |
-|------|----------|---------|----------|
-| BYPASS_TEST | `bypass` / `0` | 验证直通模式一致性 | dfe_summer_bypass.csv |
-| BASIC_DFE | `basic` / `1` | 基本 DFE 反馈功能 | dfe_summer_basic.csv |
-| MULTI_TAP | `multi` / `2` | 多抽头配置测试 | dfe_summer_multi.csv |
-| ADAPTATION | `adapt` / `3` | 自适应抽头更新 | dfe_summer_adapt.csv |
-| SATURATION | `sat` / `4` | 大信号饱和测试 | dfe_summer_sat.csv |
+| Scenario | Command Line Parameter | Test Objective | Output File |
+|----------|------------------------|----------------|-------------|
+| BYPASS_TEST | `bypass` / `0` | Verify pass-through mode consistency | dfe_summer_bypass.csv |
+| BASIC_DFE | `basic` / `1` | Basic DFE feedback function | dfe_summer_basic.csv |
+| MULTI_TAP | `multi` / `2` | Multi-tap configuration test | dfe_summer_multi.csv |
+| ADAPTATION | `adapt` / `3` | Adaptive tap update | dfe_summer_adapt.csv |
+| SATURATION | `sat` / `4` | Large signal saturation test | dfe_summer_sat.csv |
 
-### 4.3 场景配置详解
+### 4.3 Scenario Configuration Details
 
-#### BYPASS_TEST - 直通模式测试
+#### BYPASS_TEST - Pass-through Mode Test
 
-验证当 DFE 禁用或抽头全零时，输出与输入保持一致。
+Verify that output matches input when DFE is disabled or taps are all zero.
 
-- **信号源**：PRBS-7 伪随机序列
-- **输入幅度**：100mV
-- **抽头配置**：`tap_coeffs = [0, 0, 0]` 或 `enable = false`
-- **验证点**：`out_diff ≈ in_diff`（容许微小数值误差）
+- **Signal Source**: PRBS-7 pseudo-random sequence
+- **Input Amplitude**: 100mV
+- **Tap Configuration**: `tap_coeffs = [0, 0, 0]` or `enable = false`
+- **Verification Point**: `out_diff ≈ in_diff` (allowing minor numerical error)
 
-#### BASIC_DFE - 基本 DFE 测试
+#### BASIC_DFE - Basic DFE Test
 
-验证单抽头或少数抽头配置下的基本反馈功能。
+Verify basic feedback function under single-tap or few-tap configuration.
 
-- **信号源**：带 ISI 的 PRBS 信号（通过 ISI 注入模块模拟信道影响）
-- **抽头配置**：`tap_coeffs = [0.1]`（单抽头）
-- **历史比特**：与输入 PRBS 同步生成
-- **验证点**：
-  - 反馈电压符合公式计算
-  - 输出 ISI 减少
+- **Signal Source**: PRBS signal with ISI (channel effect simulated through ISI injection module)
+- **Tap Configuration**: `tap_coeffs = [0.1]` (single tap)
+- **Historical Bits**: Synchronized generation with input PRBS
+- **Verification Points**:
+  - Feedback voltage matches formula calculation
+  - Output ISI reduced
 
-#### MULTI_TAP - 多抽头测试
+#### MULTI_TAP - Multi-tap Test
 
-验证典型 3-5 抽头配置的性能。
+Verify performance under typical 3-5 tap configuration.
 
-- **信号源**：带多游标 ISI 的 PRBS 信号
-- **抽头配置**：`tap_coeffs = [0.08, 0.05, 0.03]`
-- **验证点**：
-  - 各抽头独立生效
-  - 总反馈电压正确累加
+- **Signal Source**: PRBS signal with multi-cursor ISI
+- **Tap Configuration**: `tap_coeffs = [0.08, 0.05, 0.03]`
+- **Verification Points**:
+  - Each tap independently effective
+  - Total feedback voltage correctly accumulated
 
-#### ADAPTATION - 自适应更新测试
+#### ADAPTATION - Adaptive Update Test
 
-验证与 Adaption 模块的联动功能。
+Verify linkage function with Adaption module.
 
-- **初始抽头**：`tap_coeffs = [0, 0, 0]`
-- **更新序列**：通过 `tap_coeffs_de` 端口逐步注入新抽头值
-- **验证点**：
-  - 抽头更新在下一 UI 生效
-  - 更新过程无毛刺
+- **Initial Taps**: `tap_coeffs = [0, 0, 0]`
+- **Update Sequence**: Gradually inject new tap values through `tap_coeffs_de` port
+- **Verification Points**:
+  - Tap updates take effect at next UI
+  - Update process glitch-free
 
-#### SATURATION - 饱和测试
+#### SATURATION - Saturation Test
 
-验证大信号输入下的限幅行为。
+Verify limiting behavior under large signal input.
 
-- **信号源**：大幅度方波（500mV）
-- **抽头配置**：大系数 `tap_coeffs = [0.3, 0.2, 0.1]`
-- **饱和配置**：`sat_min = -0.4V, sat_max = 0.4V`
-- **验证点**：输出幅度受限于 sat_min/sat_max 范围
+- **Signal Source**: Large amplitude square wave (500mV)
+- **Tap Configuration**: Large coefficients `tap_coeffs = [0.3, 0.2, 0.1]`
+- **Saturation Configuration**: `sat_min = -0.4V, sat_max = 0.4V`
+- **Verification Point**: Output amplitude limited to sat_min/sat_max range
 
-### 4.4 信号连接拓扑
+### 4.4 Signal Connection Topology
 
 ```
 ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -302,297 +302,297 @@ DFE Summer 测试平台（`DfeSummerTransientTestbench`）采用模块化设计�
 └─────────────────┘       │                 │       │                 │
                           │  out_p ─────────┼───────▶ in_p            │
 ┌─────────────────┐       │  out_n ─────────┼───────▶ in_n            │
-│  HistoryBitGen  │       │                 │       │  → 统计分析      │
-│                 │       │                 │       │  → CSV保存       │
+│  HistoryBitGen  │       │                 │       │  → Statistical Analysis    │
+│                 │       │                 │       │  → CSV Save       │
 │  data ──────────┼───────▶ data_in         │       └─────────────────┘
 └─────────────────┘       │                 │
                           │                 │
 ┌─────────────────┐       │                 │
 │  AdaptionMock   │       │                 │
-│  (DE域)         │       │                 │
+│  (DE Domain)    │       │                 │
 │  taps ──────────┼───────▶ tap_coeffs_de   │
 └─────────────────┘       └─────────────────┘
 ```
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Description
 
-#### DiffSignalSource - 差分信号源
+#### DiffSignalSource - Differential Signal Source
 
-与 CTLE 测试平台复用，支持：
-- DC、SINE、SQUARE、PRBS 波形
-- 可配置幅度、频率、共模电压
+Reused with CTLE testbench, supports:
+- DC, SINE, SQUARE, PRBS waveforms
+- Configurable amplitude, frequency, common-mode voltage
 
-#### HistoryBitGenerator - 历史比特生成器
+#### HistoryBitGenerator - Historical Bit Generator
 
-生成与输入信号同步的历史判决数组：
-- 输入：当前比特流（参考 PRBS）
-- 输出：长度为 N 的历史比特数组
-- 功能：维护 FIFO 队列，每 UI 移位更新
+Generates historical decision array synchronized with input signal:
+- Input: Current bit stream (reference PRBS)
+- Output: Historical bit array of length N
+- Function: Maintains FIFO queue, shifts and updates every UI
 
-#### ISIInjector - ISI 注入模块
+#### ISIInjector - ISI Injection Module
 
-为输入信号添加可控的后游 ISI：
-- 参数：各游标的 ISI 系数
-- 用于模拟信道效应，验证 DFE 取消能力
+Adds controllable post-cursor ISI to input signal:
+- Parameters: ISI coefficients for each cursor
+- Used to simulate channel effects, verify DFE cancellation capability
 
-#### AdaptionMock - 自适应模拟器
+#### AdaptionMock - Adaption Simulator
 
-模拟 Adaption 模块行为：
-- 按预设时间表输出抽头更新
-- 用于验证 DE→TDF 端口功能
+Simulates Adaption module behavior:
+- Outputs tap updates according to preset schedule
+- Used to verify DE→TDF port function
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Results Analysis
 
-### 5.1 统计指标说明
+### 5.1 Statistical Metrics Description
 
-#### 通用统计指标
+#### General Statistical Metrics
 
-| 指标 | 计算方法 | 意义 |
-|------|----------|------|
-| 均值 (mean) | 所有采样点的算术平均 | 反映信号的直流分量 |
-| RMS | 均方根 $\sqrt{\frac{1}{N}\sum v_i^2}$ | 反映信号的有效值/功率 |
-| 峰峰值 (peak_to_peak) | 最大值 - 最小值 | 反映信号的动态范围 |
-| 最大/最小值 | 极值统计 | 用于判断饱和等边界行为 |
+| Metric | Calculation Method | Significance |
+|--------|-------------------|--------------|
+| Mean | Arithmetic average of all sampling points | Reflects DC component of signal |
+| RMS | Root mean square $\sqrt{\frac{1}{N}\sum v_i^2}$ | Reflects effective value/power of signal |
+| Peak-to-Peak | Maximum - Minimum | Reflects dynamic range of signal |
+| Max/Min | Extreme value statistics | Used to judge saturation and other boundary behaviors |
 
-#### DFE 专用性能指标
+#### DFE-Specific Performance Metrics
 
-| 指标 | 计算方法 | 意义 |
-|------|----------|------|
-| 眼高 (eye_height) | 眼图中心垂直开口 | 反映信号质量，DFE 后应增大 |
-| 眼宽 (eye_width) | 眼图中心水平开口 | 反映定时裕量 |
-| ISI 残余 | DFE 后输出的后游 ISI 分量 | 应接近零，反映均衡效果 |
-| 反馈电压误差 | 实际 v_fb 与理论 $\sum c_k \cdot \text{map}(b_{n-k}) \cdot V_{tap}$ 的差异 | 验证实现正确性 |
-| 均衡增益 | (DFE后眼高 - DFE前眼高) / DFE前眼高 | 量化均衡改善效果 |
+| Metric | Calculation Method | Significance |
+|--------|-------------------|--------------|
+| Eye Height | Eye diagram center vertical opening | Reflects signal quality, should increase after DFE |
+| Eye Width | Eye diagram center horizontal opening | Reflects timing margin |
+| ISI Residual | Post-cursor ISI component of DFE output | Should be close to zero, reflecting equalization effect |
+| Feedback Voltage Error | Difference between actual v_fb and theoretical $\sum c_k \cdot \text{map}(b_{n-k}) \cdot V_{tap}$ | Verifies implementation correctness |
+| Equalization Gain | (Eye height after DFE - Eye height before DFE) / Eye height before DFE | Quantifies equalization improvement |
 
-#### 指标计算公式
+#### Metric Calculation Formulas
 
-**眼高计算**：
+**Eye Height Calculation**:
 ```
 eye_height = min(V_1_low) - max(V_0_high)
 ```
-其中 V_1_low 是逻辑"1"采样点的下边界分布，V_0_high 是逻辑"0"采样点的上边界分布。
+Where V_1_low is the lower boundary distribution of logic "1" sampling points, V_0_high is the upper boundary distribution of logic "0" sampling points.
 
-**ISI 残余计算**：
+**ISI Residual Calculation**:
 ```
 ISI_residual = Σ|h_k - c_k| for k = 1 to N
 ```
-其中 h_k 是信道后游响应，c_k 是 DFE 抽头系数。理想情况下 c_k = h_k，残余为零。
+Where h_k is the channel post-cursor response, c_k is the DFE tap coefficient. Ideally c_k = h_k, residual is zero.
 
-### 5.2 典型测试结果解读
+### 5.2 Typical Test Results Interpretation
 
-#### BYPASS 测试结果示例
+#### BYPASS Test Results Example
 
-配置：`tap_coeffs = [0, 0, 0]`，输入 100mV PRBS
+Configuration: `tap_coeffs = [0, 0, 0]`, 100mV PRBS input
 
-期望结果：
-- 差分输出峰峰值 ≈ 输入峰峰值（200mV）
-- 输出波形与输入波形完全一致
-- 任何可测量的差异应 < 1μV（数值精度范围）
+Expected Results:
+- Differential output peak-to-peak ≈ Input peak-to-peak (200mV)
+- Output waveform completely matches input waveform
+- Any measurable difference should be < 1μV (numerical precision range)
 
-分析方法：
-- 计算输入输出差分信号的互相关系数，应 > 0.9999
-- 绘制输入输出差值波形，验证无系统性偏移
+Analysis Method:
+- Calculate cross-correlation coefficient of input and output differential signals, should be > 0.9999
+- Plot input-output difference waveform, verify no systematic offset
 
-#### BASIC_DFE 测试结果解读
+#### BASIC_DFE Test Results Interpretation
 
-配置：单抽头 `tap_coeffs = [0.1]`，带 10% h1 ISI 的 PRBS
+Configuration: Single tap `tap_coeffs = [0.1]`, PRBS with 10% h1 ISI
 
-假设场景：
-- 输入信号：`v_in[n] = v_data[n] + 0.1 × v_data[n-1]`（后游 ISI）
-- DFE 反馈：`v_fb[n] = 0.1 × map(b[n-1])`
+Assumed Scenario:
+- Input signal: `v_in[n] = v_data[n] + 0.1 × v_data[n-1]` (post-cursor ISI)
+- DFE feedback: `v_fb[n] = 0.1 × map(b[n-1])`
 
-期望结果：
-- 若抽头系数与 ISI 系数匹配，后游 ISI 应被完全抵消
-- 眼图垂直开口应增大约 10%
-- 输出差分信号的峰峰值标准差应减小
+Expected Results:
+- If tap coefficient matches ISI coefficient, post-cursor ISI should be completely canceled
+- Eye diagram vertical opening should increase by about 10%
+- Peak-to-peak standard deviation of output differential signal should decrease
 
-分析方法：
-- 对比 DFE 开启前后的眼图叠加
-- 计算眼高改善百分比：`(eye_height_after - eye_height_before) / eye_height_before × 100%`
+Analysis Method:
+- Compare eye diagram overlays before and after DFE enablement
+- Calculate eye height improvement percentage: `(eye_height_after - eye_height_before) / eye_height_before × 100%`
 
-#### MULTI_TAP 测试结果解读
+#### MULTI_TAP Test Results Interpretation
 
-配置：3 抽头 `tap_coeffs = [0.08, 0.05, 0.03]`，带多游标 ISI 的 PRBS
+Configuration: 3 taps `tap_coeffs = [0.08, 0.05, 0.03]`, PRBS with multi-cursor ISI
 
-假设场景：
-- 信道脉冲响应：h0=1.0, h1=0.08, h2=0.05, h3=0.03
-- 输入信号包含 3 个后游 ISI 分量
+Assumed Scenario:
+- Channel impulse response: h0=1.0, h1=0.08, h2=0.05, h3=0.03
+- Input signal contains 3 post-cursor ISI components
 
-期望结果：
-- 第 1 抽头抵消 h1 ISI
-- 第 2 抽头抵消 h2 ISI
-- 第 3 抽头抵消 h3 ISI
-- 总 ISI 残余 < 5%（考虑量化和噪声）
+Expected Results:
+- Tap 1 cancels h1 ISI
+- Tap 2 cancels h2 ISI
+- Tap 3 cancels h3 ISI
+- Total ISI residual < 5% (considering quantization and noise)
 
-分析方法：
-- 分别验证各抽头的独立贡献：依次置零单个抽头，观察对应 ISI 分量的恢复
-- 绘制脉冲响应对比图：信道响应 vs DFE 后响应
+Analysis Method:
+- Independently verify each tap's contribution: zero out individual taps, observe corresponding ISI component recovery
+- Plot pulse response comparison: channel response vs DFE response
 
-数值示例：
-| 配置 | 眼高 (mV) | 眼高改善 |
-|------|-----------|----------|
-| 无 DFE | 160 | - |
-| 单抽头 (c1=0.08) | 176 | +10% |
-| 3 抽头 (c1/c2/c3) | 192 | +20% |
+Numerical Example:
+| Configuration | Eye Height (mV) | Eye Height Improvement |
+|---------------|-----------------|------------------------|
+| No DFE | 160 | - |
+| Single tap (c1=0.08) | 176 | +10% |
+| 3 taps (c1/c2/c3) | 192 | +20% |
 
-#### ADAPTATION 测试结果解读
+#### ADAPTATION Test Results Interpretation
 
-初始抽头全零，t=100ns 时更新为 `[0.05, 0.03]`
+Initial taps all zero, updated to `[0.05, 0.03]` at t=100ns
 
-期望结果：
-- t < 100ns：输出 = 直通（无 DFE 效应）
-- t ≥ 100ns + 1 UI：新抽头生效，开始 DFE 补偿
-- 过渡期间无输出毛刺或不连续
+Expected Results:
+- t < 100ns: Output = pass-through (no DFE effect)
+- t ≥ 100ns + 1 UI: New taps take effect, DFE compensation begins
+- No output glitches or discontinuities during transition
 
-分析方法：
-- 在抽头更新时刻前后各取 10 UI 的波形
-- 验证更新生效的延迟 = 1 UI（因果性保障）
-- 检查过渡点的波形连续性
+Analysis Method:
+- Take 10 UI waveforms before and after tap update moment
+- Verify update effective delay = 1 UI (causality guarantee)
+- Check waveform continuity at transition point
 
-验证要点：
-- 更新前后的反馈电压变化符合公式计算
-- 若更新时刻恰好有符号转换，不应出现异常脉冲
+Verification Points:
+- Feedback voltage change before and after update matches formula calculation
+- If update moment coincides with symbol transition, no abnormal pulse should appear
 
-#### SATURATION 测试结果解读
+#### SATURATION Test Results Interpretation
 
-配置：大系数 `tap_coeffs = [0.3, 0.2, 0.1]`，`sat_min = -0.4V, sat_max = 0.4V`
+Configuration: Large coefficients `tap_coeffs = [0.3, 0.2, 0.1]`, `sat_min = -0.4V, sat_max = 0.4V`
 
-假设场景：
-- 输入信号：500mV 方波
-- 理论输出（无饱和）：可能超过 ±0.6V
+Assumed Scenario:
+- Input signal: 500mV square wave
+- Theoretical output (without saturation): may exceed ±0.6V
 
-期望结果：
-- 输出差分信号被限制在 ±0.4V 范围内
-- 限幅采用软饱和（tanh），波形无硬切割痕迹
-- 接近饱和区时增益压缩，远离饱和区时线性
+Expected Results:
+- Output differential signal limited to ±0.4V range
+- Limiting uses soft saturation (tanh), waveform has no hard clipping artifacts
+- Gain compression near saturation region, linear away from saturation region
 
-分析方法：
-- 绘制输入-输出传递曲线，验证软饱和特性
-- 测量输出峰峰值，确认 ≤ 0.8V（sat_max - sat_min）
+Analysis Method:
+- Plot input-output transfer curve, verify soft saturation characteristic
+- Measure output peak-to-peak, confirm ≤ 0.8V (sat_max - sat_min)
 
-数值示例：
-| 输入差分 (mV) | 无限幅输出 (mV) | 限幅后输出 (mV) |
-|---------------|-----------------|-----------------|
+Numerical Example:
+| Input Diff (mV) | Unlimited Output (mV) | Limited Output (mV) |
+|-----------------|----------------------|---------------------|
 | 300 | 300 | 295 |
 | 400 | 400 | 375 |
 | 500 | 500 | 395 |
 | 600 | 600 | 399 |
 
-### 5.3 波形数据文件格式
+### 5.3 Waveform Data File Format
 
-CSV 输出格式：
+CSV Output Format:
 ```
-时间(s),输入差分(V),输出差分(V),反馈电压(V),历史比特
+Time(s),Input Diff(V),Output Diff(V),Feedback Voltage(V),Historical Bits
 0.000000e+00,0.100000,0.100000,0.000000,"[0,0,0]"
 2.500000e-11,0.095000,0.085000,0.010000,"[1,0,0]"
 5.000000e-11,0.102000,0.092000,0.010000,"[1,1,0]"
 ...
 ```
 
-#### 列定义
+#### Column Definitions
 
-| 列名 | 单位 | 说明 |
-|------|------|------|
-| 时间 | 秒 (s) | 仿真时间戳 |
-| 输入差分 | 伏特 (V) | in_p - in_n |
-| 输出差分 | 伏特 (V) | out_p - out_n |
-| 反馈电压 | 伏特 (V) | v_fb = Σ c_k × map(b[n-k]) × vtap |
-| 历史比特 | - | JSON 格式数组，如 "[1,0,1]" |
+| Column Name | Unit | Description |
+|-------------|------|-------------|
+| Time | seconds (s) | Simulation timestamp |
+| Input Diff | volts (V) | in_p - in_n |
+| Output Diff | volts (V) | out_p - out_n |
+| Feedback Voltage | volts (V) | v_fb = Σ c_k × map(b[n-k]) × vtap |
+| Historical Bits | - | JSON format array, e.g. "[1,0,1]" |
 
-#### 采样策略
+#### Sampling Strategy
 
-- **默认采样率**：每 UI 一个数据点
-- **高分辨率模式**：每 UI 10-20 个采样点（用于眼图绘制）
-- **文件大小估算**：1μs 仿真 @ 40Gbps ≈ 40,000 行 ≈ 2MB
+- **Default Sampling Rate**: One data point per UI
+- **High Resolution Mode**: 10-20 sampling points per UI (for eye diagram plotting)
+- **File Size Estimate**: 1μs simulation @ 40Gbps ≈ 40,000 lines ≈ 2MB
 
-#### 数据后处理建议
+#### Data Post-processing Suggestions
 
 ```python
 import pandas as pd
 import numpy as np
 
-# 读取 CSV
+# Read CSV
 df = pd.read_csv('dfe_summer_basic.csv')
 
-# 计算眼高（简化版）
-v_diff = df['输出差分(V)']
+# Calculate eye height (simplified)
+v_diff = df['Output Diff(V)']
 eye_height = np.percentile(v_diff[v_diff > 0], 5) - np.percentile(v_diff[v_diff < 0], 95)
-print(f"眼高: {eye_height*1000:.2f} mV")
+print(f"Eye Height: {eye_height*1000:.2f} mV")
 
-# 计算均衡增益
-v_in = df['输入差分(V)']
+# Calculate equalization gain
+v_in = df['Input Diff(V)']
 eye_height_in = np.percentile(v_in[v_in > 0], 5) - np.percentile(v_in[v_in < 0], 95)
 eq_gain = (eye_height - eye_height_in) / eye_height_in * 100
-print(f"均衡增益: {eq_gain:.1f}%")
+print(f"Equalization Gain: {eq_gain:.1f}%")
 ```
 
 ---
 
-## 6. 运行指南
+## 6. Running Guide
 
-### 6.1 环境配置
+### 6.1 Environment Configuration
 
-运行测试前需要配置环境变量：
+Environment variables need to be configured before running tests:
 
 ```bash
 source scripts/setup_env.sh
 ```
 
-或手动设置：
+Or manually set:
 ```bash
 export SYSTEMC_HOME=/usr/local/systemc-2.3.4
 export SYSTEMC_AMS_HOME=/usr/local/systemc-ams-2.3.4
 ```
 
-验证环境配置：
+Verify environment configuration:
 ```bash
-echo $SYSTEMC_HOME       # 应输出 SystemC 安装路径
-echo $SYSTEMC_AMS_HOME   # 应输出 SystemC-AMS 安装路径
+echo $SYSTEMC_HOME       # Should output SystemC installation path
+echo $SYSTEMC_AMS_HOME   # Should output SystemC-AMS installation path
 ```
 
-### 6.2 构建与运行
+### 6.2 Build and Run
 
 ```bash
-# 创建构建目录并编译
+# Create build directory and compile
 mkdir -p build && cd build
 cmake ..
 make dfe_summer_tran_tb
 
-# 运行测试（在 tb 目录下）
+# Run test (in tb directory)
 cd tb
 ./dfe_summer_tran_tb [scenario]
 ```
 
-场景参数：
-| 参数 | 编号 | 说明 |
-|------|------|------|
-| `bypass` | `0` | 直通模式测试（默认） |
-| `basic` | `1` | 基本 DFE 单抽头测试 |
-| `multi` | `2` | 多抽头配置测试 |
-| `adapt` | `3` | 自适应抽头更新测试 |
-| `sat` | `4` | 大信号饱和测试 |
+Scenario Parameters:
+| Parameter | Number | Description |
+|-----------|--------|-------------|
+| `bypass` | `0` | Pass-through mode test (default) |
+| `basic` | `1` | Basic DFE single-tap test |
+| `multi` | `2` | Multi-tap configuration test |
+| `adapt` | `3` | Adaptive tap update test |
+| `sat` | `4` | Large signal saturation test |
 
-运行示例：
+Run Examples:
 ```bash
-# 运行基本 DFE 测试
+# Run basic DFE test
 ./dfe_summer_tran_tb basic
 
-# 运行多抽头测试
+# Run multi-tap test
 ./dfe_summer_tran_tb 2
 
-# 运行全部场景（批量测试）
+# Run all scenarios (batch test)
 for i in 0 1 2 3 4; do ./dfe_summer_tran_tb $i; done
 ```
 
-### 6.3 参数配置示例
+### 6.3 Parameter Configuration Examples
 
-DFE Summer 支持通过 JSON 配置文件进行参数化。以下是针对不同应用场景的快速启动配置。
+DFE Summer supports parameterization through JSON configuration files. Below are quick-start configurations for different application scenarios.
 
-#### 快速验证配置（单抽头）
+#### Quick Verification Configuration (Single Tap)
 
-适用于初步功能验证和调试：
+Suitable for preliminary function verification and debugging:
 
 ```json
 {
@@ -607,9 +607,9 @@ DFE Summer 支持通过 JSON 配置文件进行参数化。以下是针对不同
 }
 ```
 
-#### 典型应用配置（3抽头）
+#### Typical Application Configuration (3 Taps)
 
-适用于中等 ISI 信道的常规应用：
+Suitable for regular applications with moderate ISI channels:
 
 ```json
 {
@@ -625,9 +625,9 @@ DFE Summer 支持通过 JSON 配置文件进行参数化。以下是针对不同
 }
 ```
 
-#### 高性能配置（5抽头+限幅）
+#### High Performance Configuration (5 Taps + Limiting)
 
-适用于严重 ISI 信道，需要更多抽头和输出保护：
+Suitable for severe ISI channels requiring more taps and output protection:
 
 ```json
 {
@@ -646,22 +646,22 @@ DFE Summer 支持通过 JSON 配置文件进行参数化。以下是针对不同
 }
 ```
 
-#### 配置加载方式
+#### Configuration Loading Methods
 
 ```bash
-# 使用命令行参数指定配置文件
+# Use command line parameter to specify configuration file
 ./dfe_summer_tran_tb basic --config config/dfe_3tap.json
 
-# 或通过环境变量
+# Or through environment variable
 export SERDES_CONFIG=config/dfe_5tap.json
 ./dfe_summer_tran_tb multi
 ```
 
-### 6.4 结果查看
+### 6.4 Result Viewing
 
-测试完成后，控制台输出统计结果，波形数据保存到 CSV 文件。
+After test completion, console outputs statistical results, waveform data is saved to CSV file.
 
-#### 控制台输出示例
+#### Console Output Example
 
 ```
 === DFE Summer Transient Simulation ===
@@ -679,31 +679,31 @@ Eye height improvement: +8.5%
 Output file: dfe_summer_basic.csv
 ```
 
-#### 波形可视化
+#### Waveform Visualization
 
 ```bash
-# 基本波形查看
+# Basic waveform viewing
 python scripts/plot_dfe_waveform.py dfe_summer_basic.csv
 
-# 输入输出对比
+# Input-output comparison
 python scripts/plot_dfe_waveform.py dfe_summer_basic.csv --compare
 
-# 眼图叠加绘制
+# Eye diagram overlay plotting
 python scripts/plot_eye.py dfe_summer_basic.csv --samples-per-ui 20
 ```
 
-#### 眼图对比分析
+#### Eye Diagram Comparison Analysis
 
-对比 DFE 开启前后的眼图变化，量化均衡效果：
+Compare eye diagram changes before and after DFE enablement, quantify equalization effect:
 
 ```bash
-# 生成对比报告
+# Generate comparison report
 python scripts/compare_eye_dfe.py \
     --before dfe_summer_bypass.csv \
     --after dfe_summer_basic.csv \
     --output report/dfe_comparison.html
 
-# 批量对比多抽头配置
+# Batch compare multi-tap configurations
 python scripts/compare_eye_dfe.py \
     --before dfe_summer_bypass.csv \
     --after dfe_summer_basic.csv dfe_summer_multi.csv \
@@ -711,155 +711,155 @@ python scripts/compare_eye_dfe.py \
     --output report/dfe_multi_comparison.html
 ```
 
-#### 结果文件汇总
+#### Result File Summary
 
-| 场景 | 输出文件 | 主要分析内容 |
-|------|----------|--------------|
-| BYPASS | dfe_summer_bypass.csv | 基线参考，无 DFE 效应 |
-| BASIC_DFE | dfe_summer_basic.csv | 单抽头眼高改善 |
-| MULTI_TAP | dfe_summer_multi.csv | 多抽头累积效果 |
-| ADAPTATION | dfe_summer_adapt.csv | 抽头更新过渡行为 |
-| SATURATION | dfe_summer_sat.csv | 限幅传递曲线 |
-
----
-
-## 7. 技术要点
-
-### 7.1 因果性保障
-
-DFE 反馈必须严格保证至少 1 UI 的延迟。本设计通过以下机制实现：
-
-1. **data_in 接口设计**：`data_in[0]` 对应 b[n-1]，而非 b[n]
-2. **外部更新责任**：历史比特数组由 RX 顶层更新，DFE Summer 只读取
-3. **更新时序**：数组更新发生在当前 UI 判决完成后、下一 UI 处理前
-
-若误将当前比特用于反馈，SystemC-AMS 可能报告代数环错误或仿真异常缓慢。
-
-### 7.2 抽头系数范围
-
-- **典型范围**：0.01 ~ 0.3（取决于信道 ISI 特性）
-- **符号约定**：正系数用于抵消同相 ISI，负系数用于抵消反相 ISI
-- **稳定性约束**：抽头绝对值之和应 < 1，避免反馈发散
-
-建议通过信道仿真或自适应算法确定最优抽头值。
-
-### 7.3 抽头数量选择
-
-| 抽头数量 | 适用场景 | 复杂度 |
-|----------|----------|--------|
-| 1-2 | 短信道、低 ISI | 低 |
-| 3-5 | 中等信道、典型应用 | 中 |
-| 6-9 | 长信道、严重 ISI | 高 |
-
-更多抽头可以抵消更多后游 ISI，但增加：
-- 功耗和面积
-- 自适应收敛时间
-- 误差传播风险
-
-### 7.4 与自适应模块的协同
-
-DFE Summer 本身不包含自适应算法，职责分离如下：
-
-| 模块 | 职责 |
-|------|------|
-| DFE Summer | 读取抽头和历史比特，计算反馈，执行求和 |
-| Adaption | 读取误差信号，执行 LMS 算法，输出新抽头 |
-| RX 顶层 | 维护历史比特数组，协调各模块时序 |
-
-这种分离简化了各模块设计，便于独立测试和替换。
-
-### 7.5 比特映射模式对比
-
-| 特性 | pm1 模式 | 01 模式 |
-|------|----------|---------|
-| 映射规则 | 0→-1, 1→+1 | 0→0, 1→1 |
-| 反馈对称性 | 对称 | 非对称 |
-| 直流分量 | 无（平均为 0） | 有（平均为 0.5×vtap） |
-| 推荐场景 | 通用（默认） | 特定协议要求 |
-
-### 7.6 时间步设置
-
-- TDF 时间步应设为 UI：`set_timestep(ui)`
-- 与 CDR/Sampler 的 UI 保持一致
-- 过小的时间步会增加计算开销，过大则丢失信号细节
-
-### 7.7 已知限制
-
-本模块实现存在以下已知限制和约束条件：
-
-**抽头数量限制**：
-- 当前实现支持 1-9 个抽头
-- 超过 9 个抽头可能导致：
-  - 反馈计算延迟过大，无法在 1 UI 内完成
-  - 误差传播累积，影响自适应收敛
-- 若信道 ISI 超过 9 UI，建议结合 FFE 进行前游均衡
-
-**数值精度限制**：
-- 抽头系数精度：建议保留 4 位有效数字
-- 过小的抽头系数（< 0.005）可能被噪声淹没，实际效果有限
-- 浮点累加误差：当抽头数量较多时，累加顺序可能影响最后几位精度
-
-**时序约束**：
-- `data_in` 数组更新必须在当前 UI 的判决完成后进行
-- 抽头更新（通过 `tap_coeffs_de`）在下一 UI 开始时生效
-- 若抽头更新频率高于 UI 周期，只有最后一次更新生效
-
-**仿真性能影响**：
-- 5 抽头配置相比直通模式，仿真速度约降低 10-15%
-- 启用饱和限幅（sat_enable）额外增加约 5% 计算开销
-- 大规模仿真（> 10M UI）建议使用编译优化（-O2/-O3）
-
-### 7.8 DFE 与 FFE 对比
-
-DFE（判决反馈均衡器）和 FFE（前馈均衡器）是两种互补的均衡技术，适用场景不同：
-
-| 特性 | DFE | FFE |
-|------|-----|-----|
-| 位置 | 接收端（RX） | 发送端（TX） |
-| 均衡目标 | 后游 ISI（post-cursor） | 前游+后游 ISI |
-| 噪声影响 | 不放大噪声（反馈基于判决） | 放大高频噪声 |
-| 误差传播 | 有（错误判决导致错误反馈） | 无 |
-| 功耗 | 较低 | 较高（需高速 FIR） |
-| 实现复杂度 | 中等 | 较低 |
-
-**设计选择指南**：
-
-1. **轻度 ISI 信道**：仅使用 FFE，2-3 个抽头即可
-2. **中度 ISI 信道**：FFE + DFE 组合，FFE 处理前游 + 主游标，DFE 处理后游
-3. **严重 ISI 信道**：FFE + CTLE + DFE 全链路均衡
-
-**本模块定位**：
-
-- DFE Summer 专注于后游 ISI 抵消
-- 与 TX 侧的 FFE 模块协同工作
-- 通过 Adaption 模块实现抽头自适应，可与 FFE 抽头联合优化
+| Scenario | Output File | Main Analysis Content |
+|----------|-------------|----------------------|
+| BYPASS | dfe_summer_bypass.csv | Baseline reference, no DFE effect |
+| BASIC_DFE | dfe_summer_basic.csv | Single-tap eye height improvement |
+| MULTI_TAP | dfe_summer_multi.csv | Multi-tap cumulative effect |
+| ADAPTATION | dfe_summer_adapt.csv | Tap update transition behavior |
+| SATURATION | dfe_summer_sat.csv | Limiting transfer curve |
 
 ---
 
-## 8. 参考信息
+## 7. Technical Notes
 
-### 8.1 相关文件
+### 7.1 Causality Guarantee
 
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| 参数定义 | `/include/common/parameters.h` | RxDfeSummerParams 结构体 |
-| 头文件 | `/include/ams/rx_dfe_summer.h` | RxDfeSummerTdf 类声明 |
-| 实现文件 | `/src/ams/rx_dfe_summer.cpp` | RxDfeSummerTdf 类实现 |
-| 测试平台 | `/tb/rx/dfe_summer/dfe_summer_tran_tb.cpp` | 瞬态仿真测试 |
-| 测试辅助 | `/tb/rx/dfe_summer/dfe_summer_helpers.h` | 信号源和监控器 |
-| 单元测试 | `/tests/unit/test_dfe_summer_basic.cpp` | GoogleTest 单元测试 |
-| 自适应文档 | `/docs/modules/adaption.md` | Adaption 模块接口说明 |
+DFE feedback must strictly guarantee at least 1 UI delay. This design achieves through following mechanisms:
 
-### 8.2 依赖项
+1. **data_in Interface Design**: `data_in[0]` corresponds to b[n-1], not b[n]
+2. **External Update Responsibility**: Historical bit array is updated by RX top-level, DFE Summer only reads
+3. **Update Timing**: Array update occurs after current UI decision completes, before next UI processing
+
+If current bit is mistakenly used for feedback, SystemC-AMS may report algebraic loop errors or abnormally slow simulation.
+
+### 7.2 Tap Coefficient Range
+
+- **Typical Range**: 0.01 ~ 0.3 (depending on channel ISI characteristics)
+- **Sign Convention**: Positive coefficients used to cancel in-phase ISI, negative coefficients used to cancel anti-phase ISI
+- **Stability Constraint**: Sum of absolute tap values should be < 1 to avoid feedback divergence
+
+It is recommended to determine optimal tap values through channel simulation or adaptive algorithms.
+
+### 7.3 Tap Count Selection
+
+| Tap Count | Applicable Scenario | Complexity |
+|-----------|---------------------|------------|
+| 1-2 | Short channel, low ISI | Low |
+| 3-5 | Medium channel, typical application | Medium |
+| 6-9 | Long channel, severe ISI | High |
+
+More taps can cancel more post-cursor ISI, but increase:
+- Power consumption and area
+- Adaptive convergence time
+- Error propagation risk
+
+### 7.4 Coordination with Adaption Module
+
+DFE Summer itself does not contain adaptive algorithms, responsibilities are separated as follows:
+
+| Module | Responsibility |
+|--------|----------------|
+| DFE Summer | Read taps and historical bits, calculate feedback, execute summation |
+| Adaption | Read error signal, execute LMS algorithm, output new taps |
+| RX Top-level | Maintain historical bit array, coordinate module timing |
+
+This separation simplifies each module design, facilitates independent testing and replacement.
+
+### 7.5 Bit Mapping Mode Comparison
+
+| Characteristic | pm1 Mode | 01 Mode |
+|----------------|----------|---------|
+| Mapping Rule | 0→-1, 1→+1 | 0→0, 1→1 |
+| Feedback Symmetry | Symmetric | Asymmetric |
+| DC Component | None (average is 0) | Present (average is 0.5×vtap) |
+| Recommended Scenario | General (default) | Specific protocol requirements |
+
+### 7.6 Timestep Setting
+
+- TDF timestep should be set to UI: `set_timestep(ui)`
+- Consistent with CDR/Sampler UI
+- Too small timestep increases computational overhead, too large loses signal details
+
+### 7.7 Known Limitations
+
+This module implementation has following known limitations and constraints:
+
+**Tap Count Limitation**:
+- Current implementation supports 1-9 taps
+- More than 9 taps may cause:
+  - Feedback calculation delay too large, cannot complete within 1 UI
+  - Error propagation accumulation, affecting adaptive convergence
+- If channel ISI exceeds 9 UI, it is recommended to combine with FFE for pre-cursor equalization
+
+**Numerical Precision Limitation**:
+- Tap coefficient precision: recommended to keep 4 significant digits
+- Too small tap coefficients (< 0.005) may be drowned by noise, limited practical effect
+- Floating-point accumulation error: when tap count is large, accumulation order may affect last few digits of precision
+
+**Timing Constraints**:
+- `data_in` array update must be performed after current UI decision completes
+- Tap update (through `tap_coeffs_de`) takes effect at start of next UI
+- If tap update frequency exceeds UI period, only last update takes effect
+
+**Simulation Performance Impact**:
+- 5-tap configuration compared to pass-through mode, simulation speed reduced by about 10-15%
+- Enabling saturation limiting (sat_enable) adds about 5% computational overhead
+- Large-scale simulation (> 10M UI) recommended to use compilation optimization (-O2/-O3)
+
+### 7.8 DFE vs FFE Comparison
+
+DFE (Decision Feedback Equalizer) and FFE (Feed-Forward Equalizer) are two complementary equalization technologies with different applicable scenarios:
+
+| Characteristic | DFE | FFE |
+|----------------|-----|-----|
+| Location | Receiver (RX) | Transmitter (TX) |
+| Equalization Target | Post-cursor ISI | Pre-cursor + Post-cursor ISI |
+| Noise Impact | Does not amplify noise (feedback based on decisions) | Amplifies high-frequency noise |
+| Error Propagation | Yes (wrong decision leads to wrong feedback) | No |
+| Power Consumption | Lower | Higher (requires high-speed FIR) |
+| Implementation Complexity | Medium | Lower |
+
+**Design Selection Guide**:
+
+1. **Mild ISI Channel**: Use FFE only, 2-3 taps sufficient
+2. **Moderate ISI Channel**: FFE + DFE combination, FFE handles pre-cursor + main cursor, DFE handles post-cursor
+3. **Severe ISI Channel**: FFE + CTLE + DFE full-link equalization
+
+**This Module Positioning**:
+
+- DFE Summer focuses on post-cursor ISI cancellation
+- Cooperates with TX-side FFE module
+- Achieves tap adaptation through Adaption module, can be jointly optimized with FFE taps
+
+---
+
+## 8. Reference Information
+
+### 8.1 Related Files
+
+| File | Path | Description |
+|------|------|-------------|
+| Parameter Definition | `/include/common/parameters.h` | RxDfeSummerParams structure |
+| Header File | `/include/ams/rx_dfe_summer.h` | RxDfeSummerTdf class declaration |
+| Implementation File | `/src/ams/rx_dfe_summer.cpp` | RxDfeSummerTdf class implementation |
+| Testbench | `/tb/rx/dfe_summer/dfe_summer_tran_tb.cpp` | Transient simulation test |
+| Test Helpers | `/tb/rx/dfe_summer/dfe_summer_helpers.h` | Signal source and monitor |
+| Unit Test | `/tests/unit/test_dfe_summer_basic.cpp` | GoogleTest unit test |
+| Adaption Documentation | `/docs/modules/adaption.md` | Adaption module interface description |
+
+### 8.2 Dependencies
 
 - SystemC 2.3.4
 - SystemC-AMS 2.3.4
-- C++14 标准
-- GoogleTest 1.12.1（单元测试）
+- C++14 standard
+- GoogleTest 1.12.1 (unit test)
 
-### 8.3 配置示例
+### 8.3 Configuration Examples
 
-基本配置（3 抽头 DFE）：
+Basic Configuration (3-tap DFE):
 ```json
 {
   "dfe_summer": {
@@ -873,7 +873,7 @@ DFE（判决反馈均衡器）和 FFE（前馈均衡器）是两种互补的均�
 }
 ```
 
-带限幅的配置：
+Configuration with Limiting:
 ```json
 {
   "dfe_summer": {
@@ -891,7 +891,7 @@ DFE（判决反馈均衡器）和 FFE（前馈均衡器）是两种互补的均�
 }
 ```
 
-与自适应联动的配置：
+Configuration with Adaptation:
 ```json
 {
   "dfe_summer": {
@@ -912,6 +912,6 @@ DFE（判决反馈均衡器）和 FFE（前馈均衡器）是两种互补的均�
 
 ---
 
-**文档版本**：v0.5  
-**最后更新**：2025-12-21  
-**作者**：SerDes Design Team
+**Document Version**: v0.5  
+**Last Updated**: 2025-12-21  
+**Author**: SerDes Design Team

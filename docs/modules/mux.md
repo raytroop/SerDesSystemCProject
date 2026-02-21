@@ -1,263 +1,263 @@
-# TX Mux 模块技术文档
+# TX Mux Module Technical Documentation
 
-🌐 **Languages**: [中文](mux.md) | [English](../en/modules/mux.md)
+🌐 **Languages**: [中文](../../modules/mux.md) | [English](mux.md)
 
-**级别**：AMS 子模块（TX）  
-**类名**：`TxMuxTdf`  
-**当前版本**：v0.1 (2026-01-13)  
-**状态**：开发中
-
----
-
-## 1. 概述
-
-发送端复用器（Mux，Multiplexer）是SerDes发送链路中的关键时序模块，位于 FFE → Mux → Driver 信号链的中间位置，主要功能是实现通道选择（Lane Selection）和信号路由控制，在系统级应用中作为并串转换（Parallel-to-Serial Conversion）架构的一部分，为Driver提供选定的数据通道，同时建模真实硬件中的延迟和抖动效应。
-
-### 1.1 设计原理
-
-TX Mux 的核心设计思想是在行为级抽象层面建模复用器的选择逻辑、传播延迟和抖动特性，为系统级仿真提供足够的精度，同时避免晶体管级实现细节，保持仿真效率。
-
-#### 1.1.1 复用器的功能定位
-
-在完整的SerDes发送链路中，复用器承担以下角色：
-
-- **通道选择（Lane Selection）**：在多通道（Multi-Lane）SerDes架构中，发送端可能包含多个并行数据通道，每个通道运行在较低的符号速率以降低时钟频率和功耗。Mux根据控制信号选择其中一个通道的数据送往Driver，实现通道级的路由切换。
-
-- **并串转换的一部分**：在真实硬件中，N:1并串转换通常由N个并行的数据路径（Lane）和一个N:1 Mux组成。例如8:1结构中，8个并行Lane各运行在符号速率（Symbol Rate），Mux通过时分复用（Time-Division Multiplexing）将它们合并为比特速率（Bit Rate = Symbol Rate × 8）的串行输出。**本行为模型聚焦于Mux单元本身的选择和延迟特性，而非完整的并行数据路径**。
-
-- **抽象级别说明**：本模块采用单输入单输出（`in` → `out`）架构，配合 `lane_sel` 参数选择通道索引。这种抽象方式简化了建模复杂度，适用于以下场景：
-  - 单通道系统（`lane_sel=0`，Bypass模式）
-  - 多通道架构中对选定通道的行为验证
-  - 延迟和抖动效应的独立测试
-
-#### 1.1.2 采样率与时序关系
-
-Mux的输入输出采样率关系决定其在信号链中的时序行为：
-
-- **符号速率同步**：在本行为模型中，输入和输出采样率保持一致（`set_rate(1)`），表示Mux工作在符号速率时钟域，每个时间步长（Timestep）处理一个符号。这与真实硬件中"Mux内部时钟等于比特速率"的实现有所不同，但对于行为级仿真已足够表征信号传递特性。
-
-- **时间步长与UI的关系**：假设全局采样频率为 Fs（由 `GlobalParams` 定义），则时间步长 Δt = 1/Fs。对于符号速率为 R_sym 的系统，每个符号周期 T_sym = 1/R_sym 包含 Fs/R_sym 个采样点。例如：
-  - 若比特速率 = 56 Gbps，符号速率 = 7 GHz（8:1架构），Fs = 560 GHz（每UI 10个采样点）
-  - 则 T_sym = 142.86 ps，Δt = 1.786 ps，每个符号包含 80 个时间步长
-
-- **相位对齐考虑**：真实N:1 Mux需要N个相位精确对齐的时钟来实现时分复用。在行为模型中，这种相位对齐需求被抽象为延迟参数（`mux_delay`）和抖动模型（`jitter_params`），通过调整这些参数可以间接模拟相位失配的影响。
-
-#### 1.1.3 选择器的行为级建模
-
-本模块采用理想选择器模型，抽象了真实硬件的复杂拓扑：
-
-- **理想传输特性**：在不考虑非理想效应的情况下，输出直接等于选定通道的输入：`out[n] = in[n]`。这种简化适用于功能验证和信号完整性分析的初期阶段。
-
-- **延迟建模**：可选参数 `mux_delay` 用于建模选择器的传播延迟（Propagation Delay）。真实硬件中，延迟来源包括：
-  - 三态缓冲器或传输门的开关时间（~10-30ps）
-  - 时钟到数据路径的延迟（Clock-to-Q Delay）
-  - 互连寄生电容和电阻的RC延迟
-  
-  在行为模型中，通过在信号路径插入固定延迟元素（如滤波器的群延迟或显式的延迟线）来近似这些效应。
-
-- **与真实拓扑的对应关系**：
-  - **树形选择器**：多级2:1级联，总延迟为级数×单级延迟
-  - **并行选择器**：单级多路选择，延迟最小但负载相关
-  - **行为模型**：通过调整 `mux_delay` 参数匹配上述拓扑的等效延迟，无需实现具体电路结构
-
-#### 1.1.4 抖动效应建模
-
-Mux是SerDes发送端的重要抖动源，行为模型需要捕捉以下效应：
-
-- **确定性抖动（DJ，Deterministic Jitter）**来源：
-  - **占空比失真（DCD，Duty Cycle Distortion）**：时钟占空比偏离50%导致相邻UI宽度不等。DCD引起的抖动峰峰值为 `DJ_DCD = UI × |DCD% - 50%|`。例如占空比48%（偏离2%）在16ps UI下产生0.32ps抖动。
-  - **码型相关抖动（PDJ，Pattern-Dependent Jitter）**：选择器的传播延迟随输入数据码型变化，可通过在不同码型下注入不同的延迟偏移来建模。
-  
-- **随机抖动（RJ，Random Jitter）**来源：
-  - **时钟相位噪声**：来自PLL的相位噪声传递到数据边沿，表现为高斯分布的随机抖动，典型值 0.1-0.5 ps rms
-  - **热噪声**：选择器电路的热噪声叠加到输出，与电路带宽和温度相关
-  
-- **行为级建模方法**：
-  - **时域注入**：在每个时间步长对输出信号施加随机时移或幅度扰动
-  - **参数化控制**：通过 `jitter_enable`, `dcd_percent`, `rj_sigma` 等参数灵活调整抖动水平，匹配目标硬件规格
-
-### 1.2 核心特性
-
-- **单输入单输出架构**：采用简化的单端信号路径（`in` → `out`），聚焦于通道选择和延迟/抖动建模，而非完整的多通道并行输入。适用于行为级仿真和算法验证。
-
-- **通道索引选择**：通过构造参数 `lane_sel` 指定选中的通道索引（0-based），支持在多通道系统中对特定通道进行独立建模和测试。默认值为0（第一个通道）。
-
-- **符号速率同步**：输入输出采样率一致，工作在符号速率时钟域，与前级FFE和后级Driver的时序要求兼容。采样率由全局参数 `Fs`（采样频率）控制。
-
-- **延迟可配置**：可选参数 `mux_delay` 用于建模选择器的传播延迟，匹配真实硬件的时序特性。延迟范围通常在10-50ps，具体取值取决于工艺节点和拓扑结构。
-
-- **抖动建模支持**：可选择性地注入确定性抖动（DCD）和随机抖动（RJ），模拟时钟非理想性和电路噪声对输出信号质量的影响。抖动参数通过配置文件灵活设置。
-
-- **Bypass模式**：当 `lane_sel=0` 且无延迟/抖动配置时，模块退化为直通（Pass-through）模式，用于前端调试或单通道系统验证。
-
-### 1.3 典型应用场景
-
-TX Mux在不同SerDes架构中的应用配置：
-
-| 系统架构 | Lane数量 | 符号速率 | Mux配置 | 典型应用 |
-|---------|---------|---------|---------|---------|
-| 单通道SerDes | 1 | 等于比特速率 | lane_sel=0, Bypass | 低速链路（<10Gbps），PCIe Gen1/2 |
-| 2:1并串转换 | 2 | 比特速率/2 | lane_sel=0或1 | 中速链路（10-25Gbps） |
-| 4:1并串转换 | 4 | 比特速率/4 | lane_sel=0-3 | PCIe Gen3/4, USB3.x |
-| 8:1并串转换 | 8 | 比特速率/8 | lane_sel=0-7 | 56G/112G SerDes, 高速以太网 |
-
-> **注**：本模块对单个Lane的行为进行建模。完整的N:1系统需要实例化N个数据路径（WaveGen → FFE → Mux）并在系统级进行时分复用仿真。
-
-### 1.4 与其他模块的关系
-
-- **上游模块（FFE）**  
-  Mux接收来自FFE的均衡后符号信号，输入为标称幅度的数字信号（如±1V）。FFE的输出时序必须满足Mux的建立时间（Setup Time）要求，通常 > 0.2 UI。
-
-- **下游模块（Driver）**  
-  Mux输出送往Driver进行功率放大和阻抗匹配。Mux的输出延迟和抖动直接影响Driver的采样时刻和眼图质量，因此需要联合优化两者的时序预算。
-
-- **时钟源（Clock Generation）**  
-  真实硬件中，Mux依赖多相位时钟或相位插值器（PI）实现时分复用。在行为模型中，时钟精度的影响被抽象为抖动参数（如DCD、RJ），由用户根据Clock模块的规格进行配置。
-
-- **系统配置（System Configuration）**  
-  通过配置文件加载 `lane_sel`, `mux_delay`, `jitter_params` 等参数，支持多场景切换和参数扫描分析（如不同通道索引下的性能差异、延迟扫描对眼图的影响）。
-
-### 1.5 版本历史
-
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.1 | 2026-01-13 | 初始版本，实现单输入单输出架构、通道选择和基本延迟建模 |
+**Level**: AMS Sub-module (TX)  
+**Class Name**: `TxMuxTdf`  
+**Current Version**: v0.1 (2026-01-13)  
+**Status**: In Development
 
 ---
 
-## 2. 模块接口
+## 1. Overview
 
-### 2.1 端口定义（TDF域）
+The Transmitter Multiplexer (Mux, Multiplexer) is a critical timing module in the SerDes transmit chain, located in the middle of the FFE → Mux → Driver signal path. Its primary functions are channel selection (Lane Selection) and signal routing control. In system-level applications, it serves as part of the Parallel-to-Serial Conversion architecture, providing selected data channels to the Driver while modeling the delay and jitter effects present in real hardware.
 
-TX Mux 采用单端信号架构，所有端口均为 TDF 域模拟信号。
+### 1.1 Design Principles
 
-| 端口名 | 方向 | 类型 | 说明 |
-|-------|------|------|------|
-| `in` | 输入 | double | 输入数据信号（来自FFE或其他前级模块） |
-| `out` | 输出 | double | 输出数据信号（送往Driver或后级模块） |
+The core design philosophy of TX Mux is to model the selection logic, propagation delay, and jitter characteristics of a multiplexer at the behavioral level abstraction, providing sufficient accuracy for system-level simulation while avoiding transistor-level implementation details to maintain simulation efficiency.
 
-#### 端口连接注意事项
+#### 1.1.1 Functional Positioning of the Multiplexer
 
-- **简化架构**：采用单输入单输出（Single-Input-Single-Output, SISO）设计，抽象了真实硬件的多输入选择逻辑。通道选择通过构造参数 `lane_sel` 实现，而非多端口切换。
-- **采样率一致性**：输入和输出采样率保持一致（`set_rate(1)`），工作在符号速率时钟域。所有连接的TDF模块必须使用相同的全局采样频率 `Fs`（由 `GlobalParams` 定义）。
-- **信号幅度**：输入信号幅度通常为前级FFE输出的标称值（如±0.5V ~ ±1.0V）。当前版本（v0.1）采用理想传输，输出幅度与输入完全一致。
-- **负载条件**：输出端口应连接到Driver模块或测试负载，确保后级模块能够正确采样Mux输出的时序特性。
+In a complete SerDes transmit chain, the multiplexer plays the following roles:
 
-### 2.2 参数配置
+- **Channel Selection (Lane Selection)**: In multi-lane SerDes architectures, the transmitter may contain multiple parallel data channels, each operating at a lower symbol rate to reduce clock frequency and power consumption. The Mux selects one of these channels based on control signals and routes its data to the Driver, implementing channel-level routing switching.
 
-#### 2.2.1 当前实现的参数
+- **Part of Parallel-to-Serial Conversion**: In real hardware, N:1 parallel-to-serial conversion typically consists of N parallel data paths (Lanes) and an N:1 Mux. For example, in an 8:1 structure, 8 parallel Lanes each operate at the symbol rate, and the Mux combines them into a bit rate (Bit Rate = Symbol Rate × 8) serial output through Time-Division Multiplexing. **This behavioral model focuses on the selection and delay characteristics of the Mux unit itself, rather than the complete parallel data paths**.
 
-TX Mux 的参数定义在 `TxParams` 结构中（位于 `include/common/parameters.h`）。**当前版本（v0.1）仅实现通道索引参数**：
+- **Abstraction Level Note**: This module adopts a single-input single-output (`in` → `out`) architecture, working with the `lane_sel` parameter to select the channel index. This abstraction simplifies modeling complexity and is suitable for the following scenarios:
+  - Single-channel systems (`lane_sel=0`, Bypass mode)
+  - Behavioral verification of selected channels in multi-lane architectures
+  - Independent testing of delay and jitter effects
 
-| 参数路径 | 类型 | 默认值 | 单位 | 说明 |
-|---------|------|--------|------|------|
-| `tx.mux_lane` | int | 0 | - | 选中的通道索引（0-based），指定Mux输出对应的Lane编号 |
+#### 1.1.2 Sampling Rate and Timing Relationships
 
-**构造函数签名**：
+The input-output sampling rate relationship of the Mux determines its timing behavior in the signal chain:
+
+- **Symbol Rate Synchronization**: In this behavioral model, input and output sampling rates are kept consistent (`set_rate(1)`), indicating that the Mux operates in the symbol rate clock domain, processing one symbol per timestep. This differs from real hardware implementations where "Mux internal clock equals bit rate," but is sufficient for behavioral-level simulation to characterize signal transfer properties.
+
+- **Relationship Between Timestep and UI**: Assuming the global sampling frequency is Fs (defined by `GlobalParams`), then timestep Δt = 1/Fs. For a system with symbol rate R_sym, each symbol period T_sym = 1/R_sym contains Fs/R_sym sampling points. For example:
+  - If bit rate = 56 Gbps, symbol rate = 7 GHz (8:1 architecture), Fs = 560 GHz (10 samples per UI)
+  - Then T_sym = 142.86 ps, Δt = 1.786 ps, each symbol contains 80 timesteps
+
+- **Phase Alignment Considerations**: Real N:1 Mux requires N phase-accurately aligned clocks to implement time-division multiplexing. In the behavioral model, this phase alignment requirement is abstracted into delay parameters (`mux_delay`) and jitter models (`jitter_params`), allowing indirect simulation of phase mismatch effects by adjusting these parameters.
+
+#### 1.1.3 Behavioral-Level Modeling of the Selector
+
+This module adopts an ideal selector model, abstracting the complex topology of real hardware:
+
+- **Ideal Transfer Characteristics**: Without considering non-ideal effects, the output directly equals the selected channel's input: `out[n] = in[n]`. This simplification is suitable for functional verification and early stages of signal integrity analysis.
+
+- **Delay Modeling**: The optional parameter `mux_delay` is used to model the propagation delay of the selector. In real hardware, delay sources include:
+  - Tri-state buffer or transmission gate switching time (~10-30ps)
+  - Clock-to-Q delay in the clock-to-data path
+  - RC delay from interconnect parasitic capacitance and resistance
+  
+  In the behavioral model, these effects are approximated by inserting fixed delay elements (such as filter group delay or explicit delay lines) into the signal path.
+
+- **Correspondence with Real Topologies**:
+  - **Tree Selector**: Multi-level 2:1 cascades, total delay = number of levels × single-level delay
+  - **Parallel Selector**: Single-level multi-way selection, minimum delay but load-dependent
+  - **Behavioral Model**: Match equivalent delay of above topologies by adjusting `mux_delay` parameter without implementing specific circuit structures
+
+#### 1.1.4 Jitter Effect Modeling
+
+The Mux is a significant jitter source in the SerDes transmitter. The behavioral model needs to capture the following effects:
+
+- **Deterministic Jitter (DJ)** sources:
+  - **Duty Cycle Distortion (DCD)**: Clock duty cycle deviation from 50% causes unequal adjacent UI widths. DCD-induced peak-to-peak jitter = `DJ_DCD = UI × |DCD% - 50%|`. For example, a 48% duty cycle (2% deviation) produces 0.32ps jitter at 16ps UI.
+  - **Pattern-Dependent Jitter (PDJ)**: Selector propagation delay varies with input data patterns, which can be modeled by injecting different delay offsets for different patterns.
+  
+- **Random Jitter (RJ)** sources:
+  - **Clock Phase Noise**: Phase noise from the PLL transfers to data edges, manifesting as Gaussian-distributed random jitter, typical values 0.1-0.5 ps rms
+  - **Thermal Noise**: Thermal noise from selector circuit superimposes on output, related to circuit bandwidth and temperature
+  
+- **Behavioral-Level Modeling Methods**:
+  - **Time Domain Injection**: Apply random time shifts or amplitude perturbations to the output signal at each timestep
+  - **Parameterized Control**: Flexibly adjust jitter levels through `jitter_enable`, `dcd_percent`, `rj_sigma` and other parameters to match target hardware specifications
+
+### 1.2 Core Features
+
+- **Single-Input Single-Output Architecture**: Adopts a simplified single-ended signal path (`in` → `out`), focusing on channel selection and delay/jitter modeling rather than complete multi-channel parallel inputs. Suitable for behavioral-level simulation and algorithm verification.
+
+- **Channel Index Selection**: Specifies the selected channel index (0-based) through the constructor parameter `lane_sel`, supporting independent modeling and testing of specific channels in multi-channel systems. Default value is 0 (first channel).
+
+- **Symbol Rate Synchronization**: Input and output sampling rates are consistent, operating in the symbol rate clock domain, compatible with timing requirements of preceding FFE and following Driver modules. Sampling rate is controlled by global parameter `Fs` (sampling frequency).
+
+- **Configurable Delay**: Optional parameter `mux_delay` is used to model the propagation delay of the selector, matching real hardware timing characteristics. Delay range is typically 10-50ps, specific values depend on process node and topology.
+
+- **Jitter Modeling Support**: Optionally injects Deterministic Jitter (DCD) and Random Jitter (RJ) to simulate the effects of clock non-idealities and circuit noise on output signal quality. Jitter parameters are flexibly set through configuration files.
+
+- **Bypass Mode**: When `lane_sel=0` and no delay/jitter is configured, the module degrades to pass-through mode for front-end debugging or single-channel system verification.
+
+### 1.3 Typical Application Scenarios
+
+TX Mux configuration in different SerDes architectures:
+
+| System Architecture | Lane Count | Symbol Rate | Mux Configuration | Typical Application |
+|---------------------|------------|-------------|-------------------|---------------------|
+| Single-Lane SerDes | 1 | Equal to bit rate | lane_sel=0, Bypass | Low-speed links (<10Gbps), PCIe Gen1/2 |
+| 2:1 Parallel-to-Serial | 2 | Bit rate/2 | lane_sel=0 or 1 | Medium-speed links (10-25Gbps) |
+| 4:1 Parallel-to-Serial | 4 | Bit rate/4 | lane_sel=0-3 | PCIe Gen3/4, USB3.x |
+| 8:1 Parallel-to-Serial | 8 | Bit rate/8 | lane_sel=0-7 | 56G/112G SerDes, High-speed Ethernet |
+
+> **Note**: This module models the behavior of a single Lane. Complete N:1 systems require instantiating N data paths (WaveGen → FFE → Mux) and performing time-division multiplexing simulation at the system level.
+
+### 1.4 Relationship with Other Modules
+
+- **Upstream Module (FFE)**  
+  The Mux receives equalized symbol signals from the FFE, with inputs being nominal amplitude digital signals (e.g., ±1V). The FFE output timing must meet the Mux setup time requirement, typically > 0.2 UI.
+
+- **Downstream Module (Driver)**  
+  Mux output is sent to the Driver for power amplification and impedance matching. Mux output delay and jitter directly affect the Driver sampling moment and eye diagram quality, requiring joint optimization of timing budgets.
+
+- **Clock Source (Clock Generation)**  
+  In real hardware, the Mux relies on multi-phase clocks or a Phase Interpolator (PI) to implement time-division multiplexing. In the behavioral model, clock accuracy effects are abstracted into jitter parameters (such as DCD, RJ), configured by the user based on Clock module specifications.
+
+- **System Configuration (System Configuration)**  
+  Parameters such as `lane_sel`, `mux_delay`, `jitter_params` are loaded through configuration files, supporting multi-scenario switching and parameter sweep analysis (such as performance differences under different channel indices, impact of delay sweep on eye diagram).
+
+### 1.5 Version History
+
+| Version | Date | Major Changes |
+|---------|------|---------------|
+| v0.1 | 2026-01-13 | Initial version, implementing single-input single-output architecture, channel selection, and basic delay modeling |
+
+---
+
+## 2. Module Interface
+
+### 2.1 Port Definitions (TDF Domain)
+
+TX Mux adopts a single-ended signal architecture, all ports are TDF domain analog signals.
+
+| Port Name | Direction | Type | Description |
+|-----------|-----------|------|-------------|
+| `in` | Input | double | Input data signal (from FFE or other preceding modules) |
+| `out` | Output | double | Output data signal (to Driver or following modules) |
+
+#### Port Connection Notes
+
+- **Simplified Architecture**: Adopts Single-Input-Single-Output (SISO) design, abstracting the multi-input selection logic of real hardware. Channel selection is implemented through the constructor parameter `lane_sel` rather than multi-port switching.
+- **Sampling Rate Consistency**: Input and output sampling rates are consistent (`set_rate(1)`), operating in the symbol rate clock domain. All connected TDF modules must use the same global sampling frequency `Fs` (defined by `GlobalParams`).
+- **Signal Amplitude**: Input signal amplitude is typically the nominal value output by the preceding FFE (e.g., ±0.5V ~ ±1.0V). The current version (v0.1) adopts ideal transfer, with output amplitude identical to input.
+- **Load Conditions**: Output port should be connected to the Driver module or test load, ensuring the following module can correctly sample the Mux output timing characteristics.
+
+### 2.2 Parameter Configuration
+
+#### 2.2.1 Currently Implemented Parameters
+
+TX Mux parameters are defined in the `TxParams` structure (located at `include/common/parameters.h`). **Current version (v0.1) only implements the channel index parameter**:
+
+| Parameter Path | Type | Default Value | Unit | Description |
+|----------------|------|---------------|------|-------------|
+| `tx.mux_lane` | int | 0 | - | Selected channel index (0-based), specifies the Lane number corresponding to Mux output |
+
+**Constructor Signature**:
 ```cpp
 TxMuxTdf(sc_core::sc_module_name nm, int lane_sel = 0);
 ```
 
-**当前行为**（`src/ams/tx_mux.cpp`）：
+**Current Behavior** (`src/ams/tx_mux.cpp`):
 ```cpp
 void TxMuxTdf::processing() {
-    // 简单透传模式（单通道）
+    // Simple pass-through mode (single channel)
     double x_in = in.read();
     out.write(x_in);
 }
 ```
 
-**参数说明**：
-- **lane_sel（mux_lane）设计意图**：
-  - **当前实现**：参数存储在成员变量 `m_lane_sel` 中，但在 `processing()` 函数中未使用，模块执行理想透传（Pass-through）操作。
-  - **设计用途**：为未来多通道架构预留，用于选择N个并行输入中的某一路（当前单输入单输出架构下该参数无实际功能影响）。
-  - **有效范围**：整数索引，通常 0-based。对于单通道系统，固定为 `lane_sel=0`。
+**Parameter Description**:
+- **lane_sel (mux_lane) Design Intent**:
+  - **Current Implementation**: Parameter is stored in member variable `m_lane_sel`, but not used in `processing()` function; module performs ideal pass-through operation.
+  - **Design Purpose**: Reserved for future multi-channel architecture, for selecting one of N parallel inputs (under current single-input single-output architecture, this parameter has no actual functional impact).
+  - **Valid Range**: Integer index, typically 0-based. For single-channel systems, fixed at `lane_sel=0`.
 
-#### 2.2.2 预留参数（未来版本）
+#### 2.2.2 Reserved Parameters (Future Versions)
 
-以下参数在当前代码中**尚未实现**，仅作为设计规划和配置文件预留接口，供未来版本扩展使用。
+The following parameters are **not yet implemented** in the current code and serve only as design planning and configuration file reserved interfaces for future version extensions.
 
-##### 延迟建模参数（预留）
+##### Delay Modeling Parameters (Reserved)
 
-| 参数 | 类型 | 默认值 | 单位 | 说明 | 实现状态 |
-|------|------|--------|------|------|---------|
-| `mux_delay` | double | 0.0 | s | 传播延迟（Propagation Delay），建模选择器的固定时延 | 待实现 |
+| Parameter | Type | Default Value | Unit | Description | Implementation Status |
+|-----------|------|---------------|------|-------------|----------------------|
+| `mux_delay` | double | 0.0 | s | Propagation Delay, modeling fixed delay of selector | To be implemented |
 
-**设计意图**：
-- **物理意义**：建模选择器从输入到输出的传播延迟，包括：
-  - 选择器逻辑延迟（三态门、传输门的开关时间）
-  - 时钟到数据路径延迟（Clock-to-Q Delay）
-  - 互连寄生RC延迟
-- **典型值参考**：
-  - 先进工艺（7nm/5nm）：10-20 ps
-  - 成熟工艺（28nm/16nm）：20-40 ps
-  - 长互连走线：可达 50-100 ps
-- **实现方法建议**：
-  - 使用 `sca_tdf::sca_delay` 或显式缓冲队列实现固定延迟
-  - 或通过一阶低通滤波器的群延迟近似传播延迟
+**Design Intent**:
+- **Physical Meaning**: Models propagation delay from input to output of the selector, including:
+  - Selector logic delay (tri-state gate, transmission gate switching time)
+  - Clock-to-data path delay (Clock-to-Q Delay)
+  - Interconnect parasitic RC delay
+- **Typical Values Reference**:
+  - Advanced processes (7nm/5nm): 10-20 ps
+  - Mature processes (28nm/16nm): 20-40 ps
+  - Long interconnect traces: up to 50-100 ps
+- **Implementation Method Suggestions**:
+  - Use `sca_tdf::sca_delay` or explicit buffer queue for fixed delay
+  - Or approximate propagation delay through first-order low-pass filter group delay
 
-##### 抖动建模参数（预留）
+##### Jitter Modeling Parameters (Reserved)
 
-| 参数 | 类型 | 默认值 | 单位 | 说明 | 实现状态 |
-|------|------|--------|------|------|---------|
-| `jitter.enable` | bool | false | - | 启用抖动建模功能 | 待实现 |
-| `jitter.dcd_percent` | double | 50.0 | % | 占空比（Duty Cycle），50%为理想，偏离50%产生DCD抖动 | 待实现 |
-| `jitter.rj_sigma` | double | 0.0 | s | 随机抖动（RJ）标准差，高斯分布模型 | 待实现 |
-| `jitter.seed` | int | 0 | - | 随机数生成器种子，0表示使用全局种子 | 待实现 |
+| Parameter | Type | Default Value | Unit | Description | Implementation Status |
+|-----------|------|---------------|------|-------------|----------------------|
+| `jitter.enable` | bool | false | - | Enable jitter modeling functionality | To be implemented |
+| `jitter.dcd_percent` | double | 50.0 | % | Duty Cycle, 50% is ideal, deviation from 50% produces DCD jitter | To be implemented |
+| `jitter.rj_sigma` | double | 0.0 | s | Random Jitter (RJ) standard deviation, Gaussian distribution model | To be implemented |
+| `jitter.seed` | int | 0 | - | Random number generator seed, 0 means use global seed | To be implemented |
 
-**设计意图**：
+**Design Intent**:
 
-**占空比失真（DCD）建模**：
-- **物理背景**：时钟占空比偏离50%导致相邻UI（Unit Interval）宽度不等，引入边沿位置偏移
-- **典型影响**：对于 UI=16ps 的系统，占空比从50%偏离到48%（偏离2%），会在边沿产生约 0.3-0.6ps 的确定性抖动
-- **实现方法建议**：
-  - 奇数UI和偶数UI施加相反方向的时间偏移
-  - 通过插值技术（如Lagrange或Sinc插值）实现分数采样延迟
+**Duty Cycle Distortion (DCD) Modeling**:
+- **Physical Background**: Clock duty cycle deviation from 50% causes unequal adjacent UI (Unit Interval) widths, introducing edge position offset
+- **Typical Impact**: For a system with UI=16ps, duty cycle deviating from 50% to 48% (2% deviation), produces approximately 0.3-0.6ps deterministic jitter at edges
+- **Implementation Method Suggestions**:
+  - Apply opposite direction time offsets to odd and even UIs
+  - Implement fractional sample delay through interpolation techniques (such as Lagrange or Sinc interpolation)
 
-**随机抖动（RJ）建模**：
-- **物理来源**：
-  - 时钟相位噪声：来自PLL/时钟分发的相位抖动传递到数据边沿
-  - 热噪声：选择器电路的热噪声叠加到输出
-  - 电源噪声：VDD抖动通过时钟路径耦合到Mux
-- **典型值参考**：
-  - 低抖动系统：rj_sigma < 0.2 ps（峰峰值 < 3ps，对应BER=10⁻¹²时的 14σ 估算）
-  - 中等性能：rj_sigma = 0.3-0.5 ps（峰峰值 4-7ps）
-  - 高抖动场景（压力测试）：rj_sigma > 1.0 ps
-- **实现方法建议**：
-  - 每个时间步长生成独立同分布的高斯随机数：`δt ~ N(0, rj_sigma²)`
-  - 使用高精度插值实现 fractional delay
+**Random Jitter (RJ) Modeling**:
+- **Physical Sources**:
+  - Clock phase noise: Phase jitter from PLL/clock distribution transfers to data edges
+  - Thermal noise: Thermal noise from selector circuit superimposes on output
+  - Power supply noise: VDD jitter couples to Mux through clock path
+- **Typical Values Reference**:
+  - Low jitter systems: rj_sigma < 0.2 ps (peak-to-peak < 3ps, estimated at 14σ for BER=10⁻¹²)
+  - Medium performance: rj_sigma = 0.3-0.5 ps (peak-to-peak 4-7ps)
+  - High jitter scenarios (stress testing): rj_sigma > 1.0 ps
+- **Implementation Method Suggestions**:
+  - Generate independent and identically distributed Gaussian random numbers at each timestep: `δt ~ N(0, rj_sigma²)`
+  - Use high-precision interpolation to implement fractional delay
 
-##### 多通道选择参数（预留）
+##### Multi-Channel Selection Parameters (Reserved)
 
-| 参数 | 类型 | 默认值 | 说明 | 实现状态 |
-|------|------|--------|------|---------|
-| `num_lanes` | int | 1 | 系统总通道数（1=单通道，2/4/8=多通道架构），用于参数验证 | 待实现 |
+| Parameter | Type | Default Value | Description | Implementation Status |
+|-----------|------|---------------|-------------|----------------------|
+| `num_lanes` | int | 1 | Total system channel count (1=single channel, 2/4/8=multi-channel architecture), for parameter validation | To be implemented |
 
-**设计意图**：
-- **用途**：定义系统架构类型，为通道索引验证提供边界条件（应满足 `0 ≤ lane_sel < num_lanes`）
-- **典型配置**：
-  - `num_lanes=1`：单通道SerDes（比特速率 ≤ 10Gbps）
-  - `num_lanes=2/4/8`：2:1/4:1/8:1并串转换架构
-- **注意**：真实N:1并串转换需要在系统级实例化 N 个并行数据路径，当前单输入单输出架构仅对单条Lane建模
+**Design Intent**:
+- **Purpose**: Defines system architecture type, provides boundary conditions for channel index validation (should satisfy `0 ≤ lane_sel < num_lanes`)
+- **Typical Configurations**:
+  - `num_lanes=1`: Single-channel SerDes (bit rate ≤ 10Gbps)
+  - `num_lanes=2/4/8`: 2:1/4:1/8:1 parallel-to-serial conversion architecture
+- **Note**: Real N:1 parallel-to-serial conversion requires instantiating N parallel data paths at system level; current single-input single-output architecture only models a single Lane.
 
-##### 非线性效应参数（预留）
+##### Nonlinear Effects Parameters (Reserved)
 
-| 参数 | 类型 | 默认值 | 说明 | 实现状态 |
-|------|------|--------|------|---------|
-| `nonlinearity.enable` | bool | false | 启用非线性建模 | 待实现 |
-| `nonlinearity.gain_compression` | double | 0.0 | 增益压缩系数（dB/V） | 待实现 |
-| `nonlinearity.saturation_voltage` | double | 1.0 | 饱和电压（V） | 待实现 |
+| Parameter | Type | Default Value | Description | Implementation Status |
+|-----------|------|---------------|-------------|----------------------|
+| `nonlinearity.enable` | bool | false | Enable nonlinear modeling | To be implemented |
+| `nonlinearity.gain_compression` | double | 0.0 | Gain compression coefficient (dB/V) | To be implemented |
+| `nonlinearity.saturation_voltage` | double | 1.0 | Saturation voltage (V) | To be implemented |
 
-**设计意图（未来版本潜在应用）**：
-- **增益压缩**：大信号输入下增益降低，建模传输门的非线性电阻
-- **饱和限幅**：输出幅度受限于电源电压或驱动能力
-- **码型相关延迟**：不同码型下的传播延迟变化，引入数据相关抖动（DDJ）
+**Design Intent (Potential Applications in Future Versions)**:
+- **Gain Compression**: Gain reduction under large signal input, modeling nonlinear resistance of transmission gates
+- **Saturation Limiting**: Output amplitude limited by supply voltage or drive capability
+- **Pattern-Dependent Delay**: Propagation delay variation under different data patterns, introducing Data-Dependent Jitter (DDJ)
 
-### 2.3 配置示例
+### 2.3 Configuration Examples
 
-#### 2.3.1 当前版本有效配置
+#### 2.3.1 Current Version Valid Configurations
 
-**示例1：最简配置（与当前实现匹配）**
+**Example 1: Minimal Configuration (matching current implementation)**
 
 ```json
 {
@@ -267,12 +267,12 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**说明**：
-- 这是当前版本（v0.1）**唯一有效的配置参数**
-- 模块执行理想透传：`out = in`，无延迟、无抖动
-- 适用于前端调试或单通道系统功能验证
+**Description**:
+- This is the **only valid configuration parameter** for current version (v0.1)
+- Module performs ideal pass-through: `out = in`, no delay, no jitter
+- Suitable for front-end debugging or single-channel system functional verification
 
-**示例2：多通道系统中的通道选择（意图声明）**
+**Example 2: Channel Selection in Multi-Channel System (Intent Declaration)**
 
 ```json
 {
@@ -282,15 +282,15 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**说明**：
-- 声明选中第3个通道（索引2），但**当前实现中该参数不影响信号处理行为**（仍为透传）
-- 用于配置文件版本管理，为未来多通道架构迁移做准备
+**Description**:
+- Declares selection of channel 3 (index 2), but **this parameter does not affect signal processing behavior in current implementation** (still pass-through)
+- Used for configuration file version management, preparing for future multi-channel architecture migration
 
-#### 2.3.2 未来版本配置示例（预留接口）
+#### 2.3.2 Future Version Configuration Examples (Reserved Interface)
 
-以下配置在当前代码中**无法生效**，仅作为未来版本的设计规划参考。
+The following configurations **cannot take effect** in current code and serve only as design planning references for future versions.
 
-**示例3：带延迟的单通道模式（未来）**
+**Example 3: Single-Channel Mode with Delay (Future)**
 
 ```json
 {
@@ -301,11 +301,11 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**预期行为（待实现）**：
-- 固定延迟25ps，匹配28nm工艺的典型传播延迟
-- 输出信号相对输入延迟一个固定时间
+**Expected Behavior (To be implemented)**:
+- Fixed delay of 25ps, matching typical propagation delay of 28nm process
+- Output signal delayed by a fixed time relative to input
 
-**示例4：启用抖动建模（未来）**
+**Example 4: Enable Jitter Modeling (Future)**
 
 ```json
 {
@@ -322,13 +322,13 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**预期行为（待实现）**：
-- 固定延迟15ps（先进工艺）
-- DCD占空比48%（偏离2%），在边沿产生确定性时间偏移
-- RJ标准差0.3ps，叠加高斯分布的随机时间抖动
-- 使用全局随机种子保证可重复性
+**Expected Behavior (To be implemented)**:
+- Fixed delay of 15ps (advanced process)
+- DCD duty cycle 48% (2% deviation), producing deterministic time offset at edges
+- RJ standard deviation 0.3ps, superimposing Gaussian-distributed random time jitter
+- Uses global random seed for reproducibility
 
-**示例5：多通道架构配置（未来）**
+**Example 5: Multi-Channel Architecture Configuration (Future)**
 
 ```json
 {
@@ -340,118 +340,119 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**预期行为（待实现）**：
-- 8:1架构中选中第6个通道（索引5）
-- 参数验证：`lane_sel < num_lanes`（5 < 8 通过）
-- 适用于56Gbps/112Gbps SerDes的通道级测试
+**Expected Behavior (To be implemented)**:
+- Select channel 6 (index 5) in 8:1 architecture
+- Parameter validation: `lane_sel < num_lanes` (5 < 8 passes)
+- Suitable for channel-level testing of 56Gbps/112Gbps SerDes
 
-### 2.4 参数使用注意事项
+### 2.4 Parameter Usage Notes
 
-#### 当前版本（v0.1）开发者指南
+#### Current Version (v0.1) Developer Guide
 
-1. **仅 `tx.mux_lane` 参数有效**  
-   配置文件中只需设置 `"tx": {"mux_lane": 0}`，其他参数会被忽略（如果配置文件加载器已实现参数读取，但模块内部未使用）。
+1. **Only `tx.mux_lane` parameter is valid**  
+   Only need to set `"tx": {"mux_lane": 0}` in configuration file, other parameters will be ignored (if configuration file loader has implemented parameter reading, but module internally doesn't use them).
 
-2. **透传行为保证**  
-   无论 `mux_lane` 取何值，当前版本模块始终执行 `out = in` 的透传操作。
+2. **Pass-through Behavior Guarantee**  
+   Regardless of `mux_lane` value, current version module always performs `out = in` pass-through operation.
 
-3. **测试策略建议**  
-   - **功能验证**：验证端口连接正确性和采样率一致性
-   - **集成测试**：与FFE和Driver模块串联,确认信号链连续性
-   - **不需要测试**：延迟、抖动、多通道切换（当前未实现）
+3. **Testing Strategy Suggestions**  
+   - **Functional Verification**: Verify port connection correctness and sampling rate consistency
+   - **Integration Testing**: Connect in series with FFE and Driver modules, confirm signal chain continuity
+   - **No need to test**: Delay, jitter, multi-channel switching (not implemented in current version)
 
-#### 未来版本扩展指南
+#### Future Version Extension Guide
 
-1. **延迟实现路径**  
-   - 方案A：使用 `sca_tdf::sca_delay<double>` 模块级延迟
-   - 方案B：显式环形缓冲区存储历史采样值
-   - 方案C：通过一阶滤波器群延迟近似
+1. **Delay Implementation Path**  
+   - Option A: Use `sca_tdf::sca_delay<double>` module-level delay
+   - Option B: Explicit circular buffer storing historical sample values
+   - Option C: Approximate through first-order filter group delay
 
-2. **抖动实现路径**  
-   - DCD：根据UI索引奇偶性调整采样时刻
-   - RJ：使用 `std::normal_distribution` 生成时间扰动
-   - 插值：实现高精度分数延迟（Lagrange/Sinc/Farrow结构）
+2. **Jitter Implementation Path**  
+   - DCD: Adjust sampling moments based on UI index parity
+   - RJ: Use `std::normal_distribution` to generate time perturbations
+   - Interpolation: Implement high-precision fractional delay (Lagrange/Sinc/Farrow structure)
 
-3. **多通道实现路径**  
-   - 修改端口定义为 `sca_tdf::sca_in<double>` 数组或 `std::vector`
-   - 在 `processing()` 中根据 `m_lane_sel` 选择对应输入端口
-   - 系统级需要实例化多个并行数据路径并在顶层合并
+3. **Multi-Channel Implementation Path**  
+   - Modify port definition to `sca_tdf::sca_in<double>` array or `std::vector`
+   - In `processing()`, select corresponding input port based on `m_lane_sel`
+   - System level requires instantiating multiple parallel data paths and merging at top level
 
-4. **配置加载兼容性**  
-   - 预留参数应在配置加载器中标记为可选（optional）
-   - 当检测到未实现参数被使用时，应输出警告日志而非报错
-   - 保持配置文件向前兼容性（新版本代码能识别旧版本配置）
+4. **Configuration Loading Compatibility**  
+   - Reserved parameters should be marked as optional in configuration loader
+   - When detecting use of unimplemented parameters, output warning log instead of error
+   - Maintain configuration file forward compatibility (new version code can recognize old version configs)
 
 ---
 
-## 3. 核心实现机制
+## 3. Core Implementation Mechanisms
 
-### 3.1 信号处理流程
+### 3.1 Signal Processing Flow
 
-TX Mux 模块当前版本（v0.1）采用最简化的透传架构，信号处理流程仅包含单一步骤：
+TX Mux module current version (v0.1) adopts the most simplified pass-through architecture, with signal processing flow containing only a single step:
 
 ```
-输入读取 → 直接写入输出
+Input Read → Direct Write to Output
 ```
 
-**完整处理流程（当前实现）**：
+**Complete Processing Flow (Current Implementation)**:
 
 ```cpp
 void TxMuxTdf::processing() {
-    // 简单透传模式（单通道）
+    // Simple pass-through mode (single channel)
     double x_in = in.read();
     out.write(x_in);
 }
 ```
 
-**代码位置**：`src/ams/tx_mux.cpp` 第 18-22 行
+**Code Location**: Lines 18-22 of `src/ams/tx_mux.cpp`
 
-#### 步骤1 - 输入读取
+#### Step 1 - Input Read
 
-从 TDF 输入端口读取当前时间步长的模拟信号值：
+Read the analog signal value at current timestep from TDF input port:
 
 ```cpp
 double x_in = in.read();
 ```
 
-**设计说明**：
-- 输入信号 `x_in` 通常来自前级 FFE（Feed-Forward Equalizer）模块的输出
-- 信号幅度范围取决于 FFE 的输出配置，典型值为 ±0.5V ~ ±1.0V（单端）
-- 采样率由全局参数 `Fs` 控制，通过 `set_attributes()` 方法配置为符号速率同步（`set_rate(1)`）
+**Design Notes**:
+- Input signal `x_in` typically comes from preceding FFE (Feed-Forward Equalizer) module output
+- Signal amplitude range depends on FFE output configuration, typical values ±0.5V ~ ±1.0V (single-ended)
+- Sampling rate is controlled by global parameter `Fs`, configured for symbol rate synchronization (`set_rate(1)`) through `set_attributes()` method
 
-#### 步骤2 - 直接输出
+#### Step 2 - Direct Output
 
-将读取的输入信号不作任何处理直接写入输出端口：
+Write the read input signal directly to output port without any processing:
 
 ```cpp
 out.write(x_in);
 ```
 
-**当前版本行为特征**：
-- **零延迟**：输出在同一时间步长内完成，不引入任何传播延迟
-- **理想传输**：输出幅度和相位与输入完全一致，无增益/衰减/失真
-- **无抖动**：不注入任何确定性或随机抖动成分
-- **通道索引无效**：尽管构造函数接受 `lane_sel` 参数并存储在 `m_lane_sel` 成员变量中，但 `processing()` 方法中未使用该变量，因此通道索引配置不影响信号路径
+**Current Version Behavior Characteristics**:
+- **Zero Delay**: Output completed within same timestep, no propagation delay introduced
+- **Ideal Transfer**: Output amplitude and phase identical to input, no gain/attenuation/distortion
+- **No Jitter**: No deterministic or random jitter components injected
+- **Channel Index Ineffective**: Although constructor accepts `lane_sel` parameter and stores it in `m_lane_sel` member variable, the `processing()` method does not use this variable, so channel index configuration does not affect signal path
 
-**等效传递函数**：
+**Equivalent Transfer Function**:
 ```
-H(s) = 1  （全频段单位增益）
-H(z) = 1  （离散时域）
-y[n] = x[n]  （时域表达式）
+H(s) = 1  (unity gain across all frequencies)
+H(z) = 1  (discrete time domain)
+y[n] = x[n]  (time domain expression)
 ```
 
-**应用场景**：
-- **功能验证阶段**：验证 TX 链路（FFE → Mux → Driver）的端到端连接正确性
-- **基线测试**：建立无 Mux 延迟/抖动影响的参考眼图，用于后续版本的对比分析
-- **单通道系统**：在不需要多通道复用和延迟建模的简化应用中，当前实现已满足需求
+**Application Scenarios**:
+- **Functional Verification Phase**: Verify TX link (FFE → Mux → Driver) end-to-end connection correctness
+- **Baseline Testing**: Establish reference eye diagram without Mux delay/jitter effects for comparison with subsequent versions
+- **Single-Channel Systems**: In simplified applications not requiring multi-channel multiplexing and delay modeling, current implementation already meets requirements
 
-### 3.2 TDF 生命周期方法
 
-TX Mux 作为 SystemC-AMS TDF（Timed Data Flow）模块，遵循标准的 TDF 生命周期管理机制。本节详细说明三个核心方法的实现和设计考量。
+### 3.2 TDF Lifecycle Methods
 
-#### 3.2.1 构造函数 - 模块初始化
+TX Mux as a SystemC-AMS TDF (Timed Data Flow) module follows standard TDF lifecycle management mechanisms. This section details the implementation and design considerations of three core methods.
 
-**代码实现**（`src/ams/tx_mux.cpp` 第 5-11 行）：
+#### 3.2.1 Constructor - Module Initialization
+
+**Code Implementation** (Lines 5-11 of `src/ams/tx_mux.cpp`):
 
 ```cpp
 TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int lane_sel)
@@ -463,35 +464,35 @@ TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int lane_sel)
 }
 ```
 
-**参数说明**：
-- `nm`：SystemC 模块实例名称，由上层系统模块传入，用于层次化命名和调试信息输出
-- `lane_sel`：通道索引参数（默认值 0），指定选中的数据通道编号
+**Parameter Description**:
+- `nm`: SystemC module instance name, passed by upper-level system module, used for hierarchical naming and debug information output
+- `lane_sel`: Channel index parameter (default value 0), specifies selected data channel number
 
-**初始化列表逐项解析**：
+**Initialization List Item-by-Item Analysis**:
 
-1. **基类构造**：`sca_tdf::sca_module(nm)`
-   - 调用 SystemC-AMS TDF 模块基类构造函数，注册模块到 TDF 调度器
-   - 继承 TDF 时间步进机制和采样率管理接口
+1. **Base Class Construction**: `sca_tdf::sca_module(nm)`
+   - Calls SystemC-AMS TDF module base class constructor, registers module to TDF scheduler
+   - Inherits TDF timestep mechanism and sampling rate management interface
 
-2. **端口注册**：`in("in")`, `out("out")`
-   - 分配端口名称并注册到模块的端口列表
-   - 端口类型为 `sca_tdf::sca_in<double>` 和 `sca_tdf::sca_out<double>`（定义在 `include/ams/tx_mux.h` 第 10-11 行）
-   - 端口连接将在系统级 `SC_CTOR` 或 `elaborate()` 阶段完成
+2. **Port Registration**: `in("in")`, `out("out")`
+   - Allocates port names and registers to module's port list
+   - Port types are `sca_tdf::sca_in<double>` and `sca_tdf::sca_out<double>` (defined in `include/ams/tx_mux.h` lines 10-11)
+   - Port connections will be completed at system-level `SC_CTOR` or `elaborate()` phase
 
-3. **成员变量初始化**：`m_lane_sel(lane_sel)`
-   - 存储通道索引参数供后续使用
-   - **当前版本注意**：尽管存储了该值，但 `processing()` 方法中未使用，参数实际不起作用
+3. **Member Variable Initialization**: `m_lane_sel(lane_sel)`
+   - Stores channel index parameter for subsequent use
+   - **Current Version Note**: Although this value is stored, the `processing()` method does not use it, so parameter has no actual effect
 
-**构造函数体为空**：
-- 当前版本不需要额外的运行时初始化（如随机数生成器、滤波器对象、延迟线缓冲区）
-- 未来版本可能在此处初始化：
-  - 抖动模型的随机数生成器 `std::mt19937`
-  - 延迟线缓冲区 `std::deque<double>`
-  - PSRR/带宽滤波器对象 `sca_ltf_nd`
+**Empty Constructor Body**:
+- Current version does not require additional runtime initialization (such as random number generators, filter objects, delay line buffers)
+- Future versions may initialize here:
+  - Random number generator for jitter model `std::mt19937`
+  - Delay line buffer `std::deque<double>`
+  - PSRR/bandwidth filter object `sca_ltf_nd`
 
-#### 3.2.2 set_attributes() - 采样率配置
+#### 3.2.2 set_attributes() - Sampling Rate Configuration
 
-**代码实现**（`src/ams/tx_mux.cpp` 第 13-16 行）：
+**Code Implementation** (Lines 13-16 of `src/ams/tx_mux.cpp`):
 
 ```cpp
 void TxMuxTdf::set_attributes() {
@@ -500,125 +501,125 @@ void TxMuxTdf::set_attributes() {
 }
 ```
 
-**方法调用时机**：
-- SystemC-AMS 在仿真启动前的 elaboration 阶段自动调用
-- 在所有模块实例化和端口连接完成后，仿真开始前执行
-- 用于声明模块的时序约束和资源需求
+**Method Call Timing**:
+- SystemC-AMS automatically calls during elaboration phase before simulation starts
+- Executes after all module instantiation and port connections are complete, before simulation begins
+- Used to declare module's timing constraints and resource requirements
 
-**采样率设置详解**：
+**Sampling Rate Setting Details**:
 
-**`set_rate(1)` 的含义**：
-- 参数 `1` 表示输入/输出端口的相对采样率因子（Rate Factor）
-- 相对于全局时间步长 Δt（由顶层 TDF 模块或 SystemC 时钟域定义），端口每个时间步长采样/输出一次
-- 等价声明：**输入和输出采样率一致，工作在符号速率时钟域**
+**Meaning of `set_rate(1)`**:
+- Parameter `1` represents input/output port relative sampling rate factor (Rate Factor)
+- Relative to global timestep Δt (defined by top-level TDF module or SystemC clock domain), port samples/outputs once per timestep
+- Equivalent declaration: **Input and output sampling rates are consistent, operating in symbol rate clock domain**
 
-**采样率因子的物理意义**：
+**Physical Meaning of Sampling Rate Factor**:
 
-假设全局采样频率为 Fs（例如 560 GHz），比特速率为 56 Gbps，符号速率为 7 GHz（8:1架构），则：
+Assuming global sampling frequency is Fs (e.g., 560 GHz), bit rate is 56 Gbps, symbol rate is 7 GHz (8:1 architecture), then:
 
-- 全局时间步长：Δt = 1/Fs = 1.786 ps
-- 符号周期：T_sym = 1/7GHz = 142.86 ps
-- 每个符号包含采样点数：Fs / 7GHz = 80 个时间步长
+- Global timestep: Δt = 1/Fs = 1.786 ps
+- Symbol period: T_sym = 1/7GHz = 142.86 ps
+- Sampling points per symbol: Fs / 7GHz = 80 timesteps
 
-在 `set_rate(1)` 配置下：
-- Mux 的 `processing()` 方法每 1 个时间步长被调用一次
-- 每次调用处理一个采样点（不是一个符号）
-- 这种细粒度采样适用于行为级建模，捕捉符号内的幅度变化和过渡过程
+Under `set_rate(1)` configuration:
+- Mux `processing()` method is called once per 1 timestep
+- Each call processes one sample point (not one symbol)
+- This fine-grained sampling is suitable for behavioral modeling, capturing amplitude variations and transition processes within symbols
 
-**与其他模块的采样率协调**：
+**Sampling Rate Coordination with Other Modules**:
 
-TX Mux 通常级联在以下信号链中：
+TX Mux is typically cascaded in the following signal chain:
 ```
 FFE (rate=1) → Mux (rate=1) → Driver (rate=1)
 ```
 
-- 所有模块采样率因子一致（rate=1），确保信号流的时序连续性
-- 如果前后级模块采样率不同（如 rate=1 连接 rate=2），需要在端口间插入速率转换模块或使用 SystemC-AMS 的自动插值机制
-- **当前实现要求**：所有 TX 链路模块必须使用相同的全局采样频率 Fs
+- All module sampling rate factors are consistent (rate=1), ensuring signal flow timing continuity
+- If preceding and following modules have different sampling rates (e.g., rate=1 connecting to rate=2), rate conversion modules need to be inserted between ports or SystemC-AMS automatic interpolation mechanism should be used
+- **Current Implementation Requirement**: All TX link modules must use the same global sampling frequency Fs
 
-**为什么不使用符号速率采样？**
+**Why Not Use Symbol Rate Sampling?**
 
-理论上可以将 Mux 的采样率设置为符号速率（rate = Fs / R_sym），即每个符号周期调用一次 `processing()`。但当前设计选择 rate=1 的原因包括：
+Theoretically, Mux sampling rate could be set to symbol rate (rate = Fs / R_sym), meaning `processing()` is called once per symbol period. However, current design chooses rate=1 for the following reasons:
 
-1. **灵活性**：保持与前后级模块的直接兼容，避免速率转换开销
-2. **精度**：捕捉符号内的瞬态过程（如边沿上升时间、过冲），适用于眼图分析
-3. **一致性**：项目所有 AMS 模块统一采用 rate=1，简化系统配置
+1. **Flexibility**: Maintains direct compatibility with preceding and following modules, avoiding rate conversion overhead
+2. **Precision**: Captures transient processes within symbols (such as edge rise time, overshoot), suitable for eye diagram analysis
+3. **Consistency**: All AMS modules in the project uniformly adopt rate=1, simplifying system configuration
 
-#### 3.2.3 processing() - 核心信号处理
+#### 3.2.3 processing() - Core Signal Processing
 
-**代码实现**（`src/ams/tx_mux.cpp` 第 18-22 行）：
+**Code Implementation** (Lines 18-22 of `src/ams/tx_mux.cpp`):
 
 ```cpp
 void TxMuxTdf::processing() {
-    // 简单透传模式（单通道）
+    // Simple pass-through mode (single channel)
     double x_in = in.read();
     out.write(x_in);
 }
 ```
 
-**方法调用时机**：
-- SystemC-AMS TDF 调度器在每个时间步长自动调用
-- 调用频率 = Fs（全局采样频率）
-- 执行顺序：按信号流拓扑的拓扑排序（Topological Order），Mux 在 FFE 之后、Driver 之前执行
+**Method Call Timing**:
+- SystemC-AMS TDF scheduler automatically calls at each timestep
+- Call frequency = Fs (global sampling frequency)
+- Execution order: According to topological sort of signal flow topology, Mux executes after FFE and before Driver
 
-**端口读写语义**：
+**Port Read/Write Semantics**:
 
-- **`in.read()`**：
-  - 读取当前时间步长的输入端口值
-  - 值由上游模块（FFE）在本时间步长的 `processing()` 调用中写入
-  - 返回类型：`double`（模拟信号电压值）
+- **`in.read()`**:
+  - Reads input port value at current timestep
+  - Value is written by upstream module (FFE) during its `processing()` call at this timestep
+  - Return type: `double` (analog signal voltage value)
 
-- **`out.write(x_in)`**：
-  - 将计算结果写入输出端口
-  - 写入的值将在下一时间步长被下游模块（Driver）的 `in.read()` 读取
-  - TDF 调度器自动处理数据流的时序对齐
+- **`out.write(x_in)`**:
+  - Writes calculation result to output port
+  - Written value will be read by downstream module (Driver)'s `in.read()` at next timestep
+  - TDF scheduler automatically handles data flow timing alignment
 
-**时序行为特征**：
+**Timing Behavior Characteristics**:
 
-- **零延迟传输**：在同一时间步长内完成输入读取和输出写入，等效于组合逻辑（Combinational Logic）
-- **无状态处理**：不维护历史数据（无延迟线、无反馈路径），每个时间步长的输出仅依赖当前输入
-- **确定性行为**：相同输入序列产生相同输出序列，适合可重复性验证
+- **Zero-Delay Transfer**: Input read and output write completed within same timestep, equivalent to combinational logic
+- **Stateless Processing**: Does not maintain historical data (no delay line, no feedback path), output at each timestep only depends on current input
+- **Deterministic Behavior**: Same input sequence produces same output sequence, suitable for reproducible verification
 
-**当前实现的局限性**：
+**Current Implementation Limitations**:
 
-1. **通道索引未使用**：
-   - 成员变量 `m_lane_sel` 已存储，但 `processing()` 中未访问
-   - 多通道架构需要修改为数组输入端口：`sca_tdf::sca_in<double> in[N_LANES]`
-   - 然后根据 `m_lane_sel` 选择：`double x_in = in[m_lane_sel].read()`
+1. **Channel Index Not Used**:
+   - Member variable `m_lane_sel` is stored but not accessed in `processing()`
+   - Multi-channel architecture requires modification to array input ports: `sca_tdf::sca_in<double> in[N_LANES]`
+   - Then select based on `m_lane_sel`: `double x_in = in[m_lane_sel].read()`
 
-2. **无延迟建模**：
-   - 未实现传播延迟（mux_delay）
-   - 需要添加延迟线缓冲区或使用 `sca_tdf::sca_delay<double>` 模块
+2. **No Delay Modeling**:
+   - Propagation delay (mux_delay) not implemented
+   - Requires adding delay line buffer or using `sca_tdf::sca_delay<double>` module
 
-3. **无抖动建模**：
-   - 未注入 DCD（占空比失真）或 RJ（随机抖动）
-   - 需要集成时间扰动生成和分数延迟插值算法
+3. **No Jitter Modeling**:
+   - DCD (duty cycle distortion) and RJ (random jitter) not injected
+   - Requires integrating time perturbation generation and fractional delay interpolation algorithms
 
-**代码简洁性设计考量**：
+**Code Simplicity Design Considerations**:
 
-当前实现刻意保持最小复杂度，原因包括：
+Current implementation deliberately maintains minimum complexity for the following reasons:
 
-- **渐进式开发**：先验证信号链的结构正确性，再逐步添加非理想效应
-- **调试友好**：透传模式便于隔离问题，当 TX 链路出现异常时可排除 Mux 的影响
-- **版本兼容**：未来添加延迟/抖动功能可通过配置开关（如 `enable_delay`, `enable_jitter`）保持向后兼容
+- **Incremental Development**: First verify signal chain structural correctness, then gradually add non-ideal effects
+- **Debug-Friendly**: Pass-through mode facilitates problem isolation; when TX link anomalies occur, Mux influence can be excluded
+- **Version Compatibility**: Future addition of delay/jitter functions can maintain backward compatibility through configuration switches (such as `enable_delay`, `enable_jitter`)
 
-### 3.3 未来版本扩展机制（设计规划）
+### 3.3 Future Version Extension Mechanisms (Design Planning)
 
-当前版本实现了最基本的透传功能，以下是未来版本计划扩展的核心机制设计思路。**注意：以下内容为设计规划，当前代码中尚未实现。**
+Current version implements the most basic pass-through functionality. The following are design ideas for core mechanisms planned for extension in future versions. **Note: The following content is design planning and has not yet been implemented in current code.**
 
-#### 3.3.1 固定延迟建模（Propagation Delay）
+#### 3.3.1 Fixed Delay Modeling (Propagation Delay)
 
-**设计目标**：建模选择器的传播延迟，匹配真实硬件的时序特性。
+**Design Goal**: Model selector propagation delay to match real hardware timing characteristics.
 
-**实现方案A：使用 TDF 延迟模块**
+**Implementation Option A: Using TDF Delay Module**
 
-SystemC-AMS 提供 `sca_tdf::sca_delay<T>` 模板类，可实现整数倍时间步长的延迟：
+SystemC-AMS provides `sca_tdf::sca_delay<T>` template class, which can implement integer multiple timestep delays:
 
 ```cpp
-// 头文件中添加成员变量
+// Add member variable in header file
 sca_tdf::sca_delay<double> m_delay_line;
 
-// 构造函数初始化
+// Constructor initialization
 TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int lane_sel, double delay_s, double Fs)
     : ...
     , m_delay_line("delay_line")
@@ -627,7 +628,7 @@ TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int lane_sel, double delay_s, dou
     m_delay_line.set_delay(delay_samples);
 }
 
-// processing() 中使用
+// Use in processing()
 void TxMuxTdf::processing() {
     double x_in = in.read();
     double x_delayed = m_delay_line(x_in);
@@ -635,30 +636,30 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**优点**：
-- SystemC-AMS 原生支持，实现简单
-- 自动处理延迟队列管理和初始化
+**Advantages**:
+- Native SystemC-AMS support, simple implementation
+- Automatic handling of delay queue management and initialization
 
-**限制**：
-- 仅支持整数倍时间步长延迟
-- 对于非整数采样点延迟（如 15ps 延迟但 Δt=1.786ps，需要 8.4 个采样点），需要四舍五入，引入量化误差
+**Limitations**:
+- Only supports integer multiple timestep delays
+- For non-integer sample point delays (e.g., 15ps delay but Δt=1.786ps, requiring 8.4 sample points), rounding is needed, introducing quantization error
 
-**实现方案B：显式环形缓冲区**
+**Implementation Option B: Explicit Circular Buffer**
 
-使用 `std::deque` 或 `std::vector` 实现可控的历史数据存储：
+Use `std::deque` or `std::vector` to implement controllable historical data storage:
 
 ```cpp
-// 头文件添加
+// Add to header file
 std::deque<double> m_delay_buffer;
 int m_delay_samples;
 
-// 构造函数初始化
+// Constructor initialization
 TxMuxTdf::TxMuxTdf(..., double delay_s, double Fs) {
     m_delay_samples = static_cast<int>(std::round(delay_s * Fs));
     m_delay_buffer.resize(m_delay_samples, 0.0);
 }
 
-// processing() 实现
+// processing() implementation
 void TxMuxTdf::processing() {
     double x_in = in.read();
     m_delay_buffer.push_back(x_in);
@@ -668,26 +669,26 @@ void TxMuxTdf::processing() {
 }
 ```
 
-**优点**：
-- 完全可控，便于调试和性能优化
-- 可扩展为分数延迟（结合插值算法）
+**Advantages**:
+- Fully controllable, facilitates debugging and performance optimization
+- Extensible to fractional delay (combined with interpolation algorithm)
 
-**缺点**：
-- 需要手动管理缓冲区大小和初始化
-- 代码量稍多
+**Disadvantages**:
+- Requires manual management of buffer size and initialization
+- Slightly more code
 
-**实现方案C：滤波器群延迟近似**
+**Implementation Option C: Filter Group Delay Approximation**
 
-使用一阶全通滤波器（All-Pass Filter）或 Bessel 滤波器的群延迟（Group Delay）近似固定延迟：
+Use first-order all-pass filter (All-Pass Filter) or Bessel filter group delay to approximate fixed delay:
 
 ```cpp
-// 头文件添加
+// Add to header file
 sca_tdf::sca_ltf_nd m_delay_filter;
 
-// 构造函数中配置
+// Configure in constructor
 TxMuxTdf::TxMuxTdf(..., double delay_s) {
-    // 一阶全通滤波器 H(s) = (1 - s/ω) / (1 + s/ω)
-    // 在低频段群延迟约为 2/ω
+    // First-order all-pass filter H(s) = (1 - s/ω) / (1 + s/ω)
+    // Group delay at low frequencies approximately 2/ω
     double omega = 2.0 / delay_s;
     sca_util::sca_vector<double> num = {1.0, -omega};
     sca_util::sca_vector<double> den = {1.0, omega};
@@ -695,32 +696,32 @@ TxMuxTdf::TxMuxTdf(..., double delay_s) {
 }
 ```
 
-**优点**：
-- 频域特性平滑，不引入高频振铃
-- 适合与带宽限制同时建模
+**Advantages**:
+- Smooth frequency domain characteristics, no high-frequency ringing
+- Suitable for simultaneous modeling with bandwidth limitation
 
-**限制**：
-- 群延迟在高频段不恒定，仅适用于低频段延迟近似
-- 需要权衡延迟精度和带宽特性
+**Limitations**:
+- Group delay not constant at high frequencies, only suitable for low-frequency delay approximation
+- Requires trade-off between delay precision and bandwidth characteristics
 
-#### 3.3.2 抖动建模（Jitter Injection）
+#### 3.3.2 Jitter Modeling (Jitter Injection)
 
-**设计目标**：注入确定性抖动（DCD）和随机抖动（RJ），模拟时钟非理想性和电路噪声。
+**Design Goal**: Inject Deterministic Jitter (DCD) and Random Jitter (RJ) to simulate clock non-idealities and circuit noise.
 
-**DCD（Duty Cycle Distortion）建模**
+**DCD (Duty Cycle Distortion) Modeling**
 
-占空比偏离 50% 导致奇数 UI 和偶数 UI 宽度不等，在边沿产生周期性时间偏移。
+Duty cycle deviation from 50% causes odd and even UI widths to be unequal, producing periodic time offsets at edges.
 
-**实现思路**：
+**Implementation Idea**:
 
 ```cpp
-// 头文件添加
-double m_dcd_percent;  // 占空比（如 48.0 表示 48%）
-double m_ui_period;    // UI 周期（秒）
-int m_ui_counter;      // UI 计数器
+// Add to header file
+double m_dcd_percent;  // Duty cycle (e.g., 48.0 means 48%)
+double m_ui_period;    // UI period (seconds)
+int m_ui_counter;      // UI counter
 std::deque<double> m_fractional_delay_buffer;
 
-// 构造函数初始化
+// Constructor initialization
 TxMuxTdf::TxMuxTdf(..., double dcd_percent, double ui_period, double Fs)
     : m_dcd_percent(dcd_percent)
     , m_ui_period(ui_period)
@@ -730,44 +731,44 @@ TxMuxTdf::TxMuxTdf(..., double dcd_percent, double ui_period, double Fs)
     m_fractional_delay_buffer.resize(samples_per_ui, 0.0);
 }
 
-// processing() 实现
+// processing() implementation
 void TxMuxTdf::processing() {
     double x_in = in.read();
     
-    // 计算当前 UI 索引
+    // Calculate current UI index
     int ui_index = m_ui_counter / samples_per_ui;
     m_ui_counter++;
     
-    // 奇偶 UI 施加相反方向的时间偏移
+    // Apply opposite direction time offsets for odd/even UIs
     double dcd_offset = (ui_index % 2 == 0) 
         ? (50.0 - m_dcd_percent) / 100.0 * m_ui_period
         : (m_dcd_percent - 50.0) / 100.0 * m_ui_period;
     
-    // 将时间偏移转换为分数延迟（需要插值实现）
+    // Convert time offset to fractional delay (requires interpolation implementation)
     double x_out = apply_fractional_delay(x_in, dcd_offset);
     out.write(x_out);
 }
 ```
 
-**关键技术**：
-- **分数延迟插值**：当延迟量不是整数倍采样点时，需要使用插值算法（Lagrange/Sinc/Farrow 结构）
-- **相位跟踪**：维护 UI 计数器，根据奇偶性施加相反方向的偏移
+**Key Technologies**:
+- **Fractional Delay Interpolation**: When delay amount is not integer multiple of sampling point, interpolation algorithms (Lagrange/Sinc/Farrow structure) are needed
+- **Phase Tracking**: Maintain UI counter, apply opposite direction offsets based on parity
 
-**RJ（Random Jitter）建模**
+**RJ (Random Jitter) Modeling**
 
-随机抖动服从高斯分布，叠加在每个时间步长的输出上。
+Random jitter follows Gaussian distribution, superimposed on output at each timestep.
 
-**实现思路**：
+**Implementation Idea**:
 
 ```cpp
-// 头文件添加
+// Add to header file
 #include <random>
 std::mt19937 m_rng;
 std::normal_distribution<double> m_rj_dist;
-double m_rj_sigma;  // RJ 标准差（秒）
+double m_rj_sigma;  // RJ standard deviation (seconds)
 double m_Fs;
 
-// 构造函数初始化
+// Constructor initialization
 TxMuxTdf::TxMuxTdf(..., double rj_sigma, int seed, double Fs)
     : m_rj_sigma(rj_sigma)
     , m_Fs(Fs)
@@ -776,49 +777,49 @@ TxMuxTdf::TxMuxTdf(..., double rj_sigma, int seed, double Fs)
 {
 }
 
-// processing() 实现
+// processing() implementation
 void TxMuxTdf::processing() {
     double x_in = in.read();
     
-    // 生成随机时间偏移
-    double time_offset = m_rj_dist(m_rng);  // 单位：秒
+    // Generate random time offset
+    double time_offset = m_rj_dist(m_rng);  // Unit: seconds
     
-    // 将时间偏移转换为分数延迟
+    // Convert time offset to fractional delay
     double x_out = apply_fractional_delay(x_in, time_offset);
     out.write(x_out);
 }
 ```
 
-**关键技术**：
-- **高斯随机数生成**：使用 C++11 `<random>` 库的 `std::normal_distribution`
-- **种子管理**：支持固定种子（可重复仿真）和随机种子（蒙特卡洛分析）
-- **分数延迟**：与 DCD 建模共用同一插值算法
+**Key Technologies**:
+- **Gaussian Random Number Generation**: Use C++11 `<random>` library's `std::normal_distribution`
+- **Seed Management**: Support fixed seeds (reproducible simulation) and random seeds (Monte Carlo analysis)
+- **Fractional Delay**: Shares same interpolation algorithm with DCD modeling
 
-**分数延迟插值算法**
+**Fractional Delay Interpolation Algorithm**
 
-以下是 Lagrange 插值的示例实现（3 阶）：
+The following is a sample implementation of Lagrange interpolation (3rd order):
 
 ```cpp
 double TxMuxTdf::apply_fractional_delay(double x_current, double delay_s) {
-    // 将延迟转换为采样点数（可能是分数）
+    // Convert delay to sample points (may be fractional)
     double delay_samples = delay_s * m_Fs;
     int delay_int = static_cast<int>(std::floor(delay_samples));
     double delay_frac = delay_samples - delay_int;
     
-    // 从延迟缓冲区中获取插值所需的历史采样点
-    // 假设缓冲区已存储足够的历史数据
+    // Get interpolation-required historical samples from delay buffer
+    // Assume buffer already stores sufficient historical data
     double x_n = m_fractional_delay_buffer[delay_int];
     double x_nm1 = m_fractional_delay_buffer[delay_int + 1];
     double x_np1 = m_fractional_delay_buffer[delay_int - 1];
     
-    // Lagrange 插值公式（3 点）
+    // Lagrange interpolation formula (3 points)
     double L0 = 0.5 * delay_frac * (delay_frac - 1.0);
     double L1 = 1.0 - delay_frac * delay_frac;
     double L2 = 0.5 * delay_frac * (delay_frac + 1.0);
     
     double x_interpolated = L0 * x_nm1 + L1 * x_n + L2 * x_np1;
     
-    // 更新缓冲区
+    // Update buffer
     m_fractional_delay_buffer.push_front(x_current);
     m_fractional_delay_buffer.pop_back();
     
@@ -826,32 +827,32 @@ double TxMuxTdf::apply_fractional_delay(double x_current, double delay_s) {
 }
 ```
 
-**插值算法对比**：
+**Interpolation Algorithm Comparison**:
 
-| 算法 | 阶数 | 精度 | 计算复杂度 | 适用场景 |
-|------|------|------|-----------|---------|
-| Lagrange | 3-5 | 中等 | 低 | 快速原型验证 |
-| Sinc 插值 | 理论无限 | 高 | 高（需截断） | 高精度眼图分析 |
-| Farrow 结构 | 可配置 | 高 | 中 | 实时自适应抖动 |
+| Algorithm | Order | Precision | Computational Complexity | Applicable Scenarios |
+|-----------|-------|-----------|-------------------------|----------------------|
+| Lagrange | 3-5 | Medium | Low | Rapid prototype verification |
+| Sinc Interpolation | Theoretically infinite | High | High (requires truncation) | High-precision eye diagram analysis |
+| Farrow Structure | Configurable | High | Medium | Real-time adaptive jitter |
 
-#### 3.3.3 多通道选择机制（Multi-Lane Selection）
+#### 3.3.3 Multi-Channel Selection Mechanism (Multi-Lane Selection)
 
-**设计目标**：支持真实 N:1 复用器的多输入选择逻辑。
+**Design Goal**: Support true N:1 multiplexer multi-input selection logic.
 
-**架构变更**：
+**Architecture Change**:
 
-当前单输入端口：
+Current single input port:
 ```cpp
 sca_tdf::sca_in<double> in;
 ```
 
-修改为多输入端口数组：
+Modify to multi-input port array:
 ```cpp
 static const int N_LANES = 8;
 sca_tdf::sca_in<double> in[N_LANES];
 ```
 
-**构造函数适配**：
+**Constructor Adaptation**:
 
 ```cpp
 TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int num_lanes, int lane_sel)
@@ -860,36 +861,36 @@ TxMuxTdf::TxMuxTdf(sc_core::sc_module_name nm, int num_lanes, int lane_sel)
     , m_num_lanes(num_lanes)
     , m_lane_sel(lane_sel)
 {
-    // 动态创建端口数组
+    // Dynamically create port array
     in = new sca_tdf::sca_in<double>[num_lanes];
     for (int i = 0; i < num_lanes; i++) {
         std::string port_name = "in_" + std::to_string(i);
         in[i].set_name(port_name.c_str());
     }
     
-    // 参数验证
+    // Parameter validation
     if (lane_sel >= num_lanes) {
         SC_REPORT_ERROR("TxMuxTdf", "lane_sel exceeds num_lanes");
     }
 }
 ```
 
-**processing() 适配**：
+**processing() Adaptation**:
 
 ```cpp
 void TxMuxTdf::processing() {
-    // 根据 lane_sel 选择对应输入通道
+    // Select corresponding input channel based on lane_sel
     double x_in = in[m_lane_sel].read();
     
-    // 后续延迟/抖动处理...
+    // Subsequent delay/jitter processing...
     out.write(x_in);
 }
 ```
 
-**系统级连接示例**：
+**System-Level Connection Example**:
 
 ```cpp
-// 顶层模块中实例化多个并行数据路径
+// Instantiate multiple parallel data paths in top-level module
 WaveGenTdf* wavegen[8];
 TxFfeTdf* ffe[8];
 TxMuxTdf* mux;
@@ -898,26 +899,26 @@ for (int i = 0; i < 8; i++) {
     wavegen[i] = new WaveGenTdf(...);
     ffe[i] = new TxFfeTdf(...);
 }
-mux = new TxMuxTdf("mux", 8, 5);  // 8 通道，选择第 6 个
+mux = new TxMuxTdf("mux", 8, 5);  // 8 channels, select 6th
 
-// 连接
+// Connect
 for (int i = 0; i < 8; i++) {
     ffe[i]->in(wavegen[i]->out);
     mux->in[i](ffe[i]->out);
 }
 ```
 
-**动态通道切换（高级功能）**：
+**Dynamic Channel Switching (Advanced Feature)**:
 
-如果需要在仿真过程中动态切换通道（如测试不同 Lane 的性能差异），可添加 DE 域控制接口：
+If dynamic channel switching is needed during simulation (e.g., testing performance differences between different Lanes), a DE domain control interface can be added:
 
 ```cpp
-// 头文件添加
+// Add to header file
 sca_tdf::sca_de::sca_in<int> lane_sel_ctrl;
 
-// processing() 适配
+// processing() adaptation
 void TxMuxTdf::processing() {
-    // 从 DE 域读取控制信号
+    // Read control signal from DE domain
     if (lane_sel_ctrl.event()) {
         m_lane_sel = lane_sel_ctrl.read();
     }
@@ -927,61 +928,61 @@ void TxMuxTdf::processing() {
 }
 ```
 
-#### 3.3.4 非线性效应建模（可选）
+#### 3.3.4 Nonlinear Effects Modeling (Optional)
 
-**增益压缩（Gain Compression）**：
+**Gain Compression (Gain Compression)**:
 
-大信号输入下选择器的增益降低，建模传输门的非线性电阻：
+Gain reduction under large signal input, modeling nonlinear resistance of transmission gates:
 
 ```cpp
 double gain_factor = 1.0 / (1.0 + std::pow(std::abs(x_in) / m_compression_point, 2));
 x_out = x_in * gain_factor;
 ```
 
-**饱和限幅（Saturation）**：
+**Saturation Limiting (Saturation)**:
 
-输出幅度受限于电源电压或驱动能力：
+Output amplitude limited by supply voltage or drive capability:
 
 ```cpp
 double vsat = m_saturation_voltage;
 x_out = std::max(-vsat, std::min(vsat, x_out));
 ```
 
-**码型相关延迟（Pattern-Dependent Delay）**：
+**Pattern-Dependent Delay (Pattern-Dependent Delay)**:
 
-不同数据码型下的传播延迟变化，引入数据相关抖动（DDJ）：
+Propagation delay variation under different data patterns, introducing Data-Dependent Jitter (DDJ):
 
 ```cpp
-// 检测当前码型（如连续 1 的个数）
+// Detect current pattern (e.g., number of consecutive 1s)
 int consecutive_ones = count_consecutive_ones(m_delay_buffer);
 double pattern_delay = m_base_delay + consecutive_ones * m_ddj_per_ui;
 ```
 
 ---
 
-## 4. 测试平台架构
+## 4. Testbench Architecture
 
-### 4.1 设计理念
+### 4.1 Design Philosophy
 
-TX Mux 模块当前版本（v0.1）采用**系统级集成测试策略**，不提供专用测试平台。核心设计理念：透传功能的简单性使得集成测试已足够验证其连接正确性和时序一致性，避免为基础功能重复开发测试基础设施。
+TX Mux module current version (v0.1) adopts a **system-level integration testing strategy**, not providing a dedicated testbench. Core design philosophy: The simplicity of pass-through functionality makes integration testing sufficient to verify connection correctness and timing consistency, avoiding redundant development of test infrastructure for basic functionality.
 
-### 4.2 测试场景
+### 4.2 Test Scenarios
 
-当前唯一的测试场景为系统级集成验证：
+The only current test scenario is system-level integration verification:
 
-| 测试场景 | 测试平台 | 验证目标 | 实现状态 |
-|---------|---------|---------|---------|
-| **系统级集成** | `simple_link_tb.cpp` | 端到端信号完整性、TX链路连续性 | ✅ 已实现 |
+| Test Scenario | Testbench | Verification Target | Implementation Status |
+|---------------|-----------|---------------------|----------------------|
+| **System-Level Integration** | `simple_link_tb.cpp` | End-to-end signal integrity, TX link continuity | ✅ Implemented |
 
-**验证要点**：
-- Mux 正确连接 FFE 和 Driver 模块
-- 信号透传特性（幅度/相位一致）
-- TDF 采样率同步（rate=1）
-- 仿真稳定性
+**Verification Points**:
+- Mux correctly connects FFE and Driver modules
+- Signal pass-through characteristics (amplitude/phase consistency)
+- TDF sampling rate synchronization (rate=1)
+- Simulation stability
 
-### 4.3 测试拓扑与连接
+### 4.3 Test Topology and Connection
 
-TX Mux 在系统级测试平台中的位置：
+TX Mux position in system-level testbench:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -992,68 +993,69 @@ TX Mux 在系统级测试平台中的位置：
 │  └─────────┘   └─────────┘   └─────────┘   └─────────┘       │
 │                                                                │
 │  Trace Signals: ffe_out, driver_out                           │
-│  注意：sig_mux_out 未显式追踪（需添加以直接验证透传特性）     │
+│  Note: sig_mux_out not explicitly traced (needs to be added   │
+│  to directly verify pass-through characteristics)             │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**关键信号连接**（`tb/simple_link_tb.cpp` 第 63-69 行）：
+**Key Signal Connections** (Lines 63-69 of `tb/simple_link_tb.cpp`):
 ```cpp
-tx_ffe.out(sig_ffe_out);        // Mux 输入
+tx_ffe.out(sig_ffe_out);        // Mux input
 tx_mux.in(sig_ffe_out);
-tx_mux.out(sig_mux_out);        // Mux 输出
+tx_mux.out(sig_mux_out);        // Mux output
 tx_driver.in(sig_mux_out);
 ```
 
-**参数配置**：通过 `ConfigLoader` 加载 `config/default.json` 中的 `tx.mux_lane` 参数（默认值0）。
+**Parameter Configuration**: Load `tx.mux_lane` parameter from `config/default.json` (default value 0) through `ConfigLoader`.
 
-### 4.4 验证方法
+### 4.4 Verification Methods
 
-#### 方法1：添加 Mux 输出追踪（推荐）
+#### Method 1: Add Mux Output Tracing (Recommended)
 
-**问题**：当前 `simple_link_tb.cpp` 未追踪 `sig_mux_out` 信号，无法直接验证 Mux 透传特性。
+**Problem**: Current `simple_link_tb.cpp` does not trace `sig_mux_out` signal, cannot directly verify Mux pass-through characteristics.
 
-**解决方案**：在测试平台中添加追踪语句：
+**Solution**: Add tracing statement in testbench:
 ```cpp
 sca_util::sca_trace(tf, sig_mux_out, "mux_out");
 ```
 
-然后使用 Python 脚本对比 `mux_out` 和 `ffe_out`：
+Then use Python script to compare `mux_out` and `ffe_out`:
 ```python
 import numpy as np
 data = np.loadtxt('simple_link.dat', skiprows=1)
-ffe_out = data[:, 2]    # 根据实际列索引调整
+ffe_out = data[:, 2]    # Adjust according to actual column index
 mux_out = data[:, 3]
 error = np.abs(mux_out - ffe_out)
-print(f"透传误差（最大值）: {np.max(error):.2e} V")  # 期望 < 1e-12
+print(f"Pass-through error (max): {np.max(error):.2e} V")  # Expected < 1e-12
 ```
 
-#### 方法2：间接验证（当前可行但不精确）
+#### Method 2: Indirect Verification (Currently Feasible but Not Precise)
 
-**注意**：直接比较 `driver_out` 和 `ffe_out` 是**技术错误**，因为 Driver 模块引入了增益、带宽限制和饱和效应，差异不能归因于 Mux。仅可用于粗略的信号链完整性检查。
+**Note**: Directly comparing `driver_out` and `ffe_out` is **technically incorrect**, because the Driver module introduces gain, bandwidth limitation, and saturation effects; differences cannot be attributed to Mux. Only usable for rough signal chain integrity check.
 
-#### 方法3：仿真日志检查
+#### Method 3: Simulation Log Check
 
-SystemC-AMS 仿真成功完成且无警告，说明端口连接和采样率配置正确。
+SystemC-AMS simulation completes successfully without warnings, indicating port connections and sampling rate configuration are correct.
 
-### 4.5 辅助模块说明
+### 4.5 Auxiliary Module Description
 
-TX Mux 模块在测试平台中依赖以下辅助模块提供输入信号和功能支持。本节说明这些模块的功能及其与 Mux 的交互关系。
+TX Mux module in testbench depends on the following auxiliary modules to provide input signals and functional support. This section describes the functions of these modules and their interaction relationships with Mux.
 
-#### 4.5.1 WaveGen 模块（波形生成器）
+#### 4.5.1 WaveGen Module (Waveform Generator)
 
-**模块路径**：`include/ams/wave_generation.h`, `src/ams/wave_generation.cpp`
+**Module Path**: `include/ams/wave_generation.h`, `src/ams/wave_generation.cpp`
 
-**功能说明**：
-- 生成测试用的 PRBS（伪随机二进制序列）数据码型
-- 支持多种 PRBS 类型：PRBS7、PRBS9、PRBS15、PRBS23、PRBS31
-- 可配置数据速率、比特模式和初始化种子
+**Function Description**:
+- Generates test PRBS (Pseudo-Random Binary Sequence) data patterns
+- Supports multiple PRBS types: PRBS7, PRBS9, PRBS15, PRBS23, PRBS31
+- Configurable data rate, bit pattern, and initialization seed
 
-**与 Mux 的关系**：
-- WaveGen → FFE → Mux 信号链的源头
-- 为 Mux 提供测试用的模拟信号输入（通过 FFE 均衡后）
-- 在 `simple_link_tb.cpp` 中实例化并连接到 FFE 模块
+**Relationship with Mux**:
+- WaveGen → FFE → Mux signal chain source
+- Provides test analog signal input for Mux (after FFE equalization)
+- Instantiated and connected to FFE module in `simple_link_tb.cpp`
 
-**典型配置**：
+**Typical Configuration**:
 ```json
 {
   "wave": {
@@ -1064,25 +1066,25 @@ TX Mux 模块在测试平台中依赖以下辅助模块提供输入信号和功�
 }
 ```
 
-#### 4.5.2 Trace 信号监控器
+#### 4.5.2 Trace Signal Monitor
 
-**功能说明**：
-- SystemC-AMS 提供的波形追踪机制（`sca_util::sca_trace`）
-- 将仿真过程中的信号值记录到 `.dat` 文件
-- 支持后处理分析和可视化（Python/Matplotlib）
+**Function Description**:
+- SystemC-AMS provided waveform tracing mechanism (`sca_util::sca_trace`)
+- Records signal values during simulation to `.dat` file
+- Supports post-processing analysis and visualization (Python/Matplotlib)
 
-**关键追踪信号**：
-- `ffe_out`：FFE 输出（Mux 输入），用于验证透传特性
-- `mux_out`：Mux 输出，当前测试平台未追踪（建议添加）
-- `driver_out`：Driver 输出，用于系统级信号完整性分析
+**Key Trace Signals**:
+- `ffe_out`: FFE output (Mux input), used to verify pass-through characteristics
+- `mux_out`: Mux output, not traced in current testbench (recommended to add)
+- `driver_out`: Driver output, used for system-level signal integrity analysis
 
-**添加 Mux 输出追踪**：
+**Adding Mux Output Trace**:
 ```cpp
-// 在 tb/simple_link_tb.cpp 中添加
+// Add in tb/simple_link_tb.cpp
 sca_util::sca_trace(tf, sig_mux_out, "mux_out");
 ```
 
-**数据格式**：
+**Data Format**:
 ```
 # time(s)    wave_out(V)    ffe_out(V)    mux_out(V)    driver_out(V)
 0.00e+00     0.000          0.000         0.000         0.000
@@ -1090,49 +1092,49 @@ sca_util::sca_trace(tf, sig_mux_out, "mux_out");
 ...
 ```
 
-#### 4.5.3 ConfigLoader 模块（配置加载器）
+#### 4.5.3 ConfigLoader Module (Configuration Loader)
 
-**模块路径**：`include/de/config_loader.h`, `src/de/config_loader.cpp`
+**Module Path**: `include/de/config_loader.h`, `src/de/config_loader.cpp`
 
-**功能说明**：
-- 从 JSON/YAML 配置文件加载参数
-- 解析并填充到 `TxParams` 结构体
-- 提供参数验证和默认值处理
+**Function Description**:
+- Loads parameters from JSON/YAML configuration files
+- Parses and populates to `TxParams` structure
+- Provides parameter validation and default value handling
 
-**与 Mux 的关系**：
-- 加载 `tx.mux_lane` 参数并传递给 Mux 构造函数
-- 支持多场景配置切换（不同通道索引）
-- 简化测试配置管理，避免硬编码参数
+**Relationship with Mux**:
+- Loads `tx.mux_lane` parameter and passes to Mux constructor
+- Supports multi-scenario configuration switching (different channel indices)
+- Simplifies test configuration management, avoiding hard-coded parameters
 
 ---
 
-## 5. 仿真结果分析
+## 5. Simulation Result Analysis
 
-### 5.1 当前版本验证方法
+### 5.1 Current Version Verification Method
 
-TX Mux 当前版本（v0.1）采用理想透传架构（`out = in`），无延迟、无抖动、无非线性效应。由于测试平台 `simple_link_tb.cpp` **未追踪 mux_out 信号**，直接波形分析不可用，仅能通过系统级间接验证。
+TX Mux current version (v0.1) adopts ideal pass-through architecture (`out = in`), with no delay, no jitter, no nonlinear effects. Since testbench `simple_link_tb.cpp` **does not trace mux_out signal**, direct waveform analysis is unavailable; only system-level indirect verification is possible.
 
-### 5.2 系统级集成验证结果
+### 5.2 System-Level Integration Verification Results
 
-#### 5.2.1 验证原理
+#### 5.2.1 Verification Principle
 
-通过观测 TX 链路完整输出（`sig_driver_out`）确认信号链连续性：
+Confirm signal chain continuity by observing TX link complete output (`sig_driver_out`):
 
 ```
 WaveGen → FFE → Mux → Driver → Channel
 ```
 
-**间接验证逻辑**：
-- 若 Driver 输出包含正确的数据码型且眼图质量符合预期，说明 Mux 正确传递了 FFE 输出
-- 若仿真成功完成无错误，说明端口连接和采样率配置正确（rate=1 一致性）
+**Indirect Verification Logic**:
+- If Driver output contains correct data patterns and eye diagram quality meets expectations, Mux correctly passed FFE output
+- If simulation completes successfully without errors, port connections and sampling rate configuration are correct (rate=1 consistency)
 
-**局限性**：
-- **不能直接验证透传特性**：Driver 引入增益、带宽限制和饱和效应，`driver_out` 与 `ffe_out` 的差异无法归因于 Mux
-- **无法量化透传误差**：需要直接追踪 `mux_out` 才能测量数值精度（预期误差 < 1e-12 V，浮点精度限制）
+**Limitations**:
+- **Cannot directly verify pass-through characteristics**: Driver introduces gain, bandwidth limitation, and saturation effects; differences between `driver_out` and `ffe_out` cannot be attributed to Mux
+- **Cannot quantify pass-through error**: Direct tracing of `mux_out` needed to measure numerical precision (expected error < 1e-12 V, floating-point precision limit)
 
-#### 5.2.2 典型仿真结果
+#### 5.2.2 Typical Simulation Results
 
-**配置**（`config/default.json`）：
+**Configuration** (`config/default.json`):
 ```json
 {
   "tx": {
@@ -1141,27 +1143,27 @@ WaveGen → FFE → Mux → Driver → Channel
 }
 ```
 
-**观测指标**：
-- **仿真完成状态**：✅ 成功（无 SystemC-AMS 错误或警告）
-- **信号链完整性**：✅ Driver 输出包含预期 PRBS 码型
-- **时序一致性**：✅ 无采样率不匹配警告
+**Observation Indicators**:
+- **Simulation Completion Status**: ✅ Success (no SystemC-AMS errors or warnings)
+- **Signal Chain Integrity**: ✅ Driver output contains expected PRBS pattern
+- **Timing Consistency**: ✅ No sampling rate mismatch warnings
 
-**预期结果**：
-- Mux 作为透传单元，不改变信号幅度、相位或频谱特性
-- 系统级眼图质量主要取决于 Channel 损耗和 RX 均衡器性能
+**Expected Results**:
+- Mux as pass-through unit, does not change signal amplitude, phase, or spectral characteristics
+- System-level eye diagram quality mainly depends on Channel loss and RX equalizer performance
 
-### 5.3 直接验证方法（需修改测试平台）
+### 5.3 Direct Verification Method (Testbench Modification Required)
 
-#### 5.3.1 添加 Mux 输出追踪
+#### 5.3.1 Add Mux Output Tracing
 
-在 `simple_link_tb.cpp` 中添加：
+Add in `simple_link_tb.cpp`:
 ```cpp
 sca_util::sca_trace(tf, sig_mux_out, "mux_out");
 ```
 
-#### 5.3.2 透传特性分析
+#### 5.3.2 Pass-Through Characteristic Analysis
 
-使用 Python 脚本对比 `mux_out` 和 `ffe_out`：
+Use Python script to compare `mux_out` and `ffe_out`:
 
 ```python
 import numpy as np
@@ -1170,42 +1172,42 @@ data = np.loadtxt('simple_link.dat', skiprows=1)
 ffe_out = data[:, col_ffe]
 mux_out = data[:, col_mux]
 
-# 透传误差统计
+# Pass-through error statistics
 error = mux_out - ffe_out
-print(f"最大误差: {np.max(np.abs(error)):.2e} V")
-print(f"RMS 误差: {np.sqrt(np.mean(error**2)):.2e} V")
+print(f"Max error: {np.max(np.abs(error)):.2e} V")
+print(f"RMS error: {np.sqrt(np.mean(error**2)):.2e} V")
 
-# 期望结果：误差 < 1e-12 V（浮点精度限制）
+# Expected result: error < 1e-12 V (floating-point precision limit)
 ```
 
-**预期指标**：
+**Expected Indicators**:
 
-| 指标 | 理论值 | 通过标准 | 说明 |
-|------|-------|---------|------|
-| 最大误差 | 0 V | < 1e-12 V | 浮点运算精度限制 |
-| RMS 误差 | 0 V | < 1e-15 V | 理想透传 |
-| 相位偏移 | 0 s | < 1 ps | 同时间步长采样 |
-| 频谱一致性 | 100% | > 99.9% | FFT 对比 |
+| Indicator | Theoretical Value | Pass Criteria | Description |
+|-----------|-------------------|---------------|-------------|
+| Max Error | 0 V | < 1e-12 V | Floating-point arithmetic precision limit |
+| RMS Error | 0 V | < 1e-15 V | Ideal pass-through |
+| Phase Offset | 0 s | < 1 ps | Same timestep sampling |
+| Spectrum Consistency | 100% | > 99.9% | FFT comparison |
 
-### 5.4 未来版本分析指标
+### 5.4 Future Version Analysis Indicators
 
-当实现延迟和抖动建模后（v0.2+），应添加以下分析：
+When delay and jitter modeling are implemented (v0.2+), the following analyses should be added:
 
-**延迟测量**：
-- 交叉相关法测量传播延迟（预期值 = `mux_delay` 参数）
-- 群延迟一致性检查
+**Delay Measurement**:
+- Cross-correlation method to measure propagation delay (expected value = `mux_delay` parameter)
+- Group delay consistency check
 
-**抖动分解**：
-- DCD 引起的周期性时间偏移（奇偶 UI 对比）
-- RJ 的高斯分布拟合（均值应为 0，标准差 = `rj_sigma`）
+**Jitter Decomposition**:
+- Periodic time offset caused by DCD (odd/even UI comparison)
+- Gaussian distribution fit for RJ (mean should be 0, standard deviation = `rj_sigma`)
 
-**眼图影响**：
-- 抖动导致的眼宽闭合（水平方向）
-- 与无 Mux 抖动基线的对比
+**Eye Diagram Impact**:
+- Eye width closure caused by jitter (horizontal direction)
+- Comparison with baseline without Mux jitter
 
-### 5.5 波形数据文件格式
+### 5.5 Waveform Data File Format
 
-SystemC-AMS trace 文件输出格式（当添加 mux_out 追踪后）：
+SystemC-AMS trace file output format (when mux_out tracing is added):
 
 ```
 # time(s)    wave_out(V)    ffe_out(V)    mux_out(V)    driver_out(V)
@@ -1215,37 +1217,37 @@ SystemC-AMS trace 文件输出格式（当添加 mux_out 追踪后）：
 ...
 ```
 
-**列说明**：
-- `time`：仿真时间（秒）
-- `ffe_out`：FFE 输出（Mux 输入）
-- `mux_out`：Mux 输出（当前版本应与 `ffe_out` 完全一致）
-- `driver_out`：Driver 输出（引入增益和带宽效应）
+**Column Descriptions**:
+- `time`: Simulation time (seconds)
+- `ffe_out`: FFE output (Mux input)
+- `mux_out`: Mux output (current version should be identical to `ffe_out`)
+- `driver_out`: Driver output (introduces gain and bandwidth effects)
 
 ---
 
-## 6. 运行指南
+## 6. Running Guide
 
-### 6.1 环境配置
+### 6.1 Environment Configuration
 
-TX Mux 模块通过系统级测试平台 `simple_link_tb` 进行验证，需完成 SystemC-AMS 开发环境配置。
+TX Mux module is verified through system-level testbench `simple_link_tb`, requiring SystemC-AMS development environment configuration.
 
-**必需环境变量**：
+**Required Environment Variables**:
 ```bash
 export SYSTEMC_HOME=/usr/local/systemc-2.3.4
 export SYSTEMC_AMS_HOME=/usr/local/systemc-ams-2.3.4
 ```
 
-**验证安装**：
+**Verify Installation**:
 ```bash
 ls $SYSTEMC_AMS_HOME/include/systemc-ams
-# 应显示 systemc-ams.h 等头文件
+# Should display systemc-ams.h and other header files
 ```
 
-### 6.2 构建与运行
+### 6.2 Build and Run
 
-#### 6.2.1 使用 CMake（推荐）
+#### 6.2.1 Using CMake (Recommended)
 
-**构建系统级测试平台**：
+**Build System-Level Testbench**:
 ```bash
 cd /path/to/serdes
 mkdir -p build && cd build
@@ -1253,36 +1255,36 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make simple_link_tb
 ```
 
-**运行仿真**：
+**Run Simulation**:
 ```bash
 ./bin/simple_link_tb
-# 仿真输出：simple_link.dat
+# Simulation output: simple_link.dat
 ```
 
-**预期输出**：
+**Expected Output**:
 ```
 SystemC 2.3.4 --- Jan 13 2026 10:30:00
 SystemC-AMS 2.3.4 --- Jan 13 2026 10:30:00
 Info: simulation stopped by user.
 ```
 
-#### 6.2.2 使用 Makefile
+#### 6.2.2 Using Makefile
 
-**快速运行**：
+**Quick Run**:
 ```bash
 cd /path/to/serdes
 make run
-# 自动构建并执行 simple_link_tb
+# Automatically builds and executes simple_link_tb
 ```
 
-**清理构建**：
+**Clean Build**:
 ```bash
 make clean
 ```
 
-### 6.3 参数配置
+### 6.3 Parameter Configuration
 
-TX Mux 通过配置文件 `config/default.json` 加载参数：
+TX Mux loads parameters through configuration file `config/default.json`:
 
 ```json
 {
@@ -1292,7 +1294,7 @@ TX Mux 通过配置文件 `config/default.json` 加载参数：
 }
 ```
 
-**修改通道索引**（当前版本无实际功能影响）：
+**Modify Channel Index** (no actual functional impact in current version):
 ```json
 {
   "tx": {
@@ -1301,81 +1303,81 @@ TX Mux 通过配置文件 `config/default.json` 加载参数：
 }
 ```
 
-**注意**：修改配置后需重新运行测试平台，无需重新编译。
+**Note**: After modifying configuration, need to rerun testbench, no recompilation required.
 
-### 6.4 结果查看
+### 6.4 Result Viewing
 
-#### 6.4.1 验证仿真成功
+#### 6.4.1 Verify Simulation Success
 
-检查仿真日志无错误或警告：
+Check simulation log has no errors or warnings:
 ```bash
 grep -i "error\|warning" build/simulation.log
-# 无输出表示成功
+# No output indicates success
 ```
 
-#### 6.4.2 添加 Mux 输出追踪（可选）
+#### 6.4.2 Add Mux Output Tracing (Optional)
 
-**编辑测试平台**（`tb/simple_link_tb.cpp`）：
+**Edit Testbench** (`tb/simple_link_tb.cpp`):
 ```cpp
-// 在 trace 创建部分添加
+// Add in trace creation section
 sca_util::sca_trace(tf, sig_mux_out, "mux_out");
 ```
 
-**重新编译并运行**：
+**Rebuild and Run**:
 ```bash
 cd build
 make simple_link_tb
 ./bin/simple_link_tb
 ```
 
-#### 6.4.3 Python 分析脚本
+#### 6.4.3 Python Analysis Script
 
-使用 Python 验证透传特性（需先添加 `mux_out` 追踪）：
+Use Python to verify pass-through characteristics (requires `mux_out` tracing to be added first):
 
 ```python
 import numpy as np
 
 data = np.loadtxt('build/simple_link.dat', skiprows=1)
-ffe_out = data[:, 2]  # 根据实际列索引调整
+ffe_out = data[:, 2]  # Adjust according to actual column index
 mux_out = data[:, 3]
 
 error = np.abs(mux_out - ffe_out)
-print(f"透传误差（最大）: {np.max(error):.2e} V")
-print(f"透传误差（RMS）: {np.sqrt(np.mean(error**2)):.2e} V")
-# 期望：误差 < 1e-12 V
+print(f"Pass-through error (max): {np.max(error):.2e} V")
+print(f"Pass-through error (RMS): {np.sqrt(np.mean(error**2)):.2e} V")
+# Expected: error < 1e-12 V
 ```
 
-### 6.5 故障排查
+### 6.5 Troubleshooting
 
-#### 6.5.1 常见错误
+#### 6.5.1 Common Errors
 
-**采样率不匹配**：
+**Sampling Rate Mismatch**:
 ```
 Error: (E117) sc_signal<T>: port not bound
 ```
-**解决**：检查 FFE 和 Driver 的 `set_rate()` 配置是否均为 `rate=1`。
+**Solution**: Check FFE and Driver `set_rate()` configurations, ensure both are `rate=1`.
 
-**端口连接错误**：
+**Port Connection Error**:
 ```
 Error: port 'in' not connected
 ```
-**解决**：验证 `simple_link_tb.cpp` 中 Mux 的输入输出连接完整性。
+**Solution**: Verify Mux input/output connection completeness in `simple_link_tb.cpp`.
 
-**配置文件缺失**：
+**Configuration File Missing**:
 ```
 Error: cannot open config/default.json
 ```
-**解决**：确保工作目录在项目根目录，或修改配置文件路径。
+**Solution**: Ensure working directory is project root directory, or modify configuration file path.
 
-#### 6.5.2 调试技巧
+#### 6.5.2 Debugging Tips
 
-**启用详细日志**：
+**Enable Verbose Logging**:
 ```bash
 export SC_REPORT_VERBOSITY=SC_FULL
 ./bin/simple_link_tb
 ```
 
-**检查信号连接**：在测试平台构造函数中添加：
+**Check Signal Connections**: Add in testbench constructor:
 ```cpp
 std::cout << "Mux input rate: " << tx_mux.in.get_rate() << std::endl;
 std::cout << "Mux output rate: " << tx_mux.out.get_rate() << std::endl;
@@ -1383,134 +1385,134 @@ std::cout << "Mux output rate: " << tx_mux.out.get_rate() << std::endl;
 
 ---
 
-## 7. 技术要点
+## 7. Technical Key Points
 
-### 7.1 透传架构避免代数环
+### 7.1 Pass-Through Architecture Avoids Algebraic Loops
 
-**设计选择**：当前版本采用无状态透传（`out = in`），不维护内部状态变量。
+**Design Choice**: Current version adopts stateless pass-through (`out = in`), not maintaining internal state variables.
 
-**技术优势**：
-- 避免代数环风险（输出不依赖自身反馈）
-- 与FFE/Driver线性级联时保证TDF调度器拓扑排序收敛
-- 适合作为系统集成验证的基线参考模块
+**Technical Advantages**:
+- Avoids algebraic loop risk (output does not depend on its own feedback)
+- Ensures TDF scheduler topological sorting convergence when cascaded linearly with FFE/Driver
+- Suitable as baseline reference module for system integration verification
 
-**应用限制**：无法建模真实硬件的传播延迟和相位特性，需扩展为延迟线架构（见7.3）。
+**Application Limitations**: Cannot model real hardware propagation delay and phase characteristics, needs extension to delay line architecture (see 7.3).
 
-### 7.2 lane_sel参数保留原因
+### 7.2 lane_sel Parameter Retention Reason
 
-**当前状态**：参数 `m_lane_sel` 已存储但未使用（`processing()` 中未访问）。
+**Current Status**: Parameter `m_lane_sel` is stored but not used (not accessed in `processing()`).
 
-**保留意图**：
-- 为多通道架构预留接口（2:1/4:1/8:1并串转换）
-- 需修改端口为数组：`sca_tdf::sca_in<double> in[N]`
-- 然后根据 `m_lane_sel` 索引：`x_in = in[m_lane_sel].read()`
+**Retention Intent**:
+- Reserve interface for multi-channel architecture (2:1/4:1/8:1 parallel-to-serial conversion)
+- Requires modifying ports to array: `sca_tdf::sca_in<double> in[N]`
+- Then index based on `m_lane_sel`: `x_in = in[m_lane_sel].read()`
 
-**配置向前兼容**：当前配置文件可无缝升级至多通道版本。
+**Configuration Forward Compatibility**: Current configuration files can seamlessly upgrade to multi-channel versions.
 
-### 7.3 延迟建模方案选择
+### 7.3 Delay Modeling Scheme Selection
 
-未来版本需选择延迟实现方案，各有权衡：
+Future versions need to select delay implementation schemes, each with trade-offs:
 
-| 方案 | 精度 | 实现难度 | 副作用 |
-|------|------|---------|--------|
-| **sca_delay模块** | 整数采样点 | 低 | 量化误差（非整数延迟） |
-| **显式缓冲区** | 可配合插值达到分数采样点 | 中 | 需手动管理队列 |
-| **滤波器群延迟** | 频率相关 | 低 | 引入带宽限制 |
+| Scheme | Precision | Implementation Difficulty | Side Effects |
+|--------|-----------|---------------------------|--------------|
+| **sca_delay module** | Integer sample points | Low | Quantization error (non-integer delay) |
+| **Explicit buffer** | Fractional sample points with interpolation | Medium | Requires manual queue management |
+| **Filter group delay** | Frequency-dependent | Low | Introduces bandwidth limitation |
 
-**推荐方案**：初期使用 `sca_delay`（简单），高精度需求时升级为缓冲区+Lagrange插值。
+**Recommended Scheme**: Initially use `sca_delay` (simple), upgrade to buffer+Lagrange interpolation for high-precision requirements.
 
-### 7.4 分数延迟插值必要性
+### 7.4 Fractional Delay Interpolation Necessity
 
-**触发条件**：当延迟时间不是采样周期整数倍时（如15ps延迟但Δt=1.786ps，需8.4个采样点）。
+**Trigger Condition**: When delay time is not integer multiple of sampling period (e.g., 15ps delay but Δt=1.786ps, requiring 8.4 sample points).
 
-**技术方案**：
-- **Lagrange插值**（3-5阶）：计算量低，精度中等
-- **Sinc插值**：理论最优，需截断窗处理
-- **Farrow结构**：实时可调延迟，适合抖动建模
+**Technical Solutions**:
+- **Lagrange Interpolation** (3-5 order): Low computation, medium precision
+- **Sinc Interpolation**: Theoretically optimal, requires truncation window processing
+- **Farrow Structure**: Real-time adjustable delay, suitable for jitter modeling
 
-**关键应用**：RJ/DCD抖动注入需亚采样点时间精度（<0.5ps），必须使用插值。
+**Key Application**: RJ/DCD jitter injection requires sub-sample point time precision (<0.5ps), interpolation is mandatory.
 
-### 7.5 扩展触发条件
+### 7.5 Extension Trigger Conditions
 
-**当前版本适用性**：低速/单通道系统（<28Gbps），透传简化合理。
+**Current Version Applicability**: Low-speed/single-channel systems (<28Gbps), pass-through simplification is reasonable.
 
-**必须扩展的场景**：
-- 比特速率 ≥ 56Gbps：Mux延迟占UI比例 > 15%（15ps / 100ps UI）
-- 抖动敏感应用：需精确建模DCD/RJ对眼图的影响
-- 多通道SerDes：验证不同Lane间的时序偏差
+**Scenarios Requiring Extension**:
+- Bit rate ≥ 56Gbps: Mux delay accounts for > 15% of UI (15ps / 100ps UI)
+- Jitter-sensitive applications: Need precise modeling of DCD/RJ impact on eye diagram
+- Multi-channel SerDes: Verify timing skew between different Lanes
 
-**技术风险**：v0.1在高速系统中会**过度乐观估计眼图质量约25%**（忽略Mux贡献的抖动）。
+**Technical Risk**: v0.1 in high-speed systems will **over-optimistically estimate eye diagram quality by about 25%** (ignoring Mux-contributed jitter).
 
-### 7.6 测试平台限制影响
+### 7.6 Testbench Limitation Impact
 
-**问题**：`simple_link_tb.cpp` 未追踪 `sig_mux_out`，无法直接验证透传误差。
+**Problem**: `simple_link_tb.cpp` does not trace `sig_mux_out`, cannot directly verify pass-through error.
 
-**影响**：
-- 仅能通过系统级输出（`driver_out`）间接推断Mux行为
-- Driver的增益/带宽效应与Mux耦合，难以解耦分析
-- 无法量化浮点精度误差（预期 < 1e-12 V）
+**Impact**:
+- Can only indirectly infer Mux behavior through system-level output (`driver_out`)
+- Driver gain/bandwidth effects couple with Mux, difficult to decouple analysis
+- Cannot quantify floating-point precision error (expected < 1e-12 V)
 
-**解决方案**：添加 `sca_util::sca_trace(tf, sig_mux_out, "mux_out")`，然后使用Python对比 `mux_out` 与 `ffe_out`。
+**Solution**: Add `sca_util::sca_trace(tf, sig_mux_out, "mux_out")`, then use Python to compare `mux_out` with `ffe_out`.
 
 ---
 
-## 8. 参考信息
+## 8. Reference Information
 
-### 8.1 相关代码文件
+### 8.1 Related Code Files
 
-| 文件类别 | 路径 | 说明 |
-|---------|------|------|
-| **头文件** | `include/ams/tx_mux.h` | TxMuxTdf 类声明、端口定义 |
-| **实现文件** | `src/ams/tx_mux.cpp` | TDF 生命周期方法实现 |
-| **参数定义** | `include/common/parameters.h` | TxParams 结构体（`mux_lane` 参数） |
-| **测试平台** | `tb/simple_link_tb.cpp` | 系统级集成测试（包含 Mux 模块） |
-| **配置文件** | `config/default.json` | 默认参数配置（`tx.mux_lane`） |
+| File Category | Path | Description |
+|---------------|------|-------------|
+| **Header File** | `include/ams/tx_mux.h` | TxMuxTdf class declaration, port definitions |
+| **Implementation File** | `src/ams/tx_mux.cpp` | TDF lifecycle method implementation |
+| **Parameter Definition** | `include/common/parameters.h` | TxParams structure (`mux_lane` parameter) |
+| **Testbench** | `tb/simple_link_tb.cpp` | System-level integration test (includes Mux module) |
+| **Configuration File** | `config/default.json` | Default parameter configuration (`tx.mux_lane`) |
 
-### 8.2 核心依赖项
+### 8.2 Core Dependencies
 
-**编译时依赖**：
-- **SystemC 2.3.4**：TDF 模块基类、端口类型定义
-- **SystemC-AMS 2.3.4**：`sca_tdf::sca_module`、`sca_in/out<double>`
-- **C++14 标准**：初始化列表、类型推断支持
+**Compile-Time Dependencies**:
+- **SystemC 2.3.4**: TDF module base class, port type definitions
+- **SystemC-AMS 2.3.4**: `sca_tdf::sca_module`, `sca_in/out<double>`
+- **C++14 Standard**: Initialization lists, type inference support
 
-**运行时依赖**：
-- **配置加载器**：`ConfigLoader` 类（从 JSON/YAML 加载参数）
-- **上游模块**：TX FFE（`TxFfeTdf`）提供输入信号
-- **下游模块**：TX Driver（`TxDriverTdf`）接收输出信号
+**Runtime Dependencies**:
+- **Configuration Loader**: `ConfigLoader` class (loads parameters from JSON/YAML)
+- **Upstream Module**: TX FFE (`TxFfeTdf`) provides input signals
+- **Downstream Module**: TX Driver (`TxDriverTdf`) receives output signals
 
-**测试依赖**（未来版本）：
-- GoogleTest 1.12.1（单元测试框架）
-- NumPy/SciPy（透传误差分析）
-- Matplotlib（波形可视化）
+**Test Dependencies** (Future Versions):
+- GoogleTest 1.12.1 (unit test framework)
+- NumPy/SciPy (pass-through error analysis)
+- Matplotlib (waveform visualization)
 
-### 8.3 相关模块文档
+### 8.3 Related Module Documentation
 
-| 模块名称 | 文档路径 | 关系说明 |
-|---------|---------|---------|
-| TX FFE | `docs/modules/ffe.md` | 上游模块，提供均衡后的符号信号 |
-| TX Driver | `docs/modules/driver.md` | 下游模块，接收 Mux 输出并驱动信道 |
-| Clock Generation | `docs/modules/clkGen.md` | 时钟源，Mux 抖动特性依赖时钟质量 |
-| System Config | `README.md` | 系统级参数配置和信号链连接 |
+| Module Name | Documentation Path | Relationship Description |
+|-------------|-------------------|-------------------------|
+| TX FFE | `docs/modules/ffe.md` | Upstream module, provides equalized symbol signals |
+| TX Driver | `docs/modules/driver.md` | Downstream module, receives Mux output and drives channel |
+| Clock Generation | `docs/modules/clkGen.md` | Clock source, Mux jitter characteristics depend on clock quality |
+| System Config | `README.md` | System-level parameter configuration and signal chain connection |
 
-### 8.4 参考标准与规范
+### 8.4 Reference Standards and Specifications
 
-**SerDes 架构标准**：
+**SerDes Architecture Standards**:
 
-| 标准 | 版本 | 相关内容 |
-|------|------|---------|
-| **IEEE 802.3** | 2018 | 以太网多通道并串转换架构（Clause 82） |
-| **PCIe** | Gen 4/5/6 | 发送端时序预算和抖动规格 |
-| **USB4** | v2.0 | Lane 间时序偏差要求（< 0.2 UI） |
-| **OIF CEI** | 56G/112G | 高速 SerDes 发送端抖动模板 |
+| Standard | Version | Related Content |
+|----------|---------|-----------------|
+| **IEEE 802.3** | 2018 | Ethernet multi-channel parallel-to-serial architecture (Clause 82) |
+| **PCIe** | Gen 4/5/6 | Transmitter timing budget and jitter specifications |
+| **USB4** | v2.0 | Lane-to-lane timing skew requirements (< 0.2 UI) |
+| **OIF CEI** | 56G/112G | High-speed SerDes transmitter jitter templates |
 
-**抖动建模参考**：
-- **JEDEC Standard JESD65B**：高速串行数据链路的抖动规格和测量方法
-- **Agilent AN 1448-1**：抖动分解理论（RJ、DJ、DCD、DDJ）
-- **IEEE 802.3bj**：100G 以太网抖动容限测试方法
+**Jitter Modeling References**:
+- **JEDEC Standard JESD65B**: Jitter specifications and measurement methods for high-speed serial data links
+- **Agilent AN 1448-1**: Jitter decomposition theory (RJ, DJ, DCD, DDJ)
+- **IEEE 802.3bj**: 100G Ethernet jitter tolerance test methods
 
-### 8.5 配置示例
+### 8.5 Configuration Examples
 
-#### 示例1：单通道透传（当前版本）
+#### Example 1: Single-Channel Pass-Through (Current Version)
 
 ```json
 {
@@ -1520,14 +1522,14 @@ std::cout << "Mux output rate: " << tx_mux.out.get_rate() << std::endl;
 }
 ```
 
-**适用场景**：
-- 单通道 SerDes 系统（比特速率 ≤ 28Gbps）
-- 前端功能验证和信号链完整性测试
-- 无延迟/抖动要求的应用
+**Applicable Scenarios**:
+- Single-channel SerDes systems (bit rate ≤ 28Gbps)
+- Front-end functional verification and signal chain integrity testing
+- Applications without delay/jitter requirements
 
-**预期行为**：理想透传，`out = in`。
+**Expected Behavior**: Ideal pass-through, `out = in`.
 
-#### 示例2：多通道架构配置（未来版本预留）
+#### Example 2: Multi-Channel Architecture Configuration (Future Version Reserved)
 
 ```json
 {
@@ -1543,64 +1545,64 @@ std::cout << "Mux output rate: " << tx_mux.out.get_rate() << std::endl;
 }
 ```
 
-**预期行为（待实现）**：
-- 选择第 4 个通道（索引 3）
-- 固定延迟 20ps
-- DCD 占空比 49%（偏离 1%）
-- RJ 标准差 0.25ps
+**Expected Behavior (To be implemented)**:
+- Select 4th channel (index 3)
+- Fixed delay 20ps
+- DCD duty cycle 49% (1% deviation)
+- RJ standard deviation 0.25ps
 
-**适用场景**：
-- 4:1/8:1 并串转换架构
-- 高速 SerDes（56G/112G）抖动建模
-- 多通道时序偏差分析
+**Applicable Scenarios**:
+- 4:1/8:1 parallel-to-serial conversion architectures
+- High-speed SerDes (56G/112G) jitter modeling
+- Multi-channel timing skew analysis
 
-### 8.6 学术参考文献
+### 8.6 Academic References
 
-**并串转换架构**：
+**Parallel-to-Serial Conversion Architectures**:
 - J. Savoj et al., "A 12-Gb/s Data Rate Transceiver with Flexible Parallel Bus Interfaces", IEEE JSSC 2003
 - M. Harwood et al., "A 12.5Gb/s SerDes in 65nm CMOS", IEEE ISSCC 2007
 
-**抖动建模理论**：
+**Jitter Modeling Theory**:
 - M. Li and J. Wilstrup, "Paradigm Shift for Jitter and Noise in Design and Test", DesignCon 2004
 - K. Yang and D. Chen, "Physical Modeling of Jitter in High-Speed SerDes", IEEE MTT 2010
 
-**SystemC-AMS 建模方法**：
+**SystemC-AMS Modeling Methods**:
 - *SystemC AMS User's Guide*, Accellera, Version 2.3.4
-- 第 4 章：TDF（Timed Data Flow）建模方法
-- 第 9 章：DE-TDF 混合仿真（动态通道切换）
+- Chapter 4: TDF (Timed Data Flow) Modeling Methods
+- Chapter 9: DE-TDF Mixed Simulation (Dynamic Channel Switching)
 
-### 8.7 外部工具与资源
+### 8.7 External Tools and Resources
 
-**仿真与分析工具**：
-- **SystemC-AMS**：https://systemc.org（开源建模框架）
-- **Matplotlib**：https://matplotlib.org（波形可视化）
-- **SciPy**：https://scipy.org（信号处理和统计分析）
+**Simulation and Analysis Tools**:
+- **SystemC-AMS**: https://systemc.org (Open source modeling framework)
+- **Matplotlib**: https://matplotlib.org (Waveform visualization)
+- **SciPy**: https://scipy.org (Signal processing and statistical analysis)
 
-**设计参考**：
-- **Xilinx UG476**：GTX/GTH SerDes 用户指南（多通道时序管理）
-- **Intel FPGA IP User Guide**：收发器 PHY IP 配置示例
-- **IBIS-AMI Cookbook**：行为级建模最佳实践（www.eda.org/ibis）
+**Design References**:
+- **Xilinx UG476**: GTX/GTH SerDes User Guide (multi-channel timing management)
+- **Intel FPGA IP User Guide**: Transceiver PHY IP configuration examples
+- **IBIS-AMI Cookbook**: Behavioral modeling best practices (www.eda.org/ibis)
 
-### 8.8 已知限制与未来计划
+### 8.8 Known Limitations and Future Plans
 
-**当前版本（v0.1）限制**：
-- 仅支持单输入单输出（SISO）架构
-- 无延迟和抖动建模
-- `lane_sel` 参数不影响信号处理
+**Current Version (v0.1) Limitations**:
+- Only supports single-input single-output (SISO) architecture
+- No delay and jitter modeling
+- `lane_sel` parameter does not affect signal processing
 
-**未来版本计划**：
+**Future Version Plans**:
 
-| 特性 | 目标版本 | 优先级 | 说明 |
-|------|---------|-------|------|
-| 固定延迟建模 | v0.2 | 高 | 使用 `sca_delay` 或显式缓冲区 |
-| DCD 抖动注入 | v0.2 | 高 | 奇偶 UI 时间偏移 |
-| RJ 抖动注入 | v0.2 | 中 | 高斯随机时间扰动 |
-| 多输入通道选择 | v0.3 | 中 | 端口数组 + 动态索引 |
-| 码型相关延迟 | v0.4 | 低 | 引入数据相关抖动（DDJ） |
-| 增益压缩/饱和 | v0.4 | 低 | 非线性效应建模 |
+| Feature | Target Version | Priority | Description |
+|---------|----------------|----------|-------------|
+| Fixed Delay Modeling | v0.2 | High | Use `sca_delay` or explicit buffer |
+| DCD Jitter Injection | v0.2 | High | Odd/even UI time offset |
+| RJ Jitter Injection | v0.2 | Medium | Gaussian random time perturbation |
+| Multi-Input Channel Selection | v0.3 | Medium | Port array + dynamic indexing |
+| Pattern-Dependent Delay | v0.4 | Low | Introduce Data-Dependent Jitter (DDJ) |
+| Gain Compression/Saturation | v0.4 | Low | Nonlinear effects modeling |
 
 ---
 
-**文档版本**：v0.1  
-**最后更新**：2026-01-13  
-**作者**：SerDes 项目文档团队
+**Document Version**: v0.1  
+**Last Updated**: 2026-01-13  
+**Author**: SerDes Project Documentation Team
