@@ -99,26 +99,9 @@ Dependencies: `numpy`, `scipy`, `matplotlib`
 
 #### 1. Install SystemC and SystemC-AMS
 
-```bash
-# Download and compile SystemC 2.3.4
-wget https://www.accellera.org/images/downloads/standards/systemc/systemc-2.3.4.tar.gz
-tar xzf systemc-2.3.4.tar.gz
-cd systemc-2.3.4
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/install
-make -j4
-make install
+**SystemC**: https://github.com/accellera-official/systemc/
 
-# Download and compile SystemC-AMS 2.3.4
-cd ../..
-wget https://www.accellera.org/images/downloads/standards/systemc/systemc-ams-2.3.4.tar.gz
-tar xzf systemc-ams-2.3.4.tar.gz
-cd systemc-ams-2.3.4
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/install -DCMAKE_PREFIX_PATH=/path/to/install
-make -j4
-make install
-```
+**SystemC-AMS**: https://www.coseda-tech.com/systemc-ams-proof-of-concept
 
 #### 2. Set Environment Variables (Recommended)
 

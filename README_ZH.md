@@ -100,26 +100,9 @@ serdes/
 
 #### 1. 安装 SystemC 和 SystemC-AMS
 
-```bash
-# 下载并编译 SystemC 2.3.4
-wget https://www.accellera.org/images/downloads/standards/systemc/systemc-2.3.4.tar.gz
-tar xzf systemc-2.3.4.tar.gz
-cd systemc-2.3.4
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/install
-make -j4
-make install
+**SystemC**: https://github.com/accellera-official/systemc/
 
-# 下载并编译 SystemC-AMS 2.3.4
-cd ../..
-wget https://www.accellera.org/images/downloads/standards/systemc/systemc-ams-2.3.4.tar.gz
-tar xzf systemc-ams-2.3.4.tar.gz
-cd systemc-ams-2.3.4
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/path/to/install -DCMAKE_PREFIX_PATH=/path/to/install
-make -j4
-make install
-```
+**SystemC-AMS**: https://www.coseda-tech.com/systemc-ams-proof-of-concept
 
 #### 2. 设置环境变量（推荐）
 
