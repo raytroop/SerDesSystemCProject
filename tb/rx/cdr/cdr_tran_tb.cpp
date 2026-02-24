@@ -94,7 +94,7 @@ SC_MODULE(CdrTransientTestbench) {
         cdr->phase_out(sig_phase_out);
 
         // Feedback connection: CDR phase output -> Sampler phase offset
-        sig_phase_offset(sig_phase_out);
+        //sig_phase_offset(sig_phase_out);
 
         monitor->phase_in(sig_phase_out);
         monitor->data_in(sig_sampled);

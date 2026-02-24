@@ -22,7 +22,8 @@ function(create_test_executables test_list)
             GTest::gtest
             serdes_lib
             SystemC::systemc
-            SystemC::systemc-ams
+			#SystemC::systemc-ams
+			${SYSTEMC_AMS_HOME}/lib-linux64/libsystemc-ams.a
         )
         
         add_test(NAME ${test_name} COMMAND test_${test_name})

@@ -139,9 +139,9 @@ class PhaseOffsetSource : public sca_tdf::sca_module {
 public:
     sca_tdf::sca_out<double> phase_out;
     
-    double m_offset;
-    double m_sample_rate;
-    double m_timestep;
+    // double m_offset;
+    // double m_sample_rate;
+    // double m_timestep;
     
     PhaseOffsetSource(sc_core::sc_module_name nm, 
                       double offset = 0.0,
@@ -178,7 +178,7 @@ public:
     sca_tdf::sca_in<double> in_p;
     sca_tdf::sca_in<double> in_n;
     sca_tdf::sca_in<double> data_out;
-    sca_util::sca_in<bool> data_out_de;
+    sca_tdf::sca_in<bool> data_out_de;
     
     SamplerSignalMonitor(sc_core::sc_module_name nm, 
                         const std::string& filename = "",

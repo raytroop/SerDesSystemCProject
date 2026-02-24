@@ -11,7 +11,9 @@ function(add_serdes_testbench target_name source_file)
     target_link_libraries(${target_name}
         serdes_lib
         SystemC::systemc
-        SystemC::systemc-ams
+		#SystemC::systemc-ams
+        #${SYSTEMC_AMS_HOME}/lib-linux64/libsystemc-ams.a
+        /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
     )
     
     # Set output directory

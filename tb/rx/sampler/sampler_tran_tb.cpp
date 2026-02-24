@@ -176,7 +176,7 @@ SC_MODULE(SamplerTransientTestbench) {
         sampler->in_p(sig_in_p);
         sampler->in_n(sig_in_n);
         sampler->clk_sample(sig_clk);
-        sampler->phase_offset(sig_phase);
+        //sampler->phase_offset(sig_phase);
         sampler->data_out(sig_out);
         
         // 连接监测器
