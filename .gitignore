@@ -95,3 +95,8 @@ scripts/setup_env_local.sh
 
 # Plans directory (contains internal planning docs)
 docs/plans/
+
+# Analysis and report files
+MODELING_ANALYSIS_REPORT.md
+COMPARATIVE_CODE_ANALYSIS.md
+docs/systemc-ams-rebuild.md
