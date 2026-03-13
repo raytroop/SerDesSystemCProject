@@ -14,10 +14,10 @@ Author: SerDes SystemC Project Team
 """
 
 # Original EyeAnalyzer (Golden CDR full implementation)
-from .core import EyeAnalyzer, analyze_eye
+from .core import EyeAnalyzer as OriginalEyeAnalyzer, analyze_eye
 
-# New unified analyzer supporting both schemes
-from .analyzer import UnifiedEyeAnalyzer
+# New unified analyzer supporting both statistical and empirical modes
+from .analyzer import EyeAnalyzer, UnifiedEyeAnalyzer
 
 # Individual scheme classes
 from .schemes import SamplerCentricScheme, GoldenCdrScheme, BaseScheme
@@ -37,8 +37,9 @@ from .interpolation import interpolate_window, is_valid_window
 __version__ = "2.0.0"
 __all__ = [
     # Main analyzers
-    "EyeAnalyzer",           # Original (Golden CDR full implementation)
-    "UnifiedEyeAnalyzer",    # New unified entry point
+    "EyeAnalyzer",           # New unified entry (statistical + empirical modes)
+    "OriginalEyeAnalyzer",   # Original (Golden CDR full implementation)
+    "UnifiedEyeAnalyzer",    # Alias for backward compatibility
     "analyze_eye",           # Convenience function
     
     # Scheme classes
