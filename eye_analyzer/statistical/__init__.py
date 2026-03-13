@@ -6,8 +6,10 @@ channel pulse response, supporting both NRZ and PAM4 modulation formats.
 
 from .pulse_response import PulseResponseProcessor
 from .noise_injector import NoiseInjector
+from .jitter_injector import JitterInjector
 
 __all__ = [
     'PulseResponseProcessor',
     'NoiseInjector',
+    'JitterInjector',
 ]
