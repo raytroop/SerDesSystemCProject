@@ -11,12 +11,13 @@ Key characteristics:
 - Jitter analysis: Eye diagram horizontal spread directly reflects sampling jitter
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import numpy as np
 from scipy.interpolate import PchipInterpolator, CubicSpline
 
 from .base import BaseScheme
 from ..interpolation import get_valid_sampler_indices
+from ..modulation import ModulationFormat
 
 
 class SamplerCentricScheme(BaseScheme):
@@ -42,20 +43,25 @@ class SamplerCentricScheme(BaseScheme):
         >>> print(f"Eye Height: {metrics['eye_height']*1000:.2f} mV")
     """
     
-    def __init__(self, ui: float, ui_bins: int = 128, amp_bins: int = 256,
+    def __init__(self, 
+                 ui: float, 
+                 modulation: Union[str, ModulationFormat] = 'nrz',
+                 ui_bins: int = 128, 
+                 amp_bins: int = 256,
                  interp_method: str = 'cubic'):
         """
         Initialize the Sampler-Centric scheme.
         
         Args:
             ui: Unit interval in seconds
+            modulation: Modulation format ('nrz', 'pam4') or ModulationFormat object
             ui_bins: Number of bins for time axis (default: 128)
                     These bins cover the 2-UI window [-1, +1]
             amp_bins: Number of bins for amplitude axis (default: 256)
             interp_method: Interpolation method ('cubic', 'linear', 'pchip')
                           Default: 'cubic' (CubicSpline)
         """
-        super().__init__(ui, ui_bins, amp_bins)
+        super().__init__(ui, modulation, ui_bins, amp_bins)
         self.interp_method = interp_method
         self._num_valid_samples = 0
         self._num_skipped_samples = 0
