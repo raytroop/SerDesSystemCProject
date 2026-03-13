@@ -1,112 +1,160 @@
-"""Pulse response preprocessing for statistical eye analysis."""
+"""Pulse response processor for statistical eye diagram analysis.
 
+This module provides the PulseResponseProcessor class for processing
+channel pulse responses, supporting both NRZ and PAM4 modulation formats.
+"""
+
+from typing import Tuple, Optional
 import numpy as np
-from scipy.interpolate import interp1d
-from typing import Optional
-from ..modulation import ModulationFormat
+from scipy import signal
+
+from eye_analyzer.modulation import ModulationFormat, NRZ
 
 
 class PulseResponseProcessor:
     """Process channel pulse response for statistical eye analysis.
     
-    This class handles preprocessing of raw pulse response data including:
+    Features:
     - DC offset removal
-    - Window extraction (non-zero region)
-    - Differential signaling compensation
-    - Upsampling for better visualization
+    - Window extraction
+    - Differential signal conversion
+    - Upsampling (default 16x)
+    - Main cursor detection
+    - Voltage range estimation
     
-    Example:
-        >>> processor = PulseResponseProcessor()
-        >>> pulse = processor.process(
-        ...     raw_pulse,
-        ...     modulation=PAM4(),
-        ...     diff_signal=True,
-        ...     upsampling=16
-        ... )
+    Supports both NRZ and PAM4 modulation formats.
     """
     
-    def process(self,
-                pulse_response: np.ndarray,
-                modulation: Optional[ModulationFormat] = None,
-                diff_signal: bool = True,
-                upsampling: int = 16,
-                interpolation_type: str = 'linear') -> np.ndarray:
+    def __init__(self):
+        """Initialize pulse response processor."""
+        self._main_cursor_idx: Optional[int] = None
+        self._processed_response: Optional[np.ndarray] = None
+    
+    def process(
+        self,
+        pulse: np.ndarray,
+        dt: float = 1.0,
+        upsampling: int = 16,
+        diff_signal: bool = False,
+        window_size: Optional[int] = None
+    ) -> np.ndarray:
         """Process pulse response.
         
         Args:
-            pulse_response: Raw pulse response array from channel simulation
-            modulation: Modulation format (optional, for validation)
-            diff_signal: If True, multiply by 0.5 for differential signaling
-            upsampling: Upsampling factor for better visualization
-            interpolation_type: 'linear' or 'cubic' interpolation
+            pulse: Raw pulse response array
+            dt: Time step (seconds)
+            upsampling: Upsampling factor (default 16)
+            diff_signal: Apply differential signaling factor (divide by 2)
+            window_size: Window size in samples after upsampling
             
         Returns:
             Processed pulse response array
             
         Raises:
-            ValueError: If pulse response is all zeros or invalid
+            ValueError: If pulse is all zeros or invalid
         """
-        # Remove DC offset
-        pulse = np.array(pulse_response)
-        pulse = pulse - pulse[0]
+        pulse = np.asarray(pulse)
         
-        # Extract non-zero window
-        window = np.where(pulse != 0)[0]
-        if len(window) == 0:
-            raise ValueError("Pulse response is all zeros")
+        if np.all(pulse == 0):
+            raise ValueError("Pulse response cannot be all zeros")
         
-        window_start = max(0, window[0] - 1)
-        window_end = min(len(pulse), window[-1] + 2)
-        pulse = pulse[window_start:window_end]
+        if len(pulse) == 0:
+            raise ValueError("Pulse response cannot be empty")
         
-        # Apply differential signaling factor
+        # Step 1: Remove DC offset (first sample should be baseline)
+        dc_offset = pulse[0]
+        pulse_dc_removed = pulse - dc_offset
+        
+        # Step 2: Apply differential signal factor if requested
         if diff_signal:
-            pulse = pulse * 0.5
+            pulse_dc_removed = pulse_dc_removed * 0.5
         
-        # Upsample
+        # Step 3: Upsample
         if upsampling > 1:
-            x = np.linspace(0, len(pulse) - 1, len(pulse))
-            f = interp1d(x, pulse, kind=interpolation_type)
-            x_new = np.linspace(0, len(pulse) - 1, len(pulse) * upsampling)
-            pulse = f(x_new)
+            # Use scipy.signal.resample for proper upsampling
+            new_length = len(pulse_dc_removed) * upsampling
+            pulse_upsampled = signal.resample(pulse_dc_removed, new_length)
+        else:
+            pulse_upsampled = pulse_dc_removed
+            upsampling = 1
         
-        return pulse
+        # Step 4: Extract window around main cursor
+        if window_size is not None:
+            # Find main cursor in upsampled domain
+            main_idx = self.find_main_cursor(pulse_upsampled)
+            half_window = window_size // 2
+            start = max(0, main_idx - half_window)
+            end = min(len(pulse_upsampled), start + window_size)
+            start = max(0, end - window_size)  # Adjust start if end is clipped
+            result = pulse_upsampled[start:end]
+        else:
+            result = pulse_upsampled
+        
+        self._processed_response = result
+        return result
     
     def find_main_cursor(self, pulse: np.ndarray) -> int:
-        """Find index of main cursor (peak amplitude).
+        """Find main cursor index (maximum absolute amplitude).
         
         Args:
-            pulse: Processed pulse response
+            pulse: Pulse response array
             
         Returns:
-            Index of main cursor (peak absolute amplitude)
+            Index of main cursor
         """
-        return int(np.argmax(np.abs(pulse)))
+        pulse = np.asarray(pulse)
+        self._main_cursor_idx = int(np.argmax(np.abs(pulse)))
+        return self._main_cursor_idx
     
-    def estimate_voltage_range(self, pulse: np.ndarray, 
-                               modulation: ModulationFormat,
-                               multiplier: float = 2.0) -> tuple:
+    def estimate_voltage_range(
+        self,
+        pulse: np.ndarray,
+        modulation: ModulationFormat,
+        multiplier: float = 2.0
+    ) -> Tuple[float, float]:
         """Estimate voltage range for eye diagram display.
         
         Args:
             pulse: Processed pulse response
-            modulation: Modulation format
-            multiplier: Window size multiplier
+            modulation: Modulation format (NRZ, PAM4, etc.)
+            multiplier: Display range multiplier (default 2.0)
             
         Returns:
-            Tuple of (v_min, v_max) for display range
+            Tuple of (v_min, v_max)
         """
-        idx_main = self.find_main_cursor(pulse)
-        A_max = np.abs(pulse[idx_main])
+        pulse = np.asarray(pulse)
         
-        # For PAM4, main cursor amplitude corresponds to outer levels
-        # Need to account for all modulation levels
-        if modulation:
-            levels = modulation.get_levels()
-            max_level = np.max(np.abs(levels))
-            # Scale by max level (3 for PAM4, 1 for NRZ)
-            A_display = A_max * max_level * multiplier / 3.0
-        else:
-            A_display = A_max * multiplier
+        # Find maximum amplitude
+        max_amp = np.max(np.abs(pulse))
         
-        return -A_display, A_display
+        # Get modulation levels
+        levels = modulation.get_levels()
+        max_level = np.max(np.abs(levels))
+        
+        # Calculate display range
+        # For PAM4: levels are [-3, -1, 1, 3], max_level = 3
+        # Display should show full signal range considering modulation levels
+        display_range = max_amp * max_level * multiplier / 3.0
+        
+        # For PAM4: symmetric around 0
+        # For NRZ: symmetric around 0
+        v_min = -display_range
+        v_max = display_range
+        
+        return v_min, v_max
+    
+    def get_main_cursor_idx(self) -> Optional[int]:
+        """Get cached main cursor index.
+        
+        Returns:
+            Main cursor index or None if not processed
+        """
+        return self._main_cursor_idx
+    
+    def get_processed_response(self) -> Optional[np.ndarray]:
+        """Get cached processed response.
+        
+        Returns:
+            Processed response or None if not processed
+        """
+        return self._processed_response
