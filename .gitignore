@@ -89,3 +89,9 @@ docs/workflow.md
 # Local environment setup
 scripts/setup_env_local.sh
 *.local.sh
+
+# Kimi dev workflow files
+.kimi-dev/
+
+# Plans directory (contains internal planning docs)
+docs/plans/
