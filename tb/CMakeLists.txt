@@ -89,3 +89,10 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/top/serdes_link_tb.cpp)
     add_serdes_testbench(serdes_link_tb top/serdes_link_tb.cpp)
 endif()
+
+# ============================================================================
+# Channel S-Parameter testbench (end-to-end integration test)
+# ============================================================================
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/channel/channel_sparam_tb.cpp)
+    add_serdes_testbench(channel_sparam_tb channel/channel_sparam_tb.cpp)
+endif()

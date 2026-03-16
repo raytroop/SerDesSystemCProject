@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(serdes)
 
 # Set C++ standard globally - SystemC is built with C++11
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add cmake modules path
