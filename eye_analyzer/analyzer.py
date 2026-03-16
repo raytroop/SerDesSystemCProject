@@ -118,7 +118,12 @@ class EyeAnalyzer:
     
     def _initialize_analyzer(self) -> None:
         """Initialize the appropriate internal analyzer based on mode."""
+        # Parameters only supported by empirical mode (core.EyeAnalyzer)
+        empirical_only_params = ['n_ui_display', 'center_eye', 'interpolate_factor', 
+                                 'jitter_method', 'measure_length']
+        
         if self.mode == 'statistical':
+            # StatisticalScheme doesn't support n_ui_display, center_eye, interpolate_factor
             self._scheme = StatisticalScheme(
                 ui=self.ui,
                 modulation=self.modulation,
@@ -126,7 +131,7 @@ class EyeAnalyzer:
                 amp_bins=self.amp_bins,
                 samples_per_symbol=self.samples_per_symbol,
                 **{k: v for k, v in self._kwargs.items() 
-                   if k not in ['jitter_method', 'measure_length']}
+                   if k not in empirical_only_params}
             )
         else:  # empirical mode
             # Use original EyeAnalyzer for empirical mode
@@ -136,7 +141,8 @@ class EyeAnalyzer:
                 amp_bins=self.amp_bins,
                 **{k: v for k, v in self._kwargs.items()
                    if k in ['jitter_method', 'measure_length', 'sampling', 
-                           'hist2d_normalize', 'psd_nperseg', 'linearity_threshold']}
+                           'hist2d_normalize', 'psd_nperseg', 'linearity_threshold',
+                           'n_ui_display', 'center_eye', 'interpolate_factor']}
             )
     
     def analyze(self,
