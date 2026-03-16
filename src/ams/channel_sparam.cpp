@@ -152,6 +152,7 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
         
         // Get method
         std::string method_str = config.value("method", "simple");
+        std::cout << "[DEBUG] ChannelSParamTdf: Loading method: " << method_str << std::endl;
         if (method_str == "rational") {
             m_ext_params.method = ChannelMethod::RATIONAL;
         } else if (method_str == "impulse") {
@@ -161,6 +162,13 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
         }
         
         // Parse filters (rational method)
+        if (config.contains("filters")) {
+            int filter_count = 0;
+            for (auto it = config["filters"].begin(); it != config["filters"].end(); ++it) {
+                filter_count++;
+            }
+            std::cout << "[DEBUG] ChannelSParamTdf: Found " << filter_count << " filters" << std::endl;
+        }
         if (config.contains("filters") && !config["filters"].empty()) {
             // Use first filter (typically S21)
             for (auto it = config["filters"].begin(); it != config["filters"].end(); ++it) {
@@ -179,11 +187,23 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
                 m_rational_data.dc_gain = filter.value("dc_gain", 1.0);
                 m_rational_data.mse = filter.value("mse", 0.0);
                 
+                std::cout << "[DEBUG] ChannelSParamTdf: Parsed rational filter '" << it.key() 
+                          << "': num=" << m_rational_data.num_coeffs.size() 
+                          << ", den=" << m_rational_data.den_coeffs.size() 
+                          << ", order=" << m_rational_data.order << std::endl;
+                
                 break; // Only use first filter for now
             }
         }
         
         // Parse impulse responses
+        if (config.contains("impulse_responses")) {
+            int ir_count = 0;
+            for (auto it = config["impulse_responses"].begin(); it != config["impulse_responses"].end(); ++it) {
+                ir_count++;
+            }
+            std::cout << "[DEBUG] ChannelSParamTdf: Found " << ir_count << " impulse responses" << std::endl;
+        }
         if (config.contains("impulse_responses") && !config["impulse_responses"].empty()) {
             for (auto it = config["impulse_responses"].begin(); it != config["impulse_responses"].end(); ++it) {
                 const auto& ir = it.value();
@@ -204,10 +224,17 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
                 m_impulse_data.energy = ir.value("energy", 0.0);
                 m_impulse_data.peak_time = ir.value("peak_time", 0.0);
                 
+                std::cout << "[DEBUG] ChannelSParamTdf: Parsed impulse response '" << it.key() 
+                          << "': impulse=" << m_impulse_data.impulse.size() 
+                          << ", time=" << m_impulse_data.time.size() 
+                          << ", dt=" << m_impulse_data.dt << std::endl;
+                
                 break; // Only use first IR for now
             }
         }
         
+        std::cout << "[DEBUG] ChannelSParamTdf: Configuration loaded successfully (fs=" 
+                  << m_ext_params.fs << ")" << std::endl;
         m_config_loaded = true;
         return true;
         

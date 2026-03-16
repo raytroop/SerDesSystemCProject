@@ -289,6 +289,22 @@ set(RX_TOP_TESTS
 create_test_executables("${RX_TOP_TESTS}")
 
 # ============================================================================
+# Batch 1: S-parameter config loading verification test (simple version)
+# ============================================================================
+
+add_executable(test_sparam_load
+    channel/test_sparam_load_simple.cpp
+)
+
+target_link_libraries(test_sparam_load
+    serdes_lib
+    SystemC::systemc
+    SystemC::systemc-ams
+)
+
+add_test(NAME sparam_load COMMAND test_sparam_load)
+
+# ============================================================================
 # 集成测试
 # ============================================================================
 
