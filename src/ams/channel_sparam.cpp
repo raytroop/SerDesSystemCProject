@@ -270,18 +270,37 @@ void ChannelSParamTdf::init_rational_model() {
     }
     
     // Initialize sca_vector for LTF
+    // Note: sca_ltf_nd expects coefficients in DESCENDING order (highest power first)
+    // But JSON stores them in ASCENDING order (constant term first)
+    // So we need to reverse the order
     int num_size = static_cast<int>(m_rational_data.num_coeffs.size());
     int den_size = static_cast<int>(m_rational_data.den_coeffs.size());
     
     m_num_vec.resize(num_size);
     m_den_vec.resize(den_size);
     
+    // Reverse order: JSON [b0, b1, b2, ...] -> sca_ltf_nd [..., b2, b1, b0]
     for (int i = 0; i < num_size; ++i) {
-        m_num_vec(i) = m_rational_data.num_coeffs[i];
+        m_num_vec(i) = m_rational_data.num_coeffs[num_size - 1 - i];
     }
     for (int i = 0; i < den_size; ++i) {
-        m_den_vec(i) = m_rational_data.den_coeffs[i];
+        m_den_vec(i) = m_rational_data.den_coeffs[den_size - 1 - i];
     }
+    
+    // Compute actual DC gain from reversed coefficients
+    // H(0) = num[0] / den[0] (after reversing, num[0] is the highest order coeff)
+    // But actually for H(0), we need sum(num)/sum(den) if the coefficients 
+    // are in the form num[0]*s^n + num[1]*s^(n-1) + ... + num[n]
+    // At s=0: H(0) = num[n] / den[n] (last element after reversing = first before)
+    // So the DC gain is num_coeffs[0] / den_coeffs[0] from original
+    if (!m_rational_data.den_coeffs.empty() && std::abs(m_rational_data.den_coeffs[0]) > 1e-12) {
+        m_rational_data.dc_gain = m_rational_data.num_coeffs[0] / m_rational_data.den_coeffs[0];
+    }
+    
+    std::cout << "[DEBUG] ChannelSParamTdf: Rational filter initialized" << std::endl;
+    std::cout << "[DEBUG]   Order: " << m_rational_data.order << std::endl;
+    std::cout << "[DEBUG]   DC gain: " << m_rational_data.dc_gain << std::endl;
+    std::cout << "[DEBUG]   num_size: " << num_size << ", den_size: " << den_size << std::endl;
 }
 
 void ChannelSParamTdf::init_impulse_model() {
