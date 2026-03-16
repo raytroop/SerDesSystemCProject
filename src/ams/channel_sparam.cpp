@@ -23,7 +23,6 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm, const ChannelPara
     , m_params(params)
     , m_filter_state(0.0)
     , m_alpha(0.3)
-    , m_ltf_state(0.0)
     , m_delay_idx(0)
     , m_use_fft(false)
     , m_fft_size(0)
@@ -46,7 +45,6 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm,
     , m_ext_params(ext_params)
     , m_filter_state(0.0)
     , m_alpha(0.3)
-    , m_ltf_state(0.0)
     , m_delay_idx(0)
     , m_use_fft(false)
     , m_fft_size(0)
@@ -72,6 +70,10 @@ ChannelSParamTdf::~ChannelSParamTdf() {
 void ChannelSParamTdf::set_attributes() {
     in.set_rate(1);
     out.set_rate(1);
+    
+    // Set timestep for TDF module
+    double timestep = 1.0 / m_ext_params.fs;
+    set_timestep(timestep, sc_core::SC_SEC);
     
     // Set delay based on method
     if (m_ext_params.method == ChannelMethod::IMPULSE && m_use_fft) {
@@ -253,8 +255,6 @@ void ChannelSParamTdf::init_rational_model() {
     for (int i = 0; i < den_size; ++i) {
         m_den_vec(i) = m_rational_data.den_coeffs[i];
     }
-    
-    m_ltf_state = 0.0;
 }
 
 void ChannelSParamTdf::init_impulse_model() {
@@ -328,10 +328,8 @@ double ChannelSParamTdf::process_rational(double x) {
     // H(s) = num(s) / den(s)
     
     // The sca_ltf_nd operator computes the Laplace transfer function
-    // We need to use the ltf_nd operator in the processing method
-    
-    double y = m_ltf_num(m_num_vec, m_den_vec, m_ltf_state, x);
-    
+    // Correct usage: pass numerator, denominator coefficients and input only
+    double y = m_ltf_filter(m_num_vec, m_den_vec, x);
     return y;
 }
 

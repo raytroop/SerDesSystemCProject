@@ -143,11 +143,9 @@ private:
     
     // Rational function method state
     RationalFilterData m_rational_data;
-    sca_tdf::sca_ltf_nd m_ltf_num;      // LTF numerator
-    sca_tdf::sca_ltf_nd m_ltf_den;      // LTF denominator
+    sca_tdf::sca_ltf_nd m_ltf_filter;    // LTF filter for rational method
     sca_util::sca_vector<double> m_num_vec;
     sca_util::sca_vector<double> m_den_vec;
-    double m_ltf_state;                  // Internal state for LTF
     
     // Impulse response method state
     ImpulseResponseData m_impulse_data;
