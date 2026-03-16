@@ -310,7 +310,7 @@ def format_metrics_to_spec(metrics: Dict[str, Any], metadata: Dict[str, Any]) ->
     """
     return {
         "metadata": {
-            "version": "1.0",
+            "version": "2.0.0",
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "dat_path": metadata.get('dat_path', ''),
             "ui": metadata.get('ui', 0.0),
