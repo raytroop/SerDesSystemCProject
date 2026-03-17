@@ -7,6 +7,7 @@
 #include <string>
 #include <memory>
 #include <deque>
+#include "biquad_filter.h"
 
 namespace serdes {
 
@@ -14,9 +15,10 @@ namespace serdes {
  * Channel modeling method enumeration
  */
 enum class ChannelMethod {
-    SIMPLE,      // Simple low-pass filter (default, v0.4 compatible)
-    RATIONAL,    // Rational function fitting (sca_ltf_nd)
-    IMPULSE      // Impulse response convolution
+    SIMPLE,        // Simple low-pass filter (default, v0.4 compatible)
+    RATIONAL,      // Rational function fitting (sca_ltf_nd)
+    IMPULSE,       // Impulse response convolution
+    POLE_RESIDUE   // Pole-residue fitting with biquad chain
 };
 
 /**
@@ -131,6 +133,19 @@ public:
      * Get DC gain of the channel
      */
     double get_dc_gain() const;
+    
+    /**
+     * Initialize pole-residue model
+     * Converts pole-residue pairs to cascaded biquad sections
+     */
+    void init_pole_residue_model();
+    
+    /**
+     * Process input through pole-residue filter
+     * @param x Input sample
+     * @return Filtered output
+     */
+    double process_pole_residue(double x);
 
 private:
     // Parameters
@@ -162,6 +177,10 @@ private:
     std::deque<double> m_output_queue;
     int m_block_idx;
     
+    // Pole-residue filter state
+    PoleResidueFilterData m_pole_residue_data;
+    std::vector<std::unique_ptr<BiquadSection>> m_biquad_chain;
+    
     // Initialization flags
     bool m_config_loaded;
     bool m_initialized;
@@ -180,6 +199,7 @@ private:
     bool parse_json_config(const std::string& json_content);
     bool parse_rational_filter(const std::string& name, const void* json_obj);
     bool parse_impulse_response(const std::string& name, const void* json_obj);
+    bool parse_pole_residue_filter(const std::string& name, const void* json_obj);
     
     // FFT helpers
     void init_fft_convolution();

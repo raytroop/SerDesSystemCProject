@@ -96,6 +96,9 @@ void ChannelSParamTdf::initialize() {
         case ChannelMethod::IMPULSE:
             init_impulse_model();
             break;
+        case ChannelMethod::POLE_RESIDUE:
+            init_pole_residue_model();
+            break;
     }
     
     m_initialized = true;
@@ -118,6 +121,9 @@ void ChannelSParamTdf::processing() {
             } else {
                 y_out = process_impulse(x_in);
             }
+            break;
+        case ChannelMethod::POLE_RESIDUE:
+            y_out = process_pole_residue(x_in);
             break;
     }
     
@@ -158,6 +164,8 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
             m_ext_params.method = ChannelMethod::RATIONAL;
         } else if (method_str == "impulse") {
             m_ext_params.method = ChannelMethod::IMPULSE;
+        } else if (method_str == "pole_residue") {
+            m_ext_params.method = ChannelMethod::POLE_RESIDUE;
         } else {
             m_ext_params.method = ChannelMethod::SIMPLE;
         }
@@ -192,6 +200,59 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
                           << "': num=" << m_rational_data.num_coeffs.size() 
                           << ", den=" << m_rational_data.den_coeffs.size() 
                           << ", order=" << m_rational_data.order << std::endl;
+                
+                break; // Only use first filter for now
+            }
+        }
+        
+        // Parse pole_residue filters
+        if (config.contains("pole_residue_filters")) {
+            int pr_count = 0;
+            for (auto it = config["pole_residue_filters"].begin(); it != config["pole_residue_filters"].end(); ++it) {
+                pr_count++;
+            }
+            std::cout << "[DEBUG] ChannelSParamTdf: Found " << pr_count << " pole-residue filters" << std::endl;
+        }
+        if (config.contains("pole_residue_filters") && !config["pole_residue_filters"].empty()) {
+            for (auto it = config["pole_residue_filters"].begin(); it != config["pole_residue_filters"].end(); ++it) {
+                const auto& pr = it.value();
+                m_pole_residue_data.poles.clear();
+                m_pole_residue_data.residues.clear();
+                
+                // Parse constant term
+                m_pole_residue_data.constant = pr.value("constant", 0.0);
+                
+                // Parse poles and residues (complex pairs)
+                if (pr.contains("poles") && pr.contains("residues")) {
+                    const auto& poles = pr["poles"];
+                    const auto& residues = pr["residues"];
+                    
+                    for (size_t i = 0; i < poles.size() && i < residues.size(); ++i) {
+                        double pr_val = 0.0, pi_val = 0.0;
+                        double rr_val = 0.0, ri_val = 0.0;
+                        
+                        if (poles[i].is_array() && poles[i].size() >= 2) {
+                            pr_val = poles[i][0].get<double>();
+                            pi_val = poles[i][1].get<double>();
+                        }
+                        if (residues[i].is_array() && residues[i].size() >= 2) {
+                            rr_val = residues[i][0].get<double>();
+                            ri_val = residues[i][1].get<double>();
+                        }
+                        
+                        m_pole_residue_data.poles.emplace_back(pr_val, pi_val);
+                        m_pole_residue_data.residues.emplace_back(rr_val, ri_val);
+                    }
+                }
+                
+                m_pole_residue_data.order = pr.value("order", static_cast<int>(m_pole_residue_data.poles.size()));
+                m_pole_residue_data.dc_gain = pr.value("dc_gain", 1.0);
+                m_pole_residue_data.mse = pr.value("mse", 0.0);
+                
+                std::cout << "[DEBUG] ChannelSParamTdf: Parsed pole-residue filter '" << it.key() 
+                          << "': poles=" << m_pole_residue_data.poles.size() 
+                          << ", constant=" << m_pole_residue_data.constant 
+                          << ", order=" << m_pole_residue_data.order << std::endl;
                 
                 break; // Only use first filter for now
             }
@@ -323,6 +384,89 @@ void ChannelSParamTdf::init_impulse_model() {
     }
 }
 
+void ChannelSParamTdf::init_pole_residue_model() {
+    if (m_pole_residue_data.poles.empty()) {
+        std::cerr << "ChannelSParamTdf: Pole-residue data not loaded" << std::endl;
+        // Fall back to simple model
+        m_ext_params.method = ChannelMethod::SIMPLE;
+        init_simple_model();
+        return;
+    }
+    
+    // Clear existing biquad chain
+    m_biquad_chain.clear();
+    
+    double timestep = 1.0 / m_ext_params.fs;
+    
+    // Group poles into complex conjugate pairs and real poles
+    std::vector<bool> processed(m_pole_residue_data.poles.size(), false);
+    
+    for (size_t i = 0; i < m_pole_residue_data.poles.size(); ++i) {
+        if (processed[i]) continue;
+        
+        const std::complex<double>& p1 = m_pole_residue_data.poles[i];
+        const std::complex<double>& r1 = m_pole_residue_data.residues[i];
+        
+        // Check if this is a complex pole (non-zero imaginary part)
+        if (std::abs(p1.imag()) > 1e-12) {
+            // Find conjugate pair
+            bool found_pair = false;
+            for (size_t j = i + 1; j < m_pole_residue_data.poles.size() && !found_pair; ++j) {
+                if (processed[j]) continue;
+                
+                const std::complex<double>& p2 = m_pole_residue_data.poles[j];
+                const std::complex<double>& r2 = m_pole_residue_data.residues[j];
+                
+                // Check if p2 is conjugate of p1
+                if (std::abs(p2 - std::conj(p1)) < 1e-12 &&
+                    std::abs(r2 - std::conj(r1)) < 1e-12) {
+                    
+                    // Combine conjugate pairs into real biquad section
+                    // H(s) = r1/(s-p1) + r2/(s-p2) where p2 = p1*, r2 = r1*
+                    // = [2*Re(r1)*s - 2*Re(p1*r1*)] / [s^2 - 2*Re(p1)*s + |p1|^2]
+                    
+                    double b0 = 0.0;                                    // s^2 coefficient
+                    double b1 = 2.0 * r1.real();                        // s coefficient
+                    double b2 = -2.0 * (r1 * std::conj(p1)).real();     // constant
+                    double a1 = -2.0 * p1.real();                       // s coefficient
+                    double a2 = std::norm(p1);                          // constant
+                    
+                    auto biquad = std::make_unique<BiquadSection>();
+                    biquad->initialize(b0, b1, b2, a1, a2, timestep);
+                    m_biquad_chain.push_back(std::move(biquad));
+                    
+                    processed[i] = true;
+                    processed[j] = true;
+                    found_pair = true;
+                }
+            }
+            
+            if (!found_pair) {
+                std::cerr << "ChannelSParamTdf: Warning - unpaired complex pole at index " << i << std::endl;
+            }
+        } else {
+            // Real pole: create first-order section
+            // H(s) = r / (s - p) = r / (s + (-p))
+            // Treat as biquad with b0=0, b1=r, b2=0, a1=-p, a2=0
+            
+            double b0 = 0.0;
+            double b1 = r1.real();
+            double b2 = 0.0;
+            double a1 = -p1.real();
+            double a2 = 0.0;
+            
+            auto biquad = std::make_unique<BiquadSection>();
+            biquad->initialize(b0, b1, b2, a1, a2, timestep);
+            m_biquad_chain.push_back(std::move(biquad));
+            
+            processed[i] = true;
+        }
+    }
+    
+    std::cout << "[DEBUG] ChannelSParamTdf: Pole-residue filter initialized with " 
+              << m_biquad_chain.size() << " biquad sections" << std::endl;
+}
+
 void ChannelSParamTdf::init_fft_convolution() {
     int L = static_cast<int>(m_impulse_data.impulse.size());
     
@@ -396,6 +540,21 @@ double ChannelSParamTdf::process_impulse(double x) {
     m_delay_idx = (m_delay_idx + 1) % L;
     
     return y;
+}
+
+double ChannelSParamTdf::process_pole_residue(double x) {
+    // Process through cascaded biquad sections
+    // H(s) = constant + sum(sections)
+    // Each biquad section implements a pole-residue pair or conjugate pair
+    
+    double y = m_pole_residue_data.constant * x;
+    
+    // Process through each biquad section in cascade
+    for (auto& biquad : m_biquad_chain) {
+        x = biquad->process(x);
+    }
+    
+    return y + x;
 }
 
 double ChannelSParamTdf::process_impulse_fft(double x) {
@@ -582,6 +741,8 @@ double ChannelSParamTdf::get_dc_gain() const {
                 }
                 return sum * m_impulse_data.dt;
             }
+        case ChannelMethod::POLE_RESIDUE:
+            return m_pole_residue_data.dc_gain;
         default:
             return 1.0;
     }
