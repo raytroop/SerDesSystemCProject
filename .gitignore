@@ -106,3 +106,6 @@ docs/plans/
 MODELING_ANALYSIS_REPORT.md
 COMPARATIVE_CODE_ANALYSIS.md
 docs/systemc-ams-rebuild.md
+
+# Worktrees
+.worktrees/
