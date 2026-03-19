@@ -1,11 +1,12 @@
 """
-Vector Fitting algorithm implementation for S-parameter rational function fitting.
-This module provides the core algorithms for converting frequency domain S-parameters
-to rational functions in the Laplace domain.
+Vector Fitting algorithm implementation (Relaxed VF) for S-parameter fitting.
+
+Based on vectfit3.m by Bjorn Gustavsen (SINTEF Energy Research).
+This is a clean implementation of the Fast Relaxed Vector Fitting algorithm.
 """
 
 import numpy as np
-from scipy.linalg import lstsq
+from typing import Dict, List, Tuple, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,406 +14,478 @@ logger = logging.getLogger(__name__)
 
 class VectorFitting:
     """
-    Vector Fitting algorithm implementation for rational function approximation
-    of frequency domain data (e.g., S-parameters).
+    Vector Fitting algorithm with relaxed pole identification.
     
     The algorithm approximates frequency response H(s) as:
-    H(s) = exp(-s*delay) * [sum(r_k / (s - p_k)) + d]
+    H(s) = sum(r_k / (s - p_k)) + d + s*e
     
-    where r_k are residues, p_k are poles, d is direct term, and delay is
-    estimated group delay.
-    
-    This implementation uses:
-    - Automatic delay extraction for transmission lines
-    - Frequency normalization for numerical stability
-    - Column scaling for better conditioning
+    using the relaxed Vector Fitting method which ensures better
+    convergence by avoiding the trivial solution.
     """
     
-    def __init__(self, order=8, max_iterations=10, tolerance=1e-6):
+    def __init__(self, order: int = 8, max_iterations: int = 10, 
+                 tolerance: float = 1e-6, relax: bool = True,
+                 stable: bool = True, asymp: int = 2):
         """
-        Initialize the Vector Fitting algorithm.
+        Initialize Vector Fitting.
         
         Args:
-            order: Number of poles (fitting order), recommended 6-16
-            max_iterations: Maximum number of VF iterations
-            tolerance: Convergence tolerance for pole relocation
+            order: Number of poles (fitting order)
+            max_iterations: Maximum VF iterations
+            tolerance: Convergence tolerance for poles
+            relax: Use relaxed nontriviality constraint
+            stable: Force unstable poles to left half-plane
+            asymp: Asymptotic behavior (1=D=0,E=0; 2=D!=0,E=0; 3=D!=0,E!=0)
         """
         self.order = order
         self.max_iterations = max_iterations
         self.tolerance = tolerance
+        self.relax = relax
+        self.stable = stable
+        self.asymp = asymp
         
-        # Results storage
+        # Results
         self.poles = None
         self.residues = None
-        self.d = 0.0  # Direct term
-        self.h = 0.0  # s-proportional term (usually 0)
-        self.delay = 0.0  # Estimated delay
-        self.num_coeffs = None
-        self.den_coeffs = None
-        self.mse = None
+        self.d = 0.0
+        self.e = 0.0
         
-        # Normalization factors
-        self._freq_scale = 1.0
+        # Normalization
         self._s_scale = 1.0
-    
-    def _estimate_delay(self, freq, H_data):
+        
+    def _initialize_poles(self, s: np.ndarray) -> np.ndarray:
         """
-        Estimate group delay from phase slope.
+        Initialize starting poles distributed across frequency range.
         
         Args:
-            freq: Frequency array (Hz)
-            H_data: Complex frequency response
+            s: Complex frequency array (rad/s)
             
         Returns:
-            Estimated delay in seconds
+            Initial pole array (complex)
         """
-        phase = np.unwrap(np.angle(H_data))
-        
-        # Use linear regression on phase vs angular frequency
-        # phase = -delay * omega + offset
-        omega = 2 * np.pi * freq
-        
-        # Robust fit using middle portion of data to avoid edge effects
-        n = len(freq)
-        start_idx = n // 10
-        end_idx = n - n // 10
-        
-        if end_idx <= start_idx:
-            start_idx = 0
-            end_idx = n
-        
-        poly = np.polyfit(omega[start_idx:end_idx], phase[start_idx:end_idx], 1)
-        delay = -poly[0]
-        
-        # Ensure delay is positive
-        if delay < 0:
-            delay = 0
-        
-        return delay
-        
-    def _initialize_poles(self, freq):
-        """
-        Initialize starting poles distributed across the frequency range.
-        Uses complex conjugate pairs with damping optimized for channel response.
-        
-        Args:
-            freq: Frequency array (Hz)
-            
-        Returns:
-            Initial pole array (complex), normalized
-        """
-        f_min = freq[freq > 0].min() if np.any(freq > 0) else 1.0
-        f_max = freq.max()
+        s_min = np.min(np.abs(s))
+        s_max = np.max(np.abs(s))
         
         # Store normalization factor
-        self._freq_scale = f_max
-        self._s_scale = 2 * np.pi * f_max
+        self._s_scale = s_max
         
-        # Create poles: some below data range for DC extrapolation
-        n_complex_pairs = self.order // 2
+        # Create complex conjugate pairs
+        n_pairs = self.order // 2
         n_real = self.order % 2
         
         poles = []
         
-        # Complex conjugate pairs (normalized)
-        if n_complex_pairs > 0:
-            # Extend range below f_min for better low-frequency fit
-            f_start = f_min / 10  # Start one decade below minimum data frequency
-            pole_freqs = np.logspace(np.log10(f_start), np.log10(f_max), n_complex_pairs)
+        if n_pairs > 0:
+            # Log-spaced frequencies
+            f_start = s_min / (2 * np.pi * 10)  # Start one decade below
+            f_end = s_max / (2 * np.pi)
             
-            for f in pole_freqs:
-                omega_norm = 2 * np.pi * f / self._s_scale
-                # Use moderate damping
-                sigma = omega_norm * 0.3
-                poles.append(-sigma + 1j * omega_norm)
-                poles.append(-sigma - 1j * omega_norm)
+            freqs = np.logspace(np.log10(f_start), np.log10(f_end), n_pairs)
+            
+            for f in freqs:
+                omega = 2 * np.pi * f
+                sigma = -omega * 0.1  # 10% damping
+                poles.append(sigma + 1j * omega)
+                poles.append(sigma - 1j * omega)
         
-        # Real poles if order is odd (normalized)
         if n_real > 0:
-            f_mid = np.sqrt(f_min * f_max)
-            omega_mid_norm = 2 * np.pi * f_mid / self._s_scale
-            poles.append(-omega_mid_norm * 0.3)
+            f_mid = np.sqrt(s_min * s_max) / (2 * np.pi)
+            poles.append(-2 * np.pi * f_mid * 0.1)
         
         return np.array(poles, dtype=complex)
     
-    def _build_system_matrix(self, s_norm, poles):
+    def _build_cindex(self, poles: np.ndarray) -> np.ndarray:
         """
-        Build the system matrix for least squares fitting.
+        Build cindex array to identify complex conjugate pairs.
         
         Args:
-            s_norm: Normalized complex frequency array (j*2*pi*f/s_scale)
-            poles: Current pole estimates (normalized)
+            poles: Pole array
             
         Returns:
-            A: System matrix
+            cindex: 0=real, 1=complex first, 2=complex second
         """
-        N = len(s_norm)
-        M = len(poles)
+        N = len(poles)
+        cindex = np.zeros(N, dtype=int)
         
-        # Build matrix: [1/(s-p1), 1/(s-p2), ..., 1]
-        # Note: We exclude the s-proportional term (h*s) for stability
-        # as it causes numerical issues and is usually not needed for
-        # typical S-parameter fitting
-        A = np.zeros((N, M + 1), dtype=complex)
+        for m in range(N):
+            if np.imag(poles[m]) != 0:
+                if m == 0:
+                    cindex[m] = 1
+                else:
+                    if cindex[m-1] == 0 or cindex[m-1] == 2:
+                        cindex[m] = 1
+                        if m + 1 < N:
+                            cindex[m+1] = 2
+                    else:
+                        cindex[m] = 2
         
-        for k, p in enumerate(poles):
-            A[:, k] = 1.0 / (s_norm - p)
-        
-        A[:, M] = 1.0      # Direct term d
-        
-        return A
+        return cindex
     
-    def _solve_residues(self, s_norm, H, poles):
+    def _build_Dk(self, s: np.ndarray, poles: np.ndarray, 
+                  cindex: np.ndarray) -> np.ndarray:
         """
-        Solve for residues given fixed poles using least squares.
+        Build Dk matrix for pole identification.
+        
+        Dk contains basis functions: 1/(s - p_k) for real poles,
+        and separated real/imaginary parts for complex poles.
         
         Args:
-            s_norm: Normalized complex frequency array
-            H: Target frequency response (complex)
-            poles: Current pole locations (normalized)
+            s: Complex frequency array
+            poles: Current poles
+            cindex: Complex index array
             
         Returns:
-            residues: Residue array
-            d: Direct term
-            h: s-proportional term (always 0 in this implementation)
+            Dk matrix [Ns, N+offs] where offs depends on asymp setting
         """
-        A = self._build_system_matrix(s_norm, poles)
+        Ns = len(s)
+        N = len(poles)
         
-        # Apply column scaling for better conditioning
-        col_norms = np.linalg.norm(A, axis=0)
-        col_norms[col_norms < 1e-10] = 1.0  # Avoid division by zero
-        A_scaled = A / col_norms
+        # Determine offset for asymptotic terms
+        if self.asymp == 1:
+            offs = 0
+        elif self.asymp == 2:
+            offs = 1  # D term
+        else:  # asymp == 3
+            offs = 2  # D + E*s terms
         
-        # Stack real and imaginary parts for real-valued least squares
-        A_real = np.vstack([A_scaled.real, A_scaled.imag])
-        b_real = np.hstack([H.real, H.imag])
+        Dk = np.zeros((Ns, N + offs), dtype=complex)
         
-        # Solve least squares with SVD for better stability
-        result, _, _, _ = lstsq(A_real, b_real, lapack_driver='gelsd')
+        # Build pole basis functions
+        for m in range(N):
+            if cindex[m] == 0:  # Real pole
+                Dk[:, m] = 1.0 / (s - poles[m])
+            elif cindex[m] == 1:  # Complex pole, first part
+                Dk[:, m] = 1.0 / (s - poles[m]) + 1.0 / (s - np.conj(poles[m]))
+                Dk[:, m+1] = 1j / (s - poles[m]) - 1j / (s - np.conj(poles[m]))
+            # cindex[m] == 2 is handled with m+1 above
         
-        # Unscale the result
-        result = result / col_norms
+        # Add asymptotic terms
+        if self.asymp == 2:
+            Dk[:, N] = 1.0
+        elif self.asymp == 3:
+            Dk[:, N] = 1.0
+            Dk[:, N+1] = s
         
-        M = len(poles)
-        residues = result[:M]
-        d = result[M]
-        h = 0.0  # We don't use s-proportional term
-        
-        return residues, d, h
+        return Dk
     
-    def _relocate_poles(self, s_norm, H, poles, residues):
+    def _pole_identification(self, s: np.ndarray, H: np.ndarray,
+                            poles: np.ndarray, weight: np.ndarray,
+                            opts: Dict) -> np.ndarray:
         """
-        Relocate poles using the vector fitting pole relocation formula.
+        Pole identification using relaxed Vector Fitting.
+        
+        This is the core pole relocation step. It solves for sigma(s)
+        such that sigma(s)*H(s) is approximated by a rational function
+        with the same poles. The zeros of sigma become the new poles.
+        
+        Algorithm:
+        1. Build Dk matrix using current poles
+        2. Build linear system with relaxed nontriviality constraint
+        3. QR decomposition
+        4. Solve for sigma coefficients
+        5. Compute zeros of sigma (new poles)
+        6. Stabilize if requested
         
         Args:
-            s_norm: Normalized complex frequency array
-            H: Target frequency response
-            poles: Current poles (normalized)
-            residues: Current residues
+            s: Complex frequency array (rad/s)
+            H: Frequency response (Nc, Ns)
+            poles: Current poles
+            weight: Weight array
+            opts: Options dict
             
         Returns:
-            new_poles: Relocated poles (normalized)
+            new_poles: Relocated poles
         """
-        N = len(s_norm)
-        M = len(poles)
+        Ns = len(s)
+        N = len(poles)
+        Nc = H.shape[0] if H.ndim > 1 else 1
         
-        # Build augmented system for pole relocation
-        # sigma(s) = sum(r_k / (s - p_k)) + 1
-        # sigma(s) * H_fit(s) = H(s) * sigma(s)
+        if H.ndim == 1:
+            H = H.reshape(1, -1)
         
-        # Left side: [1/(s-p1), ..., 1/(s-pM), 1] for fitting
-        # Right side: [-H*1/(s-p1), ..., -H*1/(s-pM)] for sigma
+        # Build cindex
+        cindex = self._build_cindex(poles)
         
-        A_left = self._build_system_matrix(s_norm, poles)
-        A_right = np.zeros((N, M), dtype=complex)
+        # Build Dk matrix
+        Dk = self._build_Dk(s, poles, cindex)
         
-        for k, p in enumerate(poles):
-            A_right[:, k] = -H / (s_norm - p)
+        # Determine offset
+        if self.asymp == 1:
+            offs = 0
+        elif self.asymp == 2:
+            offs = 1
+        else:
+            offs = 2
         
-        # Combined system
-        A_full = np.hstack([A_left, A_right])
+        # Common weight flag
+        common_weight = weight.ndim == 1 or weight.shape[0] == 1
         
-        # Apply column scaling
-        col_norms = np.linalg.norm(A_full, axis=0)
-        col_norms[col_norms < 1e-10] = 1.0
-        A_scaled = A_full / col_norms
+        # Scale for relaxation (from vectfit3.m line 304-312)
+        scale = 0.0
+        for m in range(Nc):
+            if common_weight:
+                scale += np.linalg.norm(weight * H[m, :])**2
+            else:
+                scale += np.linalg.norm(weight[m, :] * H[m, :])**2
+        scale = np.sqrt(scale) / Ns
         
-        # Stack real and imaginary
-        A_real = np.vstack([A_scaled.real, A_scaled.imag])
-        b_real = np.hstack([H.real, H.imag])
+        # Tolerance thresholds
+        TOLlow = 1e-18
+        TOLhigh = 1e18
         
-        # Solve
-        result, _, _, _ = lstsq(A_real, b_real, lapack_driver='gelsd')
+        # Relaxed pole identification
+        if opts.get('relax', True):
+            AA = np.zeros((Nc * (N + 1), N + 1))
+            bb = np.zeros(Nc * (N + 1))
+            
+            for n in range(Nc):
+                # Build system matrix A
+                A = np.zeros((Ns, (N + offs) + (N + 1)), dtype=complex)
+                
+                # Select weight
+                if common_weight:
+                    weig = weight
+                else:
+                    weig = weight[n, :] if weight.ndim > 1 else weight
+                
+                # Left block: Dk for H fitting
+                for m in range(N + offs):
+                    A[:, m] = weig * Dk[:, m]
+                
+                # Right block: -H*Dk for sigma fitting
+                inda = N + offs
+                for m in range(N + 1):
+                    A[:, inda + m] = -weig * Dk[:, m] * H[n, :]
+                
+                # Stack real and imaginary parts
+                A_real = np.vstack([A.real, A.imag])
+                
+                # Add relaxation constraint (integral criterion for sigma)
+                # This ensures sigma is not identically zero
+                if n == Nc - 1:
+                    offset_row = 2 * Ns
+                    A_real = np.vstack([A_real, np.zeros(N + offs + N + 1)])
+                    for mm in range(N + 1):
+                        A_real[offset_row, inda + mm] = scale * np.sum(Dk[:, mm].real)
+                
+                # QR decomposition
+                Q, R = np.linalg.qr(A_real, mode='reduced')
+                
+                # Extract R22 block (corresponding to sigma coefficients)
+                ind1 = N + offs
+                ind2 = N + offs + N + 1
+                R22 = R[ind1:ind2, ind1:ind2]
+                
+                AA[n*(N+1):(n+1)*(N+1), :] = R22
+                
+                # Right-hand side from relaxation
+                if n == Nc - 1:
+                    bb[n*(N+1):(n+1)*(N+1)] = Q[-1, ind1:ind2] * Ns * scale
+            
+            # Column scaling for better conditioning
+            Escale = np.zeros(AA.shape[1])
+            for col in range(AA.shape[1]):
+                col_norm = np.linalg.norm(AA[:, col])
+                if col_norm > 1e-15:
+                    Escale[col] = 1.0 / col_norm
+                    AA[:, col] *= Escale[col]
+            
+            # Solve least squares
+            x = np.linalg.lstsq(AA, bb, rcond=None)[0]
+            x = x * Escale
+        else:
+            x = np.zeros(N + 1)
+            x[-1] = 1.0  # D = 1
         
-        # Unscale
-        result = result / col_norms
+        # Check if relaxation produced bad D value
+        Dnew = x[-1]
+        if not opts.get('relax', True) or abs(Dnew) < TOLlow or abs(Dnew) > TOLhigh:
+            # Solve without relaxation, fixing D
+            if not opts.get('relax', True):
+                Dnew = 1.0
+            elif abs(Dnew) < TOLlow:
+                Dnew = np.sign(Dnew) * TOLlow if Dnew != 0 else TOLlow
+            elif abs(Dnew) > TOLhigh:
+                Dnew = np.sign(Dnew) * TOLhigh
+            
+            AA = np.zeros((Nc * N, N))
+            bb = np.zeros(Nc * N)
+            
+            for n in range(Nc):
+                A = np.zeros((Ns, (N + offs) + N), dtype=complex)
+                
+                if common_weight:
+                    weig = weight
+                else:
+                    weig = weight[n, :] if weight.ndim > 1 else weight
+                
+                # Left block
+                for m in range(N + offs):
+                    A[:, m] = weig * Dk[:, m]
+                
+                # Right block (only N columns now, excluding D)
+                inda = N + offs
+                for m in range(N):
+                    A[:, inda + m] = -weig * Dk[:, m] * H[n, :]
+                
+                b = Dnew * weig * H[n, :]
+                
+                # Stack real and imaginary
+                A_real = np.vstack([A.real, A.imag])
+                b_real = np.hstack([b.real, b.imag])
+                
+                # QR decomposition
+                Q, R = np.linalg.qr(A_real, mode='reduced')
+                
+                ind1 = N + offs
+                ind2 = N + offs + N
+                R22 = R[ind1:ind2, ind1:ind2]
+                AA[n*N:(n+1)*N, :] = R22
+                bb[n*N:(n+1)*N] = Q[:, ind1:ind2].T @ b_real
+            
+            # Column scaling
+            Escale = np.zeros(AA.shape[1])
+            for col in range(AA.shape[1]):
+                col_norm = np.linalg.norm(AA[:, col])
+                if col_norm > 1e-15:
+                    Escale[col] = 1.0 / col_norm
+                    AA[:, col] *= Escale[col]
+            
+            # Solve
+            x = np.linalg.lstsq(AA, bb, rcond=None)[0]
+            x = x * Escale
+            x = np.append(x, Dnew)
         
-        # Extract sigma residues (last M values)
-        sigma_residues = result[M + 1:]  # After residues and d term
+        # Extract sigma coefficients
+        C = x[:-1]  # Residues for sigma
+        D = x[-1]   # Direct term for sigma
         
-        # Form sigma polynomial and find zeros (new poles)
-        # sigma(s) = sum(sigma_r_k / (s - p_k)) + 1
-        # The zeros of sigma become the new poles
+        # Convert C back to complex representation
+        C_complex = np.zeros(N, dtype=complex)
+        for m in range(N):
+            if cindex[m] == 0:
+                C_complex[m] = C[m]
+            elif cindex[m] == 1:
+                r1 = C[m]
+                r2 = C[m+1]
+                C_complex[m] = r1 + 1j * r2
+                if m + 1 < N:
+                    C_complex[m+1] = r1 - 1j * r2
+            # cindex[m] == 2 is handled with m-1
         
-        # Build companion matrix for sigma
-        # This is equivalent to finding eigenvalues of a state-space matrix
+        # Build state-space for sigma and compute zeros
+        # ZER = LAMBD - B*C.T/D
+        LAMBD = np.diag(poles)
+        B = np.ones(N)
         
-        # Build state-space realization
-        A_state = np.diag(poles)
-        B_state = np.ones(M)
-        C_state = sigma_residues
+        # Modify LAMBD and B for complex pairs (real form)
+        for n in range(N):
+            if n < N - 1 and cindex[n] == 1:
+                # Convert complex pair to 2x2 real block
+                real_part = np.real(poles[n])
+                imag_part = np.imag(poles[n])
+                LAMBD[n, n] = real_part
+                LAMBD[n, n+1] = imag_part
+                LAMBD[n+1, n] = -imag_part
+                LAMBD[n+1, n+1] = real_part
+                B[n] = 2
+                B[n+1] = 0
+                # C should be real for first, imag for second
+                C_complex[n] = np.real(C_complex[n])
+                C_complex[n+1] = np.imag(C_complex[n])
         
-        # New poles are eigenvalues of (A - B*C)
-        if np.all(np.abs(sigma_residues) < 1e-12):
-            # No relocation needed
-            return poles.copy()
+        # Compute zeros: ZER = A - B*C/D
+        ZER = LAMBD - np.outer(B, C_complex) / D
         
-        try:
-            # Form the modified state matrix
-            BC = np.outer(B_state, C_state)
-            state_matrix = A_state - BC
-            new_poles = np.linalg.eigvals(state_matrix)
-        except np.linalg.LinAlgError:
-            logger.warning("Eigenvalue computation failed, keeping current poles")
-            return poles.copy()
+        # New poles are eigenvalues of ZER
+        new_poles = np.linalg.eigvals(ZER)
+        
+        # Stabilize: move unstable poles to left half-plane
+        if opts.get('stable', True):
+            unstables = np.real(new_poles) > 0
+            new_poles[unstables] -= 2 * np.real(new_poles[unstables])
+        
+        # Sort: real poles first, then complex pairs
+        new_poles = self._sort_poles(new_poles)
         
         return new_poles
     
-    def _enforce_stability(self, poles):
+    def _sort_poles(self, poles: np.ndarray) -> np.ndarray:
         """
-        Enforce stability by flipping unstable poles to the left half-plane.
+        Sort poles: real poles first, then complex by imaginary part.
         
         Args:
-            poles: Pole array
+            poles: Unsorted poles
             
         Returns:
-            Stabilized poles
+            Sorted poles
         """
-        stable_poles = poles.copy()
+        # Separate real and complex
+        real_mask = np.abs(np.imag(poles)) < 1e-10 * (np.abs(poles) + 1e-10)
+        real_poles = np.real(poles[real_mask])
+        complex_poles = poles[~real_mask]
         
-        for i, p in enumerate(stable_poles):
-            if np.real(p) > 0:
-                # Flip to left half-plane
-                stable_poles[i] = -np.abs(np.real(p)) + 1j * np.imag(p)
-                logger.debug(f"Flipped unstable pole {p} to {stable_poles[i]}")
+        # Sort real poles
+        real_poles = np.sort(real_poles)
         
-        return stable_poles
+        # Sort complex poles by imaginary part
+        if len(complex_poles) > 0:
+            imag_parts = np.imag(complex_poles)
+            idx = np.argsort(np.abs(imag_parts))
+            complex_poles = complex_poles[idx]
+        
+        # Combine: real first, then complex
+        result = np.concatenate([real_poles, complex_poles])
+        
+        return result.astype(complex)
     
-    def _enforce_conjugate_pairs(self, poles):
+    def fit(self, s: np.ndarray, H: np.ndarray, 
+            weight: Optional[np.ndarray] = None) -> Dict:
         """
-        Ensure complex poles come in conjugate pairs.
-        Maintains the original number of poles.
+        Fit frequency response data using Vector Fitting.
         
         Args:
-            poles: Pole array
+            s: Complex frequency array (rad/s)
+            H: Frequency response (Ns,) or (Nc, Ns)
+            weight: Optional weight array
             
         Returns:
-            Poles with enforced conjugate pairs (same length as input)
-        """
-        M = len(poles)
-        result = []
-        used = set()
-        
-        # Sort poles by imaginary part to pair up conjugates more reliably
-        indices = np.argsort(np.imag(poles))
-        poles_sorted = poles[indices]
-        
-        i = 0
-        while i < M:
-            p = poles_sorted[i]
-            
-            if np.abs(np.imag(p)) < 1e-10 * (np.abs(p) + 1e-10):
-                # Real pole - keep as is
-                result.append(np.real(p) + 0j)
-                i += 1
-            else:
-                # Complex pole - pair with next one to form conjugate pair
-                if i + 1 < M:
-                    q = poles_sorted[i + 1]
-                    # Average to form a proper conjugate pair
-                    avg_real = (np.real(p) + np.real(q)) / 2
-                    avg_imag = (np.abs(np.imag(p)) + np.abs(np.imag(q))) / 2
-                    
-                    # Ensure positive imaginary part first
-                    if avg_imag > 0:
-                        result.append(avg_real + 1j * avg_imag)
-                        result.append(avg_real - 1j * avg_imag)
-                    else:
-                        result.append(avg_real - 1j * avg_imag)
-                        result.append(avg_real + 1j * avg_imag)
-                    i += 2
-                else:
-                    # Last pole is complex without a pair - make it real
-                    result.append(np.real(p) + 0j)
-                    i += 1
-        
-        return np.array(result, dtype=complex)
-    
-    def fit(self, freq, H_data, enforce_stability=True, enforce_passivity=False, 
-            remove_delay=True):
-        """
-        Perform vector fitting on frequency response data.
-        
-        For transmission line S-parameters (like S21), this method can automatically
-        detect and remove group delay before fitting, which dramatically improves
-        numerical stability and fitting accuracy.
-        
-        Args:
-            freq: Frequency array (Hz)
-            H_data: Complex frequency response data
-            enforce_stability: If True, flip unstable poles to LHP
-            enforce_passivity: If True, enforce passivity constraint
-            remove_delay: If True, estimate and remove group delay before fitting
-            
-        Returns:
-            dict: Fitting results containing poles, residues, coefficients, MSE
+            Dictionary with poles, residues, d, e, etc.
         """
         logger.info(f"Starting Vector Fitting with order={self.order}")
         
-        # Estimate and optionally remove group delay
-        H_fit_data = H_data
-        self.delay = 0.0
+        # Ensure H is 2D
+        if H.ndim == 1:
+            H = H.reshape(1, -1)
         
-        if remove_delay:
-            self.delay = self._estimate_delay(freq, H_data)
-            if self.delay > 1e-12:
-                logger.info(f"Estimated group delay: {self.delay*1e12:.2f} ps")
-                # Remove delay from data for fitting
-                omega = 2 * np.pi * freq
-                H_fit_data = H_data * np.exp(1j * omega * self.delay)
-                logger.debug(f"Phase range after delay removal: "
-                           f"{np.angle(H_fit_data[0])*180/np.pi:.1f} to "
-                           f"{np.angle(H_fit_data[-1])*180/np.pi:.1f} deg")
+        Ns = len(s)
+        Nc = H.shape[0]
         
-        # Initialize poles (this also sets _s_scale)
-        self.poles = self._initialize_poles(freq)
+        # Default weights
+        if weight is None:
+            weight = np.ones(Ns)
         
-        # Convert to normalized complex frequency (s_norm = j*2*pi*f / s_scale)
-        s_norm = 1j * 2 * np.pi * freq / self._s_scale
+        # Initialize poles
+        self.poles = self._initialize_poles(s)
+        logger.debug(f"Initial poles: {self.poles}")
         
-        logger.debug(f"Initial poles (normalized): {self.poles}")
-        logger.debug(f"Frequency scale: {self._s_scale:.2e}")
+        # Build options dict
+        opts = {
+            'relax': self.relax,
+            'stable': self.stable,
+            'asymp': self.asymp
+        }
         
         # Iterative pole relocation
         for iteration in range(self.max_iterations):
-            # Solve for residues with current poles (using delay-removed data)
-            self.residues, self.d, self.h = self._solve_residues(s_norm, H_fit_data, self.poles)
-            
-            # Relocate poles
-            new_poles = self._relocate_poles(s_norm, H_fit_data, self.poles, self.residues)
-            
-            # Enforce stability if requested
-            if enforce_stability:
-                new_poles = self._enforce_stability(new_poles)
-            
-            # Enforce conjugate pairs
-            new_poles = self._enforce_conjugate_pairs(new_poles)
+            # Pole identification
+            new_poles = self._pole_identification(s, H, self.poles, weight, opts)
             
             # Check convergence
             pole_change = np.max(np.abs(new_poles - self.poles))
             rel_change = pole_change / (np.max(np.abs(self.poles)) + 1e-10)
             
-            logger.debug(f"Iteration {iteration + 1}: relative pole change = {rel_change:.2e}")
+            logger.debug(f"Iteration {iteration + 1}: rel_change = {rel_change:.2e}")
             
             self.poles = new_poles
             
@@ -420,241 +493,206 @@ class VectorFitting:
                 logger.info(f"Converged after {iteration + 1} iterations")
                 break
         
-        # Final residue solve with normalized frequencies (using delay-removed data)
-        self.residues, self.d, self.h = self._solve_residues(s_norm, H_fit_data, self.poles)
-        
-        # Store the normalized poles for internal use
-        # When evaluating, we'll use normalized s
-        self._poles_normalized = self.poles.copy()
-        self._residues_normalized = self.residues.copy()
-        
-        # Denormalize poles for output (convert back to rad/s)
-        # p_actual = p_normalized * s_scale
-        self.poles = self._poles_normalized * self._s_scale
-        # Residues scale the same way: r_actual/(s - p_actual) = r_norm/(s_norm - p_norm)
-        # Since s - p = s_scale * (s_norm - p_norm), we have r_actual = r_norm * s_scale
-        self.residues = self._residues_normalized * self._s_scale
-        
-        # Convert to polynomial coefficients
-        self._compute_polynomial_coefficients()
-        
-        # Compute fitting error
-        H_fit = self.evaluate(freq)
-        self.mse = np.mean(np.abs(H_data - H_fit) ** 2)
-        max_error = np.max(np.abs(H_data - H_fit))
-        
-        logger.info(f"Fitting complete: MSE={self.mse:.2e}, max_error={max_error:.2e}")
+        # Final residue identification (to be implemented)
+        # For now, use simple least squares
+        self.residues, self.d, self.e = self._solve_residues(s, H[0, :])
         
         return {
             'poles': self.poles,
             'residues': self.residues,
             'd': self.d,
-            'h': self.h,
-            'delay': self.delay,
-            'num': self.num_coeffs,
-            'den': self.den_coeffs,
-            'mse': self.mse,
-            'max_error': max_error,
+            'e': self.e,
             'order': self.order
         }
     
-    def _compute_polynomial_coefficients(self):
+    def _solve_residues(self, s: np.ndarray, H: np.ndarray) -> Tuple[np.ndarray, float, float]:
         """
-        Convert pole-residue form to polynomial ratio form.
-        H(s) = (b_n*s^n + ... + b_0) / (a_m*s^m + ... + a_0)
+        Solve for residues given fixed poles.
+        
+        Args:
+            s: Complex frequency array
+            H: Frequency response
+            
+        Returns:
+            residues, d, e
         """
-        # Denominator from poles: prod(s - p_k)
-        self.den_coeffs = np.array([1.0])
-        for p in self.poles:
-            # Multiply by (s - p)
-            self.den_coeffs = np.convolve(self.den_coeffs, [1.0, -p])
+        N = len(self.poles)
+        Ns = len(s)
         
-        # Take real part (imaginary should be negligible for real system)
-        self.den_coeffs = np.real(self.den_coeffs)
+        # Build system matrix
+        A = np.zeros((Ns, N + 2), dtype=complex)
         
-        # Numerator from residues: sum of r_k * prod_{j!=k}(s - p_j) + d*den + h*s*den
-        M = len(self.poles)
+        for k, p in enumerate(self.poles):
+            A[:, k] = 1.0 / (s - p)
         
-        # Start with zero numerator
-        self.num_coeffs = np.zeros(M + 1, dtype=complex)
+        A[:, N] = 1.0  # d term
+        A[:, N+1] = s  # e term
         
-        # Add residue contributions
-        for k, r in enumerate(self.residues):
-            # Compute prod_{j!=k}(s - p_j)
-            partial_den = np.array([1.0], dtype=complex)
-            for j, p in enumerate(self.poles):
-                if j != k:
-                    partial_den = np.convolve(partial_den, [1.0, -p])
+        # Stack real and imaginary
+        A_real = np.vstack([A.real, A.imag])
+        b_real = np.hstack([H.real, H.imag])
+        
+        # Solve
+        x = np.linalg.lstsq(A_real, b_real, rcond=None)[0]
+        
+        residues = x[:N]
+        d = x[N]
+        e = x[N+1]
+        
+        return residues, d, e
+
+
+    def to_state_space(self) -> Dict:
+        """
+        Convert pole-residue representation to real state-space form.
+        
+        State-space form:
+            x_dot = A*x + B*u
+            y = C*x + D*u + E*u_dot
             
-            # Pad to same length as num_coeffs
-            padded = np.zeros(M + 1, dtype=complex)
-            padded[-len(partial_den):] = partial_den
+        Complex conjugate pole pairs are converted to real 2x2 blocks.
+        
+        Returns:
+            Dictionary with A, B, C, D, E matrices (all real)
+        """
+        if self.poles is None or self.residues is None:
+            raise RuntimeError("Must call fit() before to_state_space()")
+        
+        n = len(self.poles)
+        
+        # Build real state-space matrices
+        # For complex conjugate pairs, use 2x2 real blocks
+        A_blocks = []
+        B_blocks = []
+        C_blocks = []
+        
+        i = 0
+        state_idx = 0
+        while i < n:
+            p = self.poles[i]
+            r = self.residues[i]
             
-            self.num_coeffs += r * padded
-        
-        # Add direct term: d * den
-        d_contrib = self.d * self.den_coeffs
-        padded_d = np.zeros(M + 1, dtype=complex)
-        padded_d[-len(d_contrib):] = d_contrib
-        self.num_coeffs += padded_d
-        
-        # Add s-proportional term: h * s * den (increases order by 1)
-        if np.abs(self.h) > 1e-12:
-            h_contrib = self.h * np.convolve(self.den_coeffs, [1.0, 0.0])
-            # This increases numerator order, handle carefully
-            if len(h_contrib) > len(self.num_coeffs):
-                new_num = np.zeros(len(h_contrib), dtype=complex)
-                new_num[-len(self.num_coeffs):] = self.num_coeffs
-                self.num_coeffs = new_num + h_contrib
+            if np.abs(p.imag) > 1e-12:
+                # Complex conjugate pair
+                # Find conjugate
+                if i + 1 < n and np.abs(self.poles[i+1] - p.conj()) < 1e-6:
+                    p_conj = self.poles[i+1]
+                    r_conj = self.residues[i+1]
+                else:
+                    # Find closest conjugate
+                    p_conj = p.conj()
+                    r_conj = r.conj()
+                
+                sigma = p.real
+                omega = p.imag
+                alpha = r.real
+                beta = r.imag
+                
+                # 2x2 real block for A
+                A_block = [[sigma, omega], [-omega, sigma]]
+                B_block = [[2.0], [0.0]]
+                C_block = [[alpha, -beta]]
+                
+                A_blocks.append(A_block)
+                B_blocks.append(B_block)
+                C_blocks.append(C_block)
+                
+                i += 2
+                state_idx += 2
             else:
-                padded_h = np.zeros(len(self.num_coeffs), dtype=complex)
-                padded_h[-len(h_contrib):] = h_contrib
-                self.num_coeffs += padded_h
+                # Real pole
+                A_block = [[p.real]]
+                B_block = [[1.0]]
+                C_block = [[r.real]]
+                
+                A_blocks.append(A_block)
+                B_blocks.append(B_block)
+                C_blocks.append(C_block)
+                
+                i += 1
+                state_idx += 1
         
-        # Take real part
-        self.num_coeffs = np.real(self.num_coeffs)
+        # Assemble full matrices
+        n_states = sum(len(b) for b in A_blocks)
         
-        # Normalize denominator to have leading coefficient = 1
-        if np.abs(self.den_coeffs[0]) > 1e-12:
-            self.num_coeffs = self.num_coeffs / self.den_coeffs[0]
-            self.den_coeffs = self.den_coeffs / self.den_coeffs[0]
+        A = np.zeros((n_states, n_states))
+        B = np.zeros((n_states, 1))
+        C = np.zeros((1, n_states))
+        
+        idx = 0
+        for i, (Ab, Bb, Cb) in enumerate(zip(A_blocks, B_blocks, C_blocks)):
+            m = len(Ab)
+            A[idx:idx+m, idx:idx+m] = Ab
+            B[idx:idx+m, 0] = np.array(Bb).flatten()
+            C[0, idx:idx+m] = np.array(Cb).flatten()
+            idx += m
+        
+        D = np.array([[float(self.d)]])
+        E = np.array([[float(self.e)]])
+        
+        return {
+            'A': A.tolist(),
+            'B': B.tolist(),
+            'C': C.tolist(),
+            'D': D.tolist(),
+            'E': E.tolist(),
+            'n_states': n_states,
+            'n_outputs': 1
+        }
     
-    def evaluate(self, freq):
+    def export_to_json(self, filename: str, fs: float = 80e9) -> None:
         """
-        Evaluate the fitted rational function at given frequencies.
-        Includes delay term if delay was estimated during fitting.
-        
-        H(s) = exp(-s*delay) * [sum(r_k/(s-p_k)) + d + h*s]
+        Export state-space representation to JSON file for C++ Channel.
         
         Args:
-            freq: Frequency array (Hz)
-            
-        Returns:
-            Complex frequency response
+            filename: Output JSON file path
+            fs: Sampling frequency in Hz
         """
-        s = 1j * 2 * np.pi * freq
+        import json
         
-        # Evaluate using pole-residue form for better numerical stability
-        H = np.zeros_like(s, dtype=complex)
+        state_space = self.to_state_space()
         
-        for r, p in zip(self.residues, self.poles):
-            H += r / (s - p)
+        config = {
+            'version': '2.1-vf',
+            'method': 'state_space',
+            'fs': float(fs),
+            'state_space': {
+                'A': state_space['A'],
+                'B': state_space['B'],
+                'C': state_space['C'],
+                'D': state_space['D'],
+                'E': state_space['E']
+            },
+            'metadata': {
+                'order': self.order,
+                'n_states': state_space['n_states'],
+                'n_outputs': state_space['n_outputs']
+            }
+        }
         
-        H += self.d
-        H += self.h * s
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=2)
         
-        # Apply delay term if present
-        if self.delay > 1e-12:
-            H = H * np.exp(-s * self.delay)
-        
-        return H
-    
-    def evaluate_polynomial(self, freq):
-        """
-        Evaluate using polynomial coefficients (for verification).
-        
-        Args:
-            freq: Frequency array (Hz)
-            
-        Returns:
-            Complex frequency response
-        """
-        s = 1j * 2 * np.pi * freq
-        
-        num = np.polyval(self.num_coeffs, s)
-        den = np.polyval(self.den_coeffs, s)
-        
-        return num / den
-    
-    def get_dc_gain(self):
-        """
-        Get the DC gain (H(0)) of the fitted transfer function.
-        
-        Returns:
-            DC gain (real value)
-        """
-        # From pole-residue form: H(0) = sum(-r_k/p_k) + d
-        dc_gain = self.d
-        for r, p in zip(self.residues, self.poles):
-            if np.abs(p) > 1e-12:
-                dc_gain -= r / p
-        
-        return np.real(dc_gain)
+        logger.info(f"Exported state-space to: {filename}")
 
 
-def check_passivity(S_matrix, freq, tolerance=1e-3):
+def fit_vector_fitting(s: np.ndarray, H: np.ndarray, order: int = 8,
+                       max_iterations: int = 10, tolerance: float = 1e-6,
+                       **kwargs) -> Dict:
     """
-    Check if S-parameter matrix satisfies passivity constraint.
-    Passivity requires: max(eigenvalue(S'*S)) <= 1 for all frequencies.
+    Convenience function for Vector Fitting.
     
     Args:
-        S_matrix: S-parameter matrix [N_freq, N_ports, N_ports]
-        freq: Frequency array
-        tolerance: Tolerance for passivity check
-        
-    Returns:
-        is_passive: Boolean indicating passivity
-        max_eigenvalue: Maximum eigenvalue found
-        violation_freqs: Frequencies where passivity is violated
-    """
-    N_freq = len(freq)
-    max_eigenvalue = 0.0
-    violation_freqs = []
-    
-    for i in range(N_freq):
-        S = S_matrix[i]
-        # Compute S'*S (Hermitian conjugate)
-        SHS = np.conj(S.T) @ S
-        eigenvalues = np.linalg.eigvalsh(SHS)
-        max_eig = np.max(eigenvalues)
-        
-        if max_eig > max_eigenvalue:
-            max_eigenvalue = max_eig
-        
-        if max_eig > 1.0 + tolerance:
-            violation_freqs.append(freq[i])
-    
-    is_passive = len(violation_freqs) == 0
-    
-    return is_passive, max_eigenvalue, violation_freqs
-
-
-def enforce_passivity_perturbation(poles, residues, S_matrix, freq, max_iterations=50):
-    """
-    Enforce passivity through iterative perturbation of residues.
-    This is a simplified approach - full passivity enforcement requires
-    more sophisticated optimization.
-    
-    Args:
-        poles: Current poles
-        residues: Current residues  
-        S_matrix: Original S-parameter data
-        freq: Frequency array
+        s: Complex frequency array (rad/s)
+        H: Frequency response
+        order: Fitting order
         max_iterations: Maximum iterations
+        tolerance: Convergence tolerance
+        **kwargs: Additional options for VectorFitting
         
     Returns:
-        Modified residues satisfying passivity
+        Fitting results dictionary
     """
-    logger.info("Enforcing passivity through residue perturbation")
-    
-    residues_new = residues.copy()
-    
-    for iteration in range(max_iterations):
-        # Evaluate current fit
-        s = 1j * 2 * np.pi * freq
-        H = np.zeros_like(s, dtype=complex)
-        for r, p in zip(residues_new, poles):
-            H += r / (s - p)
-        
-        # Check passivity (simplified single-port case)
-        max_mag = np.max(np.abs(H))
-        
-        if max_mag <= 1.0:
-            logger.info(f"Passivity achieved after {iteration + 1} iterations")
-            break
-        
-        # Scale residues to reduce magnitude
-        scale = 0.99 / max_mag
-        residues_new = residues_new * scale
-    
-    return residues_new
+    vf = VectorFitting(order=order, max_iterations=max_iterations,
+                       tolerance=tolerance, **kwargs)
+    return vf.fit(s, H)

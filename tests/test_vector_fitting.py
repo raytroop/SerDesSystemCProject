@@ -10,7 +10,7 @@ import os
 # Add scripts to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
-from vector_fitting_py import VectorFitting, fit_vector_fitting
+from vector_fitting import VectorFitting, fit_vector_fitting
 
 
 class TestPoleIdentification:
