@@ -216,6 +216,9 @@ SC_MODULE(ChannelSparamTestbench) {
                 case ChannelMethod::RATIONAL:
                     m_output_prefix = "channel_rational";
                     break;
+                case ChannelMethod::STATE_SPACE:
+                    m_output_prefix = "channel_state_space";
+                    break;
                 default:
                     m_output_prefix = "channel_sparam_config";
                     break;
@@ -240,6 +243,7 @@ SC_MODULE(ChannelSparamTestbench) {
             case ChannelMethod::RATIONAL: return "RATIONAL";
             case ChannelMethod::IMPULSE: return "IMPULSE";
             case ChannelMethod::POLE_RESIDUE: return "POLE_RESIDUE";
+            case ChannelMethod::STATE_SPACE: return "STATE_SPACE";
             default: return "UNKNOWN";
         }
     }
@@ -308,6 +312,11 @@ SC_MODULE(ChannelSparamTestbench) {
                    content.find("\"numerator\"") != std::string::npos) {
             std::cout << "  Detected RATIONAL method from rational/numerator field" << std::endl;
             return ChannelMethod::RATIONAL;
+        } else if (content.find("\"method\": \"state_space\"") != std::string::npos ||
+                   content.find("\"method\":\"state_space\"") != std::string::npos ||
+                   content.find("\"state_space\"") != std::string::npos) {
+            std::cout << "  Detected STATE_SPACE method from config" << std::endl;
+            return ChannelMethod::STATE_SPACE;
         }
         
         std::cout << "  Using default RATIONAL method" << std::endl;
