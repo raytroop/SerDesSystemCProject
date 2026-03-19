@@ -252,7 +252,7 @@ private:
     void init_simple_model();
     void init_rational_model();
     void init_impulse_model();
-    void init_state_space_model_internal();
+    // init_state_space_model_internal() removed - merged into init_state_space_model()
     
     // Polynomial multiplication helper for pole-residue
     std::vector<double> poly_multiply(const std::vector<double>& p1, const std::vector<double>& p2);

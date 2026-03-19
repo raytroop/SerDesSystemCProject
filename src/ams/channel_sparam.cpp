@@ -918,6 +918,96 @@ double ChannelSParamTdf::get_dc_gain() const {
             }
         case ChannelMethod::POLE_RESIDUE:
             return m_pole_residue_data.dc_gain;
+        case ChannelMethod::STATE_SPACE:
+            // DC gain for state-space: D - C * inv(A) * B
+            if (m_state_space.n_states > 0 && m_state_space.n_outputs > 0) {
+                // Compute DC gain = D - C * A^-1 * B
+                // For single-input single-output: compute directly
+                // Solve A * x = B for x, then DC = D - C * x
+                try {
+                    // Simple implementation for small matrices
+                    // Compute A^-1 * B using Gaussian elimination
+                    int n = m_state_space.n_states;
+                    std::vector<std::vector<double>> A_inv(n, std::vector<double>(n, 0.0));
+                    
+                    // Initialize identity matrix
+                    for (int i = 0; i < n; ++i) {
+                        A_inv[i][i] = 1.0;
+                    }
+                    
+                    // Create augmented matrix [A | I]
+                    std::vector<std::vector<double>> aug(n, std::vector<double>(2 * n, 0.0));
+                    for (int i = 0; i < n; ++i) {
+                        for (int j = 0; j < n; ++j) {
+                            aug[i][j] = m_state_space.A(i + 1, j + 1);
+                        }
+                        aug[i][n + i] = 1.0;
+                    }
+                    
+                    // Gaussian elimination
+                    for (int i = 0; i < n; ++i) {
+                        // Partial pivoting
+                        double max_val = std::abs(aug[i][i]);
+                        int max_row = i;
+                        for (int k = i + 1; k < n; ++k) {
+                            if (std::abs(aug[k][i]) > max_val) {
+                                max_val = std::abs(aug[k][i]);
+                                max_row = k;
+                            }
+                        }
+                        std::swap(aug[i], aug[max_row]);
+                        
+                        // Check for singular matrix
+                        if (std::abs(aug[i][i]) < 1e-15) {
+                            return m_state_space.D(1, 1);  // Return D if A is singular
+                        }
+                        
+                        // Normalize row
+                        double pivot = aug[i][i];
+                        for (int j = i; j < 2 * n; ++j) {
+                            aug[i][j] /= pivot;
+                        }
+                        
+                        // Eliminate column
+                        for (int k = 0; k < n; ++k) {
+                            if (k != i) {
+                                double factor = aug[k][i];
+                                for (int j = i; j < 2 * n; ++j) {
+                                    aug[k][j] -= factor * aug[i][j];
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Extract inverse
+                    for (int i = 0; i < n; ++i) {
+                        for (int j = 0; j < n; ++j) {
+                            A_inv[i][j] = aug[i][n + j];
+                        }
+                    }
+                    
+                    // Compute A_inv * B
+                    std::vector<double> A_inv_B(n, 0.0);
+                    for (int i = 0; i < n; ++i) {
+                        for (int j = 0; j < n; ++j) {
+                            A_inv_B[i] += A_inv[i][j] * m_state_space.B(j + 1, 1);
+                        }
+                    }
+                    
+                    // Compute C * A_inv * B
+                    double C_Ainv_B = 0.0;
+                    for (int i = 0; i < m_state_space.n_outputs; ++i) {
+                        for (int j = 0; j < n; ++j) {
+                            C_Ainv_B += m_state_space.C(i + 1, j + 1) * A_inv_B[j];
+                        }
+                    }
+                    
+                    return m_state_space.D(1, 1) - C_Ainv_B;
+                } catch (...) {
+                    return m_state_space.D(1, 1);  // Return D on error
+                }
+            }
+            return 1.0;
         default:
             return 1.0;
     }
