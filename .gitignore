@@ -110,3 +110,5 @@ docs/systemc-ams-rebuild.md
 # Worktrees
 .worktrees/
 KNOWN_ISSUES.md
+AGENTS.md
+.kimi-dev/
