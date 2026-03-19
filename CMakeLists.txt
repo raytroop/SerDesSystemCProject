@@ -120,38 +120,3 @@ message(STATUS "SystemC-AMS_HOME:  ${SYSTEMC_AMS_HOME}")
 message(STATUS "Build Tests:       ${BUILD_TESTING}")
 message(STATUS "========================================================================")
 message(STATUS "")
-
-# ============================================================================
-# C++ Channel Core Library (no SystemC-AMS dependency)
-# ============================================================================
-file(GLOB CPP_CHANNEL_SOURCES src/cpp_channel/*.cpp)
-
-# Exclude Python binding from main library (optional component)
-list(FILTER CPP_CHANNEL_SOURCES EXCLUDE REGEX "python_binding.cpp")
-
-add_library(serdes_channel_cpp STATIC ${CPP_CHANNEL_SOURCES})
-target_include_directories(serdes_channel_cpp PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp_channel
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-# ============================================================================
-# C++ Channel Test (standalone, no SystemC-AMS)
-# ============================================================================
-add_executable(test_cpp_channel tests/test_cpp_channel.cpp)
-target_link_libraries(test_cpp_channel serdes_channel_cpp)
-target_include_directories(test_cpp_channel PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp_channel
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-# ============================================================================
-# Channel SParam V2 Testbench (with SystemC-AMS)
-# ============================================================================
-add_executable(channel_sparam_v2_tb tb/channel/channel_sparam_v2_tb.cpp)
-target_link_libraries(channel_sparam_v2_tb 
-    serdes_lib 
-    serdes_channel_cpp
-    SystemC::systemc
-    SystemC::systemc-ams
-)

@@ -166,6 +166,26 @@ public:
     double get_dc_gain() const;
     
     /**
+     * Get frequency response of the channel model (POLE_RESIDUE method)
+     * Computes H(s) = constant + proportional*s + sum(residue_i / (s - pole_i))
+     * @param frequencies Input frequency array (Hz)
+     * @param mag_db Output magnitude in dB
+     * @param phase_deg Output phase in degrees
+     */
+    void get_frequency_response(
+        const std::vector<double>& frequencies,
+        std::vector<double>& mag_db,
+        std::vector<double>& phase_deg) const;
+    
+    /**
+     * Get pole-residue data for external analysis
+     * @return Reference to pole-residue filter data structure
+     */
+    const PoleResidueFilterData& get_pole_residue_data() const { 
+        return m_pole_residue_data; 
+    }
+    
+    /**
      * Initialize pole-residue model
      * Converts pole-residue pairs to cascaded biquad sections
      */

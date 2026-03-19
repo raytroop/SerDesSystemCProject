@@ -1013,6 +1013,51 @@ double ChannelSParamTdf::get_dc_gain() const {
     }
 }
 
+void ChannelSParamTdf::get_frequency_response(
+    const std::vector<double>& frequencies,
+    std::vector<double>& mag_db,
+    std::vector<double>& phase_deg) const 
+{
+    size_t n_freq = frequencies.size();
+    mag_db.resize(n_freq);
+    phase_deg.resize(n_freq);
+    
+    // Only valid for POLE_RESIDUE method
+    if (m_ext_params.method != ChannelMethod::POLE_RESIDUE) {
+        std::cerr << "[WARNING] get_frequency_response() only supports POLE_RESIDUE method" << std::endl;
+        std::fill(mag_db.begin(), mag_db.end(), 0.0);
+        std::fill(phase_deg.begin(), phase_deg.end(), 0.0);
+        return;
+    }
+    
+    for (size_t i = 0; i < n_freq; ++i) {
+        double f = frequencies[i];
+        std::complex<double> s(0.0, 2.0 * M_PI * f);
+        std::complex<double> H(m_pole_residue_data.constant, 0.0);
+        
+        // proportional term: H += e * s
+        if (std::abs(m_pole_residue_data.proportional) > 1e-20) {
+            H += m_pole_residue_data.proportional * s;
+        }
+        
+        // pole-residue terms: H += r_i / (s - p_i)
+        for (size_t j = 0; j < m_pole_residue_data.poles_real.size(); ++j) {
+            std::complex<double> p(
+                m_pole_residue_data.poles_real[j],
+                m_pole_residue_data.poles_imag[j]);
+            std::complex<double> r(
+                m_pole_residue_data.residues_real[j],
+                m_pole_residue_data.residues_imag[j]);
+            H += r / (s - p);
+        }
+        
+        // Convert to dB and degrees
+        double mag = std::abs(H);
+        mag_db[i] = 20.0 * std::log10(std::max(mag, 1e-15));
+        phase_deg[i] = std::arg(H) * 180.0 / M_PI;
+    }
+}
+
 } // namespace serdes
 
 

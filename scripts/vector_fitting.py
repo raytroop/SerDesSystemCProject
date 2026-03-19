@@ -57,6 +57,9 @@ class VectorFitting:
         """
         Initialize starting poles distributed across frequency range.
         
+        Based on vectfit3 ex4a.m: linearly spaced complex conjugate pairs
+        with small damping (1% of frequency).
+        
         Args:
             s: Complex frequency array (rad/s)
             
@@ -69,28 +72,29 @@ class VectorFitting:
         # Store normalization factor
         self._s_scale = s_max
         
-        # Create complex conjugate pairs
+        # Create complex conjugate pairs (all poles are complex pairs)
         n_pairs = self.order // 2
-        n_real = self.order % 2
         
         poles = []
         
         if n_pairs > 0:
-            # Log-spaced frequencies
-            f_start = s_min / (2 * np.pi * 10)  # Start one decade below
-            f_end = s_max / (2 * np.pi)
+            # LINEARLY spaced frequencies (like ex4a.m), not log-spaced
+            # bet = linspace(w(1), w(Ns), N/2)
+            omega_min = s_min
+            omega_max = s_max
             
-            freqs = np.logspace(np.log10(f_start), np.log10(f_end), n_pairs)
+            omegas = np.linspace(omega_min, omega_max, n_pairs)
             
-            for f in freqs:
-                omega = 2 * np.pi * f
-                sigma = -omega * 0.1  # 10% damping
+            for omega in omegas:
+                # alf = -bet * 1e-2  (1% damping like ex4a.m)
+                sigma = -omega * 0.01
                 poles.append(sigma + 1j * omega)
                 poles.append(sigma - 1j * omega)
         
-        if n_real > 0:
-            f_mid = np.sqrt(s_min * s_max) / (2 * np.pi)
-            poles.append(-2 * np.pi * f_mid * 0.1)
+        # If odd order, add one real pole at the middle
+        if self.order % 2 == 1:
+            omega_mid = (s_min + s_max) / 2
+            poles.append(-omega_mid * 0.01)
         
         return np.array(poles, dtype=complex)
     
@@ -374,28 +378,40 @@ class VectorFitting:
             # cindex[m] == 2 is handled with m-1
         
         # Build state-space for sigma and compute zeros
-        # ZER = LAMBD - B*C.T/D
-        LAMBD = np.diag(poles)
+        # Following vectfit3.m lines 484-498 exactly
+        LAMBD = np.diag(poles).astype(complex)
         B = np.ones(N)
+        C_sigma = C_complex.copy()
         
-        # Modify LAMBD and B for complex pairs (real form)
-        for n in range(N):
-            if n < N - 1 and cindex[n] == 1:
-                # Convert complex pair to 2x2 real block
-                real_part = np.real(poles[n])
-                imag_part = np.imag(poles[n])
-                LAMBD[n, n] = real_part
-                LAMBD[n, n+1] = imag_part
-                LAMBD[n+1, n] = -imag_part
-                LAMBD[n+1, n+1] = real_part
-                B[n] = 2
-                B[n+1] = 0
-                # C should be real for first, imag for second
-                C_complex[n] = np.real(C_complex[n])
-                C_complex[n+1] = np.imag(C_complex[n])
+        # Convert to real state-space form for complex pairs
+        m = 0
+        while m < N:
+            if m < N - 1 and cindex[m] == 1:
+                # Complex conjugate pair - convert to 2x2 real block
+                p_real = np.real(poles[m])
+                p_imag = np.imag(poles[m])
+                
+                # LAMBD block: [p_real, p_imag; -p_imag, p_real]
+                LAMBD[m, m] = p_real
+                LAMBD[m, m+1] = p_imag
+                LAMBD[m+1, m] = -p_imag
+                LAMBD[m+1, m+1] = p_real
+                
+                # B: [2; 0]
+                B[m] = 2
+                B[m+1] = 0
+                
+                # C: [real(C), imag(C)]
+                c_val = C_sigma[m]
+                C_sigma[m] = np.real(c_val)
+                C_sigma[m+1] = np.imag(c_val)
+                
+                m += 2
+            else:
+                m += 1
         
-        # Compute zeros: ZER = A - B*C/D
-        ZER = LAMBD - np.outer(B, C_complex) / D
+        # Compute zeros: ZER = LAMBD - B*C.T/D
+        ZER = LAMBD - np.outer(B, C_sigma) / D
         
         # New poles are eigenvalues of ZER
         new_poles = np.linalg.eigvals(ZER)
@@ -461,9 +477,12 @@ class VectorFitting:
         Ns = len(s)
         Nc = H.shape[0]
         
-        # Default weights
+        # Default weights: 1/sqrt(|f|) like ex4a.m
+        # weight=1./sqrt(abs(f)) balances accuracy across magnitude variations
         if weight is None:
-            weight = np.ones(Ns)
+            # Use inverse square root of magnitude for weighting
+            abs_H = np.abs(H[0, :])
+            weight = 1.0 / np.sqrt(np.maximum(abs_H, 1e-15))
         
         # Initialize poles
         self.poles = self._initialize_poles(s)
@@ -507,37 +526,72 @@ class VectorFitting:
     
     def _solve_residues(self, s: np.ndarray, H: np.ndarray) -> Tuple[np.ndarray, float, float]:
         """
-        Solve for residues given fixed poles.
+        Solve for residues given fixed poles using real basis functions.
+        
+        Based on vectfit3.m residue identification (lines 577-712):
+        - For complex pole pairs, use basis: 1/(s-p)+1/(s-p*) and j/(s-p)-j/(s-p*)
+        - Apply column scaling to fix ill-conditioning
+        - Convert back to complex residues
         
         Args:
             s: Complex frequency array
             H: Frequency response
             
         Returns:
-            residues, d, e
+            residues (complex), d, e
         """
         N = len(self.poles)
         Ns = len(s)
         
-        # Build system matrix
+        # Build cindex to identify complex conjugate pairs
+        cindex = self._build_cindex(self.poles)
+        
+        # Build system matrix with REAL basis functions (vectfit3.m style)
+        # For real poles: 1/(s-p)
+        # For complex pairs: 1/(s-p)+1/(s-p*) and j/(s-p)-j/(s-p*)
         A = np.zeros((Ns, N + 2), dtype=complex)
         
-        for k, p in enumerate(self.poles):
-            A[:, k] = 1.0 / (s - p)
+        for m in range(N):
+            if cindex[m] == 0:  # Real pole
+                A[:, m] = 1.0 / (s - self.poles[m])
+            elif cindex[m] == 1:  # Complex pole, first part
+                p = self.poles[m]
+                p_conj = np.conj(p)
+                A[:, m] = 1.0 / (s - p) + 1.0 / (s - p_conj)
+                A[:, m + 1] = 1j / (s - p) - 1j / (s - p_conj)
+            # cindex[m] == 2 is filled by m-1
         
-        A[:, N] = 1.0  # d term
-        A[:, N+1] = s  # e term
+        # Add d and e terms
+        A[:, N] = 1.0      # d term
+        A[:, N + 1] = s    # e term (proportional)
         
-        # Stack real and imaginary
+        # Stack real and imaginary parts
         A_real = np.vstack([A.real, A.imag])
         b_real = np.hstack([H.real, H.imag])
         
-        # Solve
-        x = np.linalg.lstsq(A_real, b_real, rcond=None)[0]
+        # Column scaling to fix ill-conditioning (vectfit3.m lines 624-628)
+        Escale = np.linalg.norm(A_real, axis=0)
+        Escale[Escale < 1e-15] = 1.0
+        A_scaled = A_real / Escale
         
-        residues = x[:N]
+        # Solve least squares
+        x = np.linalg.lstsq(A_scaled, b_real, rcond=None)[0]
+        
+        # Undo scaling
+        x = x / Escale
+        
+        # Extract and convert residues back to complex (vectfit3.m lines 705-712)
+        residues = np.zeros(N, dtype=complex)
+        for m in range(N):
+            if cindex[m] == 0:  # Real pole -> real residue
+                residues[m] = x[m]
+            elif cindex[m] == 1:  # Complex pair
+                r1, r2 = x[m], x[m + 1]
+                residues[m] = r1 + 1j * r2
+                residues[m + 1] = r1 - 1j * r2  # Conjugate
+        
         d = x[N]
-        e = x[N+1]
+        e = x[N + 1]
         
         return residues, d, e
 
