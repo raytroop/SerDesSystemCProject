@@ -224,6 +224,7 @@ private:
     // State-space method
     StateSpaceData m_state_space;
     sca_tdf::sca_ss m_ss_filter;
+    sca_util::sca_vector<double> m_ss_state;  // State vector for sca_ss
     
     // Pole-residue filter state
     PoleResidueFilterData m_pole_residue_data;

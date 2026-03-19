@@ -557,10 +557,7 @@ void ChannelSParamTdf::init_state_space_model() {
             }
         }
         
-        // Initialize sca_ss filter with matrices
-        m_ss_filter(m_state_space.A, m_state_space.B, m_state_space.C, 
-                    m_state_space.D, m_state_space.E);
-        
+        // sca_ss filter will be used in processing() with matrices passed each time
         std::cout << "[DEBUG] ChannelSParamTdf: State-space model initialized" << std::endl;
         std::cout << "[DEBUG]   States: " << n_states << ", Outputs: " << n_outputs << std::endl;
         
@@ -573,8 +570,27 @@ void ChannelSParamTdf::init_state_space_model() {
 
 double ChannelSParamTdf::process_state_space(double x_in) {
     // Use sca_ss filter to compute output
-    // sca_tdf::sca_ss takes input and returns output using state-space equations
-    return m_ss_filter(x_in);
+    // sca_tdf::sca_ss::operator() with state vector:
+    // (A, B, C, D, state_vector, input_vector, timestep)
+    sca_util::sca_vector<double> in_vec(1);
+    in_vec(1) = x_in;
+    
+    // State vector needs to be stored and maintained between calls
+    // Initialize on first use if empty (using length() method)
+    if (m_ss_state.length() == 0) {
+        m_ss_state.resize(m_state_space.n_states);
+        for (int i = 1; i <= m_state_space.n_states; ++i) {
+            m_ss_state(i) = 0.0;
+        }
+    }
+    
+    // Use the overload without E matrix (E is typically for descriptor systems)
+    // The sca_ss operator() returns a proxy that can be assigned to a vector
+    sca_util::sca_vector<double> out_vec = m_ss_filter(
+        m_state_space.A, m_state_space.B, m_state_space.C,
+        m_state_space.D, m_ss_state, in_vec, get_timestep());
+    
+    return out_vec(1);
 }
 
 void ChannelSParamTdf::init_pole_residue_model() {
