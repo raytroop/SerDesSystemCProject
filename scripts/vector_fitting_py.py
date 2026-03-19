@@ -542,6 +542,140 @@ class VectorFitting:
         return residues, d, e
 
 
+    def to_state_space(self) -> Dict:
+        """
+        Convert pole-residue representation to real state-space form.
+        
+        State-space form:
+            x_dot = A*x + B*u
+            y = C*x + D*u + E*u_dot
+            
+        Complex conjugate pole pairs are converted to real 2x2 blocks.
+        
+        Returns:
+            Dictionary with A, B, C, D, E matrices (all real)
+        """
+        if self.poles is None or self.residues is None:
+            raise RuntimeError("Must call fit() before to_state_space()")
+        
+        n = len(self.poles)
+        
+        # Build real state-space matrices
+        # For complex conjugate pairs, use 2x2 real blocks
+        A_blocks = []
+        B_blocks = []
+        C_blocks = []
+        
+        i = 0
+        state_idx = 0
+        while i < n:
+            p = self.poles[i]
+            r = self.residues[i]
+            
+            if np.abs(p.imag) > 1e-12:
+                # Complex conjugate pair
+                # Find conjugate
+                if i + 1 < n and np.abs(self.poles[i+1] - p.conj()) < 1e-6:
+                    p_conj = self.poles[i+1]
+                    r_conj = self.residues[i+1]
+                else:
+                    # Find closest conjugate
+                    p_conj = p.conj()
+                    r_conj = r.conj()
+                
+                sigma = p.real
+                omega = p.imag
+                alpha = r.real
+                beta = r.imag
+                
+                # 2x2 real block for A
+                A_block = [[sigma, omega], [-omega, sigma]]
+                B_block = [[2.0], [0.0]]
+                C_block = [[alpha, -beta]]
+                
+                A_blocks.append(A_block)
+                B_blocks.append(B_block)
+                C_blocks.append(C_block)
+                
+                i += 2
+                state_idx += 2
+            else:
+                # Real pole
+                A_block = [[p.real]]
+                B_block = [[1.0]]
+                C_block = [[r.real]]
+                
+                A_blocks.append(A_block)
+                B_blocks.append(B_block)
+                C_blocks.append(C_block)
+                
+                i += 1
+                state_idx += 1
+        
+        # Assemble full matrices
+        n_states = sum(len(b) for b in A_blocks)
+        
+        A = np.zeros((n_states, n_states))
+        B = np.zeros((n_states, 1))
+        C = np.zeros((1, n_states))
+        
+        idx = 0
+        for i, (Ab, Bb, Cb) in enumerate(zip(A_blocks, B_blocks, C_blocks)):
+            m = len(Ab)
+            A[idx:idx+m, idx:idx+m] = Ab
+            B[idx:idx+m, 0] = np.array(Bb).flatten()
+            C[0, idx:idx+m] = np.array(Cb).flatten()
+            idx += m
+        
+        D = np.array([[float(self.d)]])
+        E = np.array([[float(self.e)]])
+        
+        return {
+            'A': A.tolist(),
+            'B': B.tolist(),
+            'C': C.tolist(),
+            'D': D.tolist(),
+            'E': E.tolist(),
+            'n_states': n_states,
+            'n_outputs': 1
+        }
+    
+    def export_to_json(self, filename: str, fs: float = 80e9) -> None:
+        """
+        Export state-space representation to JSON file for C++ Channel.
+        
+        Args:
+            filename: Output JSON file path
+            fs: Sampling frequency in Hz
+        """
+        import json
+        
+        state_space = self.to_state_space()
+        
+        config = {
+            'version': '2.1-vf',
+            'method': 'state_space',
+            'fs': float(fs),
+            'state_space': {
+                'A': state_space['A'],
+                'B': state_space['B'],
+                'C': state_space['C'],
+                'D': state_space['D'],
+                'E': state_space['E']
+            },
+            'metadata': {
+                'order': self.order,
+                'n_states': state_space['n_states'],
+                'n_outputs': state_space['n_outputs']
+            }
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        logger.info(f"Exported state-space to: {filename}")
+
+
 def fit_vector_fitting(s: np.ndarray, H: np.ndarray, order: int = 8,
                        max_iterations: int = 10, tolerance: float = 1e-6,
                        **kwargs) -> Dict:
