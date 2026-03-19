@@ -72,7 +72,27 @@ class VectorFittingPY:
         Returns:
             poles: Complex array with negative real parts (stable)
         """
-        pass  # TODO: Implement in Task 1.2
+        # fmin = max(freq[freq>0].min(), 1e3)
+        positive_freq = self.freq[self.freq > 0]
+        if len(positive_freq) > 0:
+            fmin = max(positive_freq.min(), 1e3)
+        else:
+            fmin = 1e3
+        
+        fmax = self.freq.max()
+        
+        # Generate omega values (angular frequencies)
+        if spacing == 'log':
+            omega = np.geomspace(fmin, fmax, n_cmplx) * 2 * np.pi
+        else:  # linear
+            omega = np.linspace(fmin, fmax, n_cmplx) * 2 * np.pi
+        
+        # Create poles with weak damping: -0.01*w + 1j*w
+        # Real part is -0.01 * omega (stable, small damping)
+        # Imaginary part is omega (oscillation frequency)
+        poles = -0.01 * omega + 1j * omega
+        
+        return poles
     
     def _build_cindex(self, poles: np.ndarray) -> np.ndarray:
         """
@@ -83,13 +103,32 @@ class VectorFittingPY:
         - cindex=1: complex pole, first part (positive imaginary)
         - cindex=2: complex pole, second part (conjugate, negative imaginary)
         
+        This handles two cases:
+        1. Poles from _init_poles: only positive-imaginary poles (each is '1')
+        2. Full pole arrays with conjugate pairs (1, 2 sequence)
+        
         Args:
             poles: Array of poles
             
         Returns:
             cindex: Integer array of same length as poles
         """
-        pass  # TODO: Implement in Task 1.2
+        cindex = np.zeros(len(poles), dtype=int)
+        
+        i = 0
+        while i < len(poles):
+            imag_part = poles.imag[i]
+            if abs(imag_part) > 1e-12:  # Complex pole
+                if imag_part > 0:  # Positive imaginary -> first of pair
+                    cindex[i] = 1
+                else:  # Negative imaginary -> second of pair
+                    cindex[i] = 2
+                i += 1
+            else:
+                cindex[i] = 0  # Real pole
+                i += 1
+        
+        return cindex
     
     def _build_Dk(self, s: np.ndarray, poles: np.ndarray,
                   cindex: np.ndarray) -> np.ndarray:
@@ -100,8 +139,10 @@ class VectorFittingPY:
         Vector Fitting linear system.
         
         For real pole: Dk[:,m] = 1/(s-p)
-        For complex pair: Dk[:,m] = 1/(s-p) + 1/(s-p*)
-                          Dk[:,m+1] = 1j/(s-p) - 1j/(s-p*)
+        For complex pole (cindex=1): Dk[:,m] = 1/(s-p) + 1/(s-p*)
+        For complex pole (cindex=2): Dk[:,m] = 1j/(s-p) - 1j/(s-p*)
+        
+        Note: The combination produces real-valued basis functions.
         
         Args:
             s: Complex frequency points
@@ -109,9 +150,29 @@ class VectorFittingPY:
             cindex: Complex index array
             
         Returns:
-            Dk: Basis function matrix of shape (Ns, N)
+            Dk: Basis function matrix of shape (Ns, N), real-valued
         """
-        pass  # TODO: Implement in Task 1.2
+        Ns = len(s)
+        N = len(poles)
+        Dk = np.zeros((Ns, N), dtype=float)
+        
+        for m in range(N):
+            p = poles[m]
+            if cindex[m] == 0:
+                # Real pole: Dk[:,m] = 1/(s-p) (should be real if input is conjugate symmetric)
+                Dk[:, m] = (1.0 / (s - p)).real
+            elif cindex[m] == 1:
+                # First of complex pair: Dk[:,m] = 1/(s-p) + 1/(s-p*)
+                p_conj = np.conj(p)
+                val = 1.0 / (s - p) + 1.0 / (s - p_conj)
+                Dk[:, m] = val.real  # Should be real
+            elif cindex[m] == 2:
+                # Second of complex pair: Dk[:,m] = 1j/(s-p) - 1j/(s-p*)
+                p_conj = np.conj(p)
+                val = 1.0j / (s - p) - 1.0j / (s - p_conj)
+                Dk[:, m] = val.real  # Should be real
+        
+        return Dk
     
     def fit(self, n_poles: int, n_iter: int = 5) -> Dict:
         """
