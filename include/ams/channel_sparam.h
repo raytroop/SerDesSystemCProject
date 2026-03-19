@@ -7,6 +7,37 @@
 #include <string>
 #include <memory>
 #include <deque>
+/**
+ * State-space representation for channel modeling
+ * dx/dt = A*x + B*u
+ * y = C*x + D*u + E*du/dt (optional derivative term)
+ */
+struct StateSpaceData {
+    sca_util::sca_matrix<double> A;  // State matrix (n x n)
+    sca_util::sca_matrix<double> B;  // Input matrix (n x 1)
+    sca_util::sca_matrix<double> C;  // Output matrix (n_c x n)
+    sca_util::sca_matrix<double> D;  // Direct matrix (n_c x 1)
+    sca_util::sca_matrix<double> E;  // Differential matrix (n_c x 1), optional
+    int n_states{0};
+    int n_outputs{0};
+};
+
+/**
+ * Pole-residue filter data for channel modeling
+ * Represents transfer function as sum of pole-residue pairs:
+ *   H(s) = constant + proportional*s + sum( residue_i / (s - pole_i) )
+ */
+struct PoleResidueFilterData {
+    std::vector<double> poles_real;
+    std::vector<double> poles_imag;
+    std::vector<double> residues_real;
+    std::vector<double> residues_imag;
+    double constant = 0.0;
+    double proportional = 0.0;
+    int order = 0;
+    double dc_gain = 1.0;
+    double mse = 0.0;
+};
 
 namespace serdes {
 
@@ -14,9 +45,11 @@ namespace serdes {
  * Channel modeling method enumeration
  */
 enum class ChannelMethod {
-    SIMPLE,      // Simple low-pass filter (default, v0.4 compatible)
-    RATIONAL,    // Rational function fitting (sca_ltf_nd)
-    IMPULSE      // Impulse response convolution
+    SIMPLE,        // Simple low-pass filter (default, v0.4 compatible)
+    RATIONAL,      // Rational function fitting (sca_ltf_nd)
+    IMPULSE,       // Impulse response convolution
+    POLE_RESIDUE,  // Pole-residue fitting with biquad chain
+    STATE_SPACE    // State-space representation (sca_ss)
 };
 
 /**
@@ -131,6 +164,32 @@ public:
      * Get DC gain of the channel
      */
     double get_dc_gain() const;
+    
+    /**
+     * Initialize pole-residue model
+     * Converts pole-residue pairs to cascaded biquad sections
+     */
+    void init_pole_residue_model();
+    
+    /**
+     * Process input through pole-residue filter
+     * @param x Input sample
+     * @return Filtered output
+     */
+    double process_pole_residue(double x);
+    
+    /**
+     * Initialize state-space model
+     * Sets up sca_ss filter from state-space matrices
+     */
+    void init_state_space_model();
+    
+    /**
+     * Process input through state-space filter
+     * @param x Input sample
+     * @return Filtered output
+     */
+    double process_state_space(double x);
 
 private:
     // Parameters
@@ -162,6 +221,29 @@ private:
     std::deque<double> m_output_queue;
     int m_block_idx;
     
+    // State-space method
+    StateSpaceData m_state_space;
+    sca_tdf::sca_ss m_ss_filter;
+    sca_util::sca_vector<double> m_ss_state;  // State vector for sca_ss
+    
+    // Pole-residue filter state
+    PoleResidueFilterData m_pole_residue_data;
+    
+    // Pole-residue filter - state space matrices
+    // Continuous-time (for reference)
+    std::vector<std::vector<double>> m_pr_ss_A_flat;  
+    std::vector<std::vector<double>> m_pr_ss_B_flat;
+    std::vector<std::vector<double>> m_pr_ss_C_flat;
+    std::vector<std::vector<double>> m_pr_ss_D_flat;
+    // Discrete-time (bilinear/Tustin transform)
+    std::vector<std::vector<double>> m_pr_ss_Ad;      // Discrete A matrices
+    std::vector<std::vector<double>> m_pr_ss_Bd;      // Discrete B vectors
+    std::vector<std::vector<double>> m_pr_ss_Cd;      // Discrete C vectors
+    std::vector<double> m_pr_ss_Dd;                   // Discrete D scalars
+    // State and history
+    std::vector<std::vector<double>> m_pr_ss_states;  // State vectors
+    double m_pr_input_prev;  // For proportional term derivative
+    
     // Initialization flags
     bool m_config_loaded;
     bool m_initialized;
@@ -170,16 +252,22 @@ private:
     void init_simple_model();
     void init_rational_model();
     void init_impulse_model();
+    // init_state_space_model_internal() removed - merged into init_state_space_model()
+    
+    // Polynomial multiplication helper for pole-residue
+    std::vector<double> poly_multiply(const std::vector<double>& p1, const std::vector<double>& p2);
     
     double process_simple(double x);
     double process_rational(double x);
     double process_impulse(double x);
     double process_impulse_fft(double x);
+    double process_pole_residue_ss(double x);  // State space implementation
     
     // JSON parsing helpers
     bool parse_json_config(const std::string& json_content);
     bool parse_rational_filter(const std::string& name, const void* json_obj);
     bool parse_impulse_response(const std::string& name, const void* json_obj);
+    bool parse_pole_residue_filter(const std::string& name, const void* json_obj);
     
     // FFT helpers
     void init_fft_convolution();
