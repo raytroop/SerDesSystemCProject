@@ -6,7 +6,7 @@ This is a clean implementation of the Fast Relaxed Vector Fitting algorithm.
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,8 @@ class VectorFitting:
         if n_pairs > 0:
             # LINEARLY spaced frequencies (like ex4a.m), not log-spaced
             # bet = linspace(w(1), w(Ns), N/2)
-            omega_min = s_min
+            # Avoid DC (omega=0) to prevent zero poles -> division by zero
+            omega_min = max(s_min, s_max * 1e-3)
             omega_max = s_max
             
             omegas = np.linspace(omega_min, omega_max, n_pairs)
@@ -750,3 +751,981 @@ def fit_vector_fitting(s: np.ndarray, H: np.ndarray, order: int = 8,
     vf = VectorFitting(order=order, max_iterations=max_iterations,
                        tolerance=tolerance, **kwargs)
     return vf.fit(s, H)
+
+
+# ==============================================================================
+# Delay Utility Functions
+# ==============================================================================
+
+def estimate_delay_phase(freq: np.ndarray, H_row: np.ndarray) -> float:
+    """
+    Estimate propagation delay from phase slope (linear regression).
+
+    tau = -d(phase)/d(omega), solved by least-squares fit of
+    phase vs omega across the full frequency range.
+
+    Args:
+        freq: Frequency array (Hz)
+        H_row: Complex S-parameter response (1-D)
+
+    Returns:
+        tau: Estimated propagation delay (seconds)
+    """
+    phase = np.unwrap(np.angle(H_row))
+    omega = 2.0 * np.pi * freq
+    slope, _ = np.polyfit(omega, phase, 1)
+    return float(-slope)
+
+
+def estimate_delay_impulse(freq: np.ndarray, H_row: np.ndarray) -> float:
+    """
+    Estimate propagation delay from impulse response peak position.
+
+    This method is more accurate for dispersive channels than phase-slope,
+    because it finds the actual "time of arrival" of the main energy pulse.
+
+    Args:
+        freq: Frequency array (Hz), must be uniformly spaced
+        H_row: Complex S-parameter response (1-D)
+
+    Returns:
+        tau: Estimated propagation delay (seconds)
+    """
+    # Zero-pad for better time resolution
+    n_fft = len(H_row) * 32
+    impulse = np.fft.irfft(H_row, n=n_fft)
+    df = freq[1] - freq[0]
+    dt = 1.0 / (n_fft * df)
+    # Search only in the first quarter (causal response)
+    peak_idx = int(np.argmax(np.abs(impulse[:n_fft // 4])))
+    return float(peak_idx * dt)
+
+
+def remove_delay(freq: np.ndarray, H: np.ndarray, tau: float) -> np.ndarray:
+    """
+    Remove propagation delay from a frequency response.
+
+    H_comp(f) = H(f) * exp(+j * 2*pi * f * tau)
+
+    Args:
+        freq: Frequency array (Hz)
+        H: Complex response, shape (Ns,) or (Nc, Ns)
+        tau: Delay to remove (seconds)
+
+    Returns:
+        H_compensated: Delay-removed response (same shape as H)
+    """
+    exp_fac = np.exp(1j * 2.0 * np.pi * freq * tau)
+    if H.ndim == 1:
+        return H * exp_fac
+    return H * exp_fac[np.newaxis, :]
+
+
+def restore_delay(freq: np.ndarray, H_fit: np.ndarray, tau: float) -> np.ndarray:
+    """
+    Restore propagation delay to a fitted frequency response.
+
+    H_restored(f) = H_fit(f) * exp(-j * 2*pi * f * tau)
+
+    Args:
+        freq: Frequency array (Hz)
+        H_fit: Fitted complex response (same shape as original)
+        tau: Delay to restore (seconds)
+
+    Returns:
+        H_restored: Response with delay restored
+    """
+    return remove_delay(freq, H_fit, -tau)
+
+
+# ==============================================================================
+# SParamModel: High-level S-parameter fitting with MIMO state-space export
+# ==============================================================================
+
+class SParamModel:
+    """
+    High-level S-parameter model builder.
+
+    Supports arbitrary sNp files (s2p, s4p, s8p, s12p, s16p, ...),
+    automatic port mapping (differential pair detection), optional
+    differential (mixed-mode) conversion, delay extraction, columnwise
+    Vector Fitting with shared poles (ex4b.m strategy), and MIMO
+    state-space JSON export for C++ simulation.
+
+    Typical usage::
+
+        model = SParamModel()
+        model.load_snp('channel.s12p')
+        # Override auto-detection if needed:
+        # model.set_port_map(diff_pairs=[(1,2),(3,4),(5,6),(7,8),(9,10),(11,12)])
+        model.to_differential()
+        model.fit(order=50, extract_delay=True)
+        model.summary()
+        model.export_json('channel.json')
+    """
+
+    def __init__(self):
+        # Raw data
+        self.freq: Optional[np.ndarray] = None
+        self.s_raw: Optional[np.ndarray] = None    # (N_freq, N_port, N_port)
+        self.s_active: Optional[np.ndarray] = None  # working matrix
+        self.n_ports_raw: int = 0
+        self.filename: str = ""
+        
+        # System config (for auto fmax calculation)
+        self._config: Optional[Dict] = None
+        self._symbol_rate: Optional[float] = None  # Hz
+        self._fmax_multiplier: float = 1.5  # fmax = multiplier × symbol_rate
+
+        # Port mapping
+        self.diff_pairs: Optional[List[Tuple[int, int]]] = None  # [(p+,p-) 1-based]
+        self.tx_diff_ports: Optional[List[int]] = None           # 0-based in diff space
+        self.rx_diff_ports: Optional[List[int]] = None
+        self._is_differential: bool = False
+
+        # Selected port pairs for fitting (0-based indices in s_active)
+        self.selected_pairs: Optional[List[Tuple[int, int]]] = None
+
+        # Fitting results
+        self.shared_poles: Optional[np.ndarray] = None
+        self.residues_matrix: Optional[np.ndarray] = None  # (N_pairs, N_poles) complex
+        self.d_vector: Optional[np.ndarray] = None          # (N_pairs,) real
+        self.e_vector: Optional[np.ndarray] = None          # (N_pairs,) real
+        self.delay_map: Optional[Dict] = None               # {(out,in): tau_s}
+
+    # --------------------------------------------------------------------------
+    # System Configuration
+    # --------------------------------------------------------------------------
+
+    def load_config(
+        self,
+        config_path: str = 'config/default.json',
+        fmax_multiplier: float = 1.5
+    ) -> 'SParamModel':
+        """
+        Load SerDes system configuration to auto-calculate fmax from symbol rate.
+
+        The symbol rate is derived from global.UI (unit interval) in the config:
+            symbol_rate = 1 / UI
+            fmax = fmax_multiplier × symbol_rate
+
+        Args:
+            config_path: Path to the JSON config file (default: 'config/default.json')
+            fmax_multiplier: Multiplier for symbol rate to get fmax (default: 1.5)
+                - 1.0: Nyquist frequency
+                - 1.5: Covers main lobe + first sidelobe (recommended for NRZ)
+                - 2.0: More conservative
+
+        Returns:
+            self (for method chaining)
+        """
+        import json
+        import os
+
+        # Handle relative paths
+        if not os.path.isabs(config_path):
+            # Try relative to workspace root
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            workspace_root = os.path.dirname(script_dir)
+            config_path = os.path.join(workspace_root, config_path)
+
+        with open(config_path, 'r') as f:
+            self._config = json.load(f)
+
+        self._fmax_multiplier = fmax_multiplier
+
+        # Extract UI and compute symbol rate
+        ui = self._config.get('global', {}).get('UI')
+        if ui is not None and ui > 0:
+            self._symbol_rate = 1.0 / ui
+            fmax_auto = self._fmax_multiplier * self._symbol_rate
+            logger.info(
+                f"Config loaded: UI={ui*1e12:.2f}ps → symbol_rate={self._symbol_rate/1e9:.1f}Gbps → "
+                f"fmax={fmax_auto/1e9:.1f}GHz (×{fmax_multiplier})"
+            )
+        else:
+            logger.warning("Config does not contain global.UI; fmax auto-calculation disabled")
+
+        return self
+
+    def get_auto_fmax(self) -> Optional[float]:
+        """
+        Get automatically calculated fmax from loaded config.
+
+        Returns:
+            fmax in Hz, or None if config not loaded or UI not available.
+        """
+        if self._symbol_rate is not None:
+            return self._fmax_multiplier * self._symbol_rate
+        return None
+
+    # --------------------------------------------------------------------------
+    # Loading
+    # --------------------------------------------------------------------------
+
+    def load_snp(self, filename: str) -> 'SParamModel':
+        """
+        Load an sNp file using scikit-rf.
+
+        Supports any port count: s2p, s4p, s8p, s12p, s16p, etc.
+        After loading, auto-detection of differential pairs is attempted.
+
+        Args:
+            filename: Path to the sNp file.
+
+        Returns:
+            self (for method chaining)
+        """
+        try:
+            import skrf as rf
+        except ImportError:
+            raise ImportError("scikit-rf is required: pip install scikit-rf")
+
+        nw = rf.Network(filename)
+        self.filename = filename
+        self.freq = nw.f.copy()                # (N_freq,)
+        self.s_raw = nw.s.copy()              # (N_freq, N_port, N_port)
+        self.n_ports_raw = nw.number_of_ports
+        self.s_active = self.s_raw.copy()
+        self._is_differential = False
+
+        logger.info(
+            f"Loaded {filename}: {self.n_ports_raw} ports, "
+            f"{len(self.freq)} pts, "
+            f"{self.freq[0]/1e9:.2f}-{self.freq[-1]/1e9:.2f} GHz"
+        )
+
+        self.auto_detect_port_map(verbose=True)
+        return self
+
+    # --------------------------------------------------------------------------
+    # Port Mapping
+    # --------------------------------------------------------------------------
+
+    def set_port_map(
+        self,
+        diff_pairs: List[Tuple[int, int]],
+        tx_ports: Optional[List[int]] = None,
+        rx_ports: Optional[List[int]] = None,
+    ) -> 'SParamModel':
+        """
+        Manually specify differential pair port mapping.
+
+        Args:
+            diff_pairs: List of (p_plus, p_minus) tuples using 1-based port
+                        numbers. Example: [(1,2),(3,4),(5,6)] for a 6-port
+                        file with 3 differential pairs.
+            tx_ports: 1-based indices into diff_pairs that are TX.
+                      Example: [1,2] means diff pairs 0 and 1 are TX.
+            rx_ports: 1-based indices into diff_pairs that are RX.
+
+        Returns:
+            self
+        """
+        for pp, pm in diff_pairs:
+            if pp < 1 or pp > self.n_ports_raw or pm < 1 or pm > self.n_ports_raw:
+                raise ValueError(
+                    f"Port indices must be 1..{self.n_ports_raw}, got ({pp},{pm})"
+                )
+        flat = [p for pair in diff_pairs for p in pair]
+        if len(set(flat)) != len(flat):
+            raise ValueError("Duplicate port numbers in diff_pairs")
+
+        self.diff_pairs = list(diff_pairs)
+        self.tx_diff_ports = [p - 1 for p in tx_ports] if tx_ports else None
+        self.rx_diff_ports = [p - 1 for p in rx_ports] if rx_ports else None
+        logger.info(f"Port map set manually: {len(diff_pairs)} diff pairs")
+        return self
+
+    def auto_detect_port_map(self, verbose: bool = True) -> 'SParamModel':
+        """
+        Auto-detect differential pair mapping using a heuristic CMRR test.
+
+        Tries two common port-ordering conventions:
+          - Interleaved : (1,2),(3,4),(5,6),...  (most common, e.g. PCIe)
+          - Half-split  : (1,N/2+1),(2,N/2+2),... (e.g. CtoCassembly6dB.s12p)
+
+        Selects the scheme that maximises |Sdd|/|Scc| at mid-band.
+        TX/RX direction is inferred from asymmetry in forward transmission.
+
+        Results are printed and can be overridden with set_port_map().
+
+        Returns:
+            self
+        """
+        if self.s_raw is None:
+            return self
+
+        N = self.n_ports_raw
+        if N < 2 or N % 2 != 0:
+            if verbose:
+                print(f"[PortMap] {N} ports (odd or <2); diff detection skipped")
+            return self
+
+        N_diff = N // 2
+        mid = len(self.freq) // 2
+        S_mid = self.s_raw[mid]  # (N, N) snapshot at mid-band
+
+        schemes: Dict[str, List[Tuple[int, int]]] = {
+            'interleaved': [(2 * i + 1, 2 * i + 2) for i in range(N_diff)],
+            'half-split':  [(i + 1, N_diff + i + 1) for i in range(N_diff)],
+        }
+
+        best_scheme = 'interleaved'
+        best_score = -np.inf
+        best_pairs: List[Tuple[int, int]] = schemes['interleaved']
+
+        for name, pairs in schemes.items():
+            score = 0.0
+            for pp, pm in pairs:
+                pi, mi = pp - 1, pm - 1
+                Sdd = (S_mid[pi, pi] - S_mid[pi, mi]
+                       - S_mid[mi, pi] + S_mid[mi, mi]) / 2.0
+                Scc = (S_mid[pi, pi] + S_mid[pi, mi]
+                       + S_mid[mi, pi] + S_mid[mi, mi]) / 2.0
+                score += abs(Sdd) / (abs(Scc) + 1e-15)
+            score /= N_diff
+            if score > best_score:
+                best_score = score
+                best_scheme = name
+                best_pairs = pairs
+
+        self.diff_pairs = best_pairs
+
+        # Detect TX/RX from differential transmission asymmetry
+        tx_ports, rx_ports = self._detect_tx_rx(best_pairs)
+        self.tx_diff_ports = tx_ports
+        self.rx_diff_ports = rx_ports
+
+        if verbose:
+            print(f"\n[PortMap] Auto-detection result:")
+            print(f"  Scheme  : {best_scheme}  (CMRR score = {best_score:.2f})")
+            print(f"  Pairs   : {best_pairs}")
+            if tx_ports is not None:
+                print(f"  TX diff : {[i + 1 for i in tx_ports]} (1-based in diff space)")
+                print(f"  RX diff : {[i + 1 for i in rx_ports]} (1-based in diff space)")
+            else:
+                print(f"  TX/RX   : undetermined")
+            print(f"  [Use set_port_map() to override if incorrect]")
+
+        return self
+
+    def _detect_tx_rx(
+        self,
+        pairs: List[Tuple[int, int]],
+    ) -> Tuple[Optional[List[int]], Optional[List[int]]]:
+        """Infer TX/RX direction from differential transmission strength."""
+        N_diff = len(pairs)
+        if N_diff < 2:
+            return None, None
+
+        tx_score = np.zeros(N_diff)
+        for j, (pj_1, mj_1) in enumerate(pairs):
+            pj, mj = pj_1 - 1, mj_1 - 1
+            for i, (pi_1, mi_1) in enumerate(pairs):
+                if i == j:
+                    continue
+                pi, mi = pi_1 - 1, mi_1 - 1
+                # |Sdd(i,j)| averaged over frequency
+                Sdd_ij = (
+                    self.s_raw[:, pi, pj] - self.s_raw[:, pi, mj]
+                    - self.s_raw[:, mi, pj] + self.s_raw[:, mi, mj]
+                ) / 2.0
+                tx_score[j] += float(np.mean(np.abs(Sdd_ij)))
+
+        thr = float(np.mean(tx_score))
+        if thr < 1e-6:
+            return None, None
+
+        tx = [i for i in range(N_diff) if tx_score[i] > thr * 0.5]
+        rx = [i for i in range(N_diff) if tx_score[i] <= thr * 0.5]
+        if not tx or not rx:
+            return None, None
+        return tx, rx
+
+    def print_port_info(self) -> None:
+        """Print port mapping, per-path delay and insertion loss summary."""
+        if self.s_raw is None:
+            print("No data loaded")
+            return
+
+        print(f"\n=== Port Information: {self.filename} ===")
+        print(f"Ports  : {self.n_ports_raw} single-ended")
+        print(
+            f"Freq   : {self.freq[0]/1e9:.3f} - {self.freq[-1]/1e9:.3f} GHz "
+            f"({len(self.freq)} pts)"
+        )
+
+        if self.diff_pairs:
+            print(f"\nDifferential pairs ({len(self.diff_pairs)}):")
+            for i, (pp, pm) in enumerate(self.diff_pairs):
+                role = ""
+                if self.tx_diff_ports and i in self.tx_diff_ports:
+                    role = " [TX]"
+                elif self.rx_diff_ports and i in self.rx_diff_ports:
+                    role = " [RX]"
+                print(f"  Pair {i + 1}: P{pp}+ / P{pm}-{role}")
+
+        N_act = self.s_active.shape[1]
+        mid10 = max(1, len(self.freq) // 10)
+        print(f"\nActive matrix ({N_act}x{N_act}) – significant paths:")
+        for oi in range(N_act):
+            for ii in range(N_act):
+                if oi == ii:
+                    continue
+                s_path = self.s_active[:, oi, ii]
+                if np.mean(np.abs(s_path)) < 0.005:
+                    continue
+                tau = estimate_delay_phase(self.freq, s_path)
+                il_low  = 20 * np.log10(max(abs(s_path[mid10]), 1e-15))
+                il_high = 20 * np.log10(max(abs(s_path[-1]),    1e-15))
+                print(
+                    f"  S({oi + 1},{ii + 1}): τ={tau * 1e9:.3f}ns, "
+                    f"IL@low={il_low:.1f}dB, IL@high={il_high:.1f}dB"
+                )
+
+    # --------------------------------------------------------------------------
+    # Differential Conversion
+    # --------------------------------------------------------------------------
+
+    def to_differential(self) -> 'SParamModel':
+        """
+        Convert single-ended S-matrix to the differential Sdd submatrix.
+
+        Applies the mixed-mode transformation  Smm = M * S_reordered * M^T
+        where M is the block-diagonal orthogonal matrix that maps each
+        (P+, P-) pair to (differential, common-mode) signals.
+        The top-left N_diff x N_diff block of Smm is the Sdd matrix.
+
+        If set_port_map() has not been called, auto_detect_port_map() is run
+        first.
+
+        Returns:
+            self
+        """
+        if self.diff_pairs is None:
+            self.auto_detect_port_map(verbose=True)
+        if self.diff_pairs is None:
+            raise RuntimeError("No differential pairs available; call set_port_map()")
+
+        pairs = self.diff_pairs
+        N_diff = len(pairs)
+        N_se = 2 * N_diff
+        N_freq = len(self.freq)
+
+        # Reorder ports: [p0+, p0-, p1+, p1-, ...]
+        port_order = np.array(
+            [item for pp, pm in pairs for item in (pp - 1, pm - 1)]
+        )
+        # Vectorised port reorder: shape (N_freq, N_se, N_se)
+        s_reord = self.s_raw[:, port_order, :][:, :, port_order]
+
+        # Build orthogonal block-diagonal M  (M^{-1} = M^T)
+        inv_sqrt2 = 1.0 / np.sqrt(2.0)
+        M = np.zeros((N_se, N_se))
+        for i in range(N_diff):
+            M[i,          2 * i]     =  inv_sqrt2   # diff row
+            M[i,          2 * i + 1] = -inv_sqrt2
+            M[N_diff + i, 2 * i]     =  inv_sqrt2   # common-mode row
+            M[N_diff + i, 2 * i + 1] =  inv_sqrt2
+        M_inv = M.T  # orthogonal matrix
+
+        # Smm = M @ S_reord @ M^T  (einsum broadcasts over frequency axis)
+        s_mm = np.einsum('ij,fjk,kl->fil', M, s_reord, M_inv)
+
+        # Extract Sdd submatrix
+        self.s_active = s_mm[:, :N_diff, :N_diff]
+        self._is_differential = True
+
+        logger.info(
+            f"Differential conversion: {self.n_ports_raw} SE → "
+            f"{N_diff}×{N_diff} Sdd"
+        )
+        return self
+
+    # --------------------------------------------------------------------------
+    # Port Selection
+    # --------------------------------------------------------------------------
+
+    def select_ports(self, port_pairs) -> 'SParamModel':
+        """
+        Select which port pairs to fit.
+
+        Args:
+            port_pairs:
+                'all'       – all N×N elements of the active matrix.
+                'all_thru'  – off-diagonal elements with mean |S| ≥ 0.005
+                              (-46 dB threshold).
+                [(o,i),...] – explicit list of 1-based (out, in) indices.
+
+        Returns:
+            self
+        """
+        N = self.s_active.shape[1]
+
+        if port_pairs == 'all':
+            self.selected_pairs = [(oi, ii) for oi in range(N) for ii in range(N)]
+
+        elif port_pairs == 'all_thru':
+            pairs = []
+            for oi in range(N):
+                for ii in range(N):
+                    if oi == ii:
+                        continue
+                    if np.mean(np.abs(self.s_active[:, oi, ii])) >= 0.005:
+                        pairs.append((oi, ii))
+            self.selected_pairs = pairs
+
+        else:
+            # Convert 1-based to 0-based
+            self.selected_pairs = [(o - 1, i - 1) for o, i in port_pairs]
+
+        logger.info(f"Selected {len(self.selected_pairs)} port pairs for fitting")
+        return self
+
+    # --------------------------------------------------------------------------
+    # Fitting  (Phase 1: shared poles | Phase 2: per-column residues)
+    # --------------------------------------------------------------------------
+
+    def fit(
+        self,
+        order: int = 50,
+        port_pairs=None,
+        extract_delay: bool = True,
+        fmax: Optional[Union[float, str]] = None,
+        n_iter_poles: int = 5,
+        n_iter_res: int = 1,
+        weight: Optional[np.ndarray] = None,
+    ) -> 'SParamModel':
+        """
+        Columnwise Vector Fitting with shared poles (ex4b.m strategy).
+
+        Phase 1
+            Optimize shared poles from all selected columns jointly.
+
+        Phase 2
+            With poles fixed, solve residues independently for each column.
+
+        If extract_delay=True, propagation delay is estimated using the
+        **impulse-peak method** (more accurate for dispersive channels) and
+        removed before fitting.  Delay is restored during evaluate().
+
+        **Key for low-order fitting**: Set fmax to bandlimit the fit to your
+        actual signal bandwidth.  For example:
+          - 10 Gbps NRZ  -> fmax=5e9   (Nyquist ~5 GHz)  -> 20-30 poles
+          - 28 Gbps NRZ  -> fmax=15e9                    -> 30-50 poles
+          - 56 Gbps PAM4 -> fmax=14e9                    -> 30-50 poles
+
+        With bandlimiting + delay extraction, 20-50 poles can achieve < 1 dB
+        accuracy for most SerDes applications.
+
+        Args:
+            order: Number of poles.
+            port_pairs: Passed to select_ports(). None -> 'all_thru'.
+            extract_delay: Remove delay using impulse-peak method.
+            fmax: Maximum frequency to fit (Hz). Options:
+                  - None: Use full bandwidth of S-parameter data.
+                  - float: Explicit frequency limit in Hz.
+                  - 'auto': Auto-calculate from config (1.5 × symbol_rate).
+                            Requires load_config() to be called first.
+            n_iter_poles: Pole-optimization iterations (Phase 1).
+            n_iter_res: Unused (residues solved in one LS step).
+            weight: Manual weight array (Ns,). Default: 1/sqrt(mean|H|).
+
+        Returns:
+            self
+        """
+        if port_pairs is not None:
+            self.select_ports(port_pairs)
+        if self.selected_pairs is None:
+            self.select_ports('all_thru')
+        if not self.selected_pairs:
+            raise ValueError("No port pairs selected for fitting")
+
+        # ── Handle fmax='auto' ─────────────────────────────────────────────────
+        if fmax == 'auto':
+            fmax = self.get_auto_fmax()
+            if fmax is None:
+                raise ValueError(
+                    "fmax='auto' requires load_config() to be called first "
+                    "with a config containing global.UI"
+                )
+            logger.info(f"Auto fmax from config: {fmax/1e9:.1f} GHz")
+
+        freq   = self.freq
+        omega  = 2.0 * np.pi * freq
+        s      = 1j * omega
+        N_freq = len(freq)
+        N_pairs = len(self.selected_pairs)
+
+        # Collect H: (N_pairs, N_freq)
+        H_all = np.stack(
+            [self.s_active[:, oi, ii] for oi, ii in self.selected_pairs]
+        )
+
+        # ── Bandlimit to fmax (key for low-order fitting with delay extraction) ─
+        if fmax is not None and fmax < freq[-1]:
+            bw_mask = freq <= fmax
+            freq_fit   = freq[bw_mask]
+            omega_fit  = omega[bw_mask]
+            s_fit      = s[bw_mask]
+            H_fit_all  = H_all[:, bw_mask]
+            self._fmax_used = float(fmax)
+            logger.info(f"Bandlimited to {fmax/1e9:.1f} GHz ({bw_mask.sum()} pts)")
+        else:
+            freq_fit   = freq
+            omega_fit  = omega
+            s_fit      = s
+            H_fit_all  = H_all
+            self._fmax_used = None
+
+        # ── Delay extraction using impulse-peak method ───────────────────────
+        self.delay_map = {}
+        H_comp = H_fit_all.copy()
+
+        if extract_delay:
+            for k, (oi, ii) in enumerate(self.selected_pairs):
+                # Use impulse-peak method (more accurate for dispersive channels)
+                tau = estimate_delay_impulse(freq_fit, H_fit_all[k])
+                tau = float(np.clip(tau, 0.0, 100e-9))
+                self.delay_map[(oi, ii)] = tau
+                H_comp[k] = remove_delay(freq_fit, H_fit_all[k], tau)
+
+            taus = list(self.delay_map.values())
+            logger.info(
+                f"Delays (impulse-peak): min={min(taus)*1e9:.2f}ns  "
+                f"max={max(taus)*1e9:.2f}ns"
+            )
+
+        # ── Remove DC point (freq=0) to avoid pole-at-zero singularity ────────
+        dc_mask = freq_fit > 0
+        if not dc_mask.all():
+            freq_vf  = freq_fit[dc_mask]
+            s_vf     = s_fit[dc_mask]
+            H_vf     = H_comp[:, dc_mask]
+            logger.info(f"Skipped {(~dc_mask).sum()} DC point(s) for VF")
+        else:
+            freq_vf = freq_fit
+            s_vf    = s_fit
+            H_vf    = H_comp
+
+        # Store for evaluate()
+        self._freq_vf = freq_vf
+
+        # ── Default weight ───────────────────────────────────────────────────
+        if weight is None:
+            avg_mag = np.mean(np.abs(H_vf), axis=0)
+            weight  = 1.0 / np.sqrt(np.maximum(avg_mag, 1e-15))
+
+        # ── Phase 1: shared-pole optimisation ───────────────────────────────
+        # Pass ALL columns simultaneously to _pole_identification so it
+        # builds the joint QR system (like ex4b.m passing the full column
+        # set at once).  This gives much better shared poles than fitting
+        # only the magnitude envelope.
+        vf = VectorFitting(order=order, max_iterations=1,
+                           relax=True, stable=True, asymp=2)
+        vf.poles = vf._initialize_poles(s_vf)
+        opts = {'relax': True, 'stable': True}
+
+        logger.info(
+            f"Phase 1: optimising {order} shared poles "
+            f"({n_iter_poles} iters, {N_pairs} columns)"
+        )
+        for _ in range(n_iter_poles):
+            vf.poles = vf._pole_identification(s_vf, H_vf, vf.poles, weight, opts)
+
+        self.shared_poles = vf.poles.copy()
+
+        # ── Phase 2: per-column residue identification ───────────────────────
+        self.residues_matrix = np.zeros((N_pairs, order), dtype=complex)
+        self.d_vector = np.zeros(N_pairs)
+        self.e_vector = np.zeros(N_pairs)
+
+        logger.info(f"Phase 2: solving residues for {N_pairs} columns...")
+        vf_res = VectorFitting(order=order, asymp=2)
+        vf_res.poles = self.shared_poles.copy()
+
+        for k, (oi, ii) in enumerate(self.selected_pairs):
+            residues, d, e = vf_res._solve_residues(s_vf, H_vf[k])
+            self.residues_matrix[k] = residues
+            self.d_vector[k] = float(d)
+            self.e_vector[k] = float(e)
+
+        logger.info("Fitting complete")
+        return self
+
+    # --------------------------------------------------------------------------
+    # State-Space and Export
+    # --------------------------------------------------------------------------
+
+    def to_state_space(self) -> Dict:
+        """
+        Build compact MIMO state-space from shared poles.
+
+        Architecture (shared poles, per-column residues)::
+
+            For each selected (out_i, in_j) pair k:
+                x_dot = A * x_j + B * u_j(t)   # one state per active input
+                y_i   = C[k,:] * x_j + D[k] * u_j(t)
+
+        Matrices
+        --------
+        A : (n_states, n_states)  block-diagonal, shared by all outputs
+        B : (n_states, 1)         standard excitation vector, shared
+        C : (N_pairs, n_states)   one row per (out, in) pair
+        D : (N_pairs,)            direct-feed term per pair
+        E : (N_pairs,)            derivative term per pair
+
+        Returns:
+            dict with keys A, B, C, D, E, n_states, n_pairs,
+            port_pairs, delay_map.
+        """
+        if self.shared_poles is None:
+            raise RuntimeError("Must call fit() before to_state_space()")
+
+        poles  = self.shared_poles
+        N_poles = len(poles)
+        N_pairs = len(self.selected_pairs)
+
+        # Build cindex for block type identification
+        vf_tmp = VectorFitting(order=N_poles)
+        vf_tmp.poles = poles
+        cindex = vf_tmp._build_cindex(poles)
+
+        # ── Assemble A (block-diagonal) and B (standard excitation) ─────────
+        A_blocks, B_entries = [], []
+        i = 0
+        while i < N_poles:
+            p = poles[i]
+            if abs(p.imag) > 1e-10:             # complex conjugate pair
+                s_r, o_r = p.real, abs(p.imag)
+                A_blocks.append([[s_r, o_r], [-o_r, s_r]])
+                B_entries.extend([2.0, 0.0])
+                i += 2
+            else:                               # real pole
+                A_blocks.append([[p.real]])
+                B_entries.append(1.0)
+                i += 1
+
+        n_states = sum(len(ab) for ab in A_blocks)
+        A = np.zeros((n_states, n_states))
+        idx = 0
+        for ab in A_blocks:
+            m = len(ab)
+            A[idx:idx + m, idx:idx + m] = ab
+            idx += m
+
+        B = np.array(B_entries, dtype=float).reshape(-1, 1)  # (n_states, 1)
+
+        # ── Assemble C (N_pairs x n_states), D, E ───────────────────────────
+        C = np.zeros((N_pairs, n_states))
+        D = self.d_vector.copy()
+        E = self.e_vector.copy()
+
+        for k in range(N_pairs):
+            residues = self.residues_matrix[k]
+            j_st = 0
+            j_pl = 0
+            while j_pl < N_poles:
+                p = poles[j_pl]
+                r = residues[j_pl]
+                if abs(p.imag) > 1e-10:         # complex pair block
+                    C[k, j_st]     =  r.real
+                    C[k, j_st + 1] = -r.imag
+                    j_st += 2
+                    j_pl += 2
+                else:                           # real pole
+                    C[k, j_st] = r.real
+                    j_st += 1
+                    j_pl += 1
+
+        return {
+            'A': A, 'B': B, 'C': C, 'D': D, 'E': E,
+            'n_states':  n_states,
+            'n_pairs':   N_pairs,
+            'port_pairs': self.selected_pairs,
+            'delay_map':  self.delay_map or {},
+        }
+
+    def export_json(self, filename: str, fs: float = 80e9) -> None:
+        """
+        Export MIMO state-space to JSON for C++ channel simulation.
+
+        JSON layout::
+
+            {
+              "method": "state_space_mimo",
+              "n_inputs": 1,
+              "n_outputs": <N_pairs>,
+              "n_states": <n_states>,
+              "port_pairs": [[out0,in0], [out1,in1], ...],
+              "delay_s": [tau0, tau1, ...],
+              "state_space": {"A": ..., "B": ..., "C": ..., "D": ..., "E": ...},
+              "metadata": {...}
+            }
+
+        Args:
+            filename: Output JSON file path.
+            fs: Simulation sampling frequency (Hz), stored as metadata.
+        """
+        import json
+
+        ss = self.to_state_space()
+        delay_list = [
+            float(ss['delay_map'].get(tuple(p), 0.0))
+            for p in ss['port_pairs']
+        ]
+
+        config = {
+            'version': '3.0-vf-mimo',
+            'method': 'state_space_mimo',
+            'fs': float(fs),
+            'n_inputs':  1,
+            'n_outputs': int(ss['n_pairs']),
+            'n_states':  int(ss['n_states']),
+            'port_pairs': [[int(o), int(i)] for o, i in ss['port_pairs']],
+            'delay_s':    delay_list,
+            'state_space': {
+                'A': ss['A'].tolist(),
+                'B': ss['B'].tolist(),
+                'C': ss['C'].tolist(),
+                'D': ss['D'].tolist(),
+                'E': ss['E'].tolist(),
+            },
+            'metadata': {
+                'n_raw_ports':    self.n_ports_raw,
+                'is_differential': self._is_differential,
+                'diff_pairs':     self.diff_pairs,
+                'freq_min_ghz':   float(self.freq[0]  / 1e9),
+                'freq_max_ghz':   float(self.freq[-1] / 1e9),
+            },
+        }
+
+        with open(filename, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        max_delay = max(delay_list) if delay_list else 0.0
+        print(f"[Export] Saved: {filename}")
+        print(
+            f"  States={ss['n_states']}, Outputs={ss['n_pairs']}, "
+            f"Max delay={max_delay * 1e9:.3f} ns"
+        )
+        logger.info(f"Exported MIMO state-space to {filename}")
+
+    # --------------------------------------------------------------------------
+    # Evaluation and Diagnostics
+    # --------------------------------------------------------------------------
+
+    def evaluate(
+        self, freq_eval: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Evaluate the fitted model at given frequencies.
+
+        Reconstructs H(f) = sum_k r_k/(j*2*pi*f - p_k) + d + e*j*2*pi*f
+        and restores the extracted delay.
+
+        Args:
+            freq_eval: Frequency array (Hz). None → original frequencies.
+
+        Returns:
+            H_fit: (N_pairs, N_freq_eval) complex array.
+        """
+        if self.shared_poles is None:
+            raise RuntimeError("Must call fit() before evaluate()")
+
+        if freq_eval is None:
+            freq_eval = self.freq
+        s_eval  = 1j * 2.0 * np.pi * freq_eval
+        N_freq  = len(freq_eval)
+        N_pairs = len(self.selected_pairs)
+
+        poles  = self.shared_poles
+        vf_tmp = VectorFitting(order=len(poles))
+        vf_tmp.poles = poles
+        cindex = vf_tmp._build_cindex(poles)
+
+        H_fit = np.zeros((N_pairs, N_freq), dtype=complex)
+
+        for k, (oi, ii) in enumerate(self.selected_pairs):
+            residues = self.residues_matrix[k]
+            H_k = np.zeros(N_freq, dtype=complex)
+
+            for m in range(len(poles)):
+                if cindex[m] == 0:           # real pole
+                    H_k += residues[m] / (s_eval - poles[m])
+                elif cindex[m] == 1:         # complex conjugate pair
+                    p, r = poles[m], residues[m]
+                    H_k += r / (s_eval - p) + r.conj() / (s_eval - p.conj())
+
+            H_k += self.d_vector[k]
+            if self.e_vector[k] != 0.0:
+                H_k += self.e_vector[k] * s_eval
+
+            # Restore delay
+            tau = (self.delay_map or {}).get((oi, ii), 0.0)
+            if tau != 0.0:
+                H_k = restore_delay(freq_eval, H_k, tau)
+
+            H_fit[k] = H_k
+
+        return H_fit
+
+    def rms_error_db(self) -> np.ndarray:
+        """
+        Compute RMS error in dB between fitted and original data.
+        
+        Only computes error within the fmax bandwidth used for fitting,
+        since the model is only valid in that range.
+
+        Returns:
+            rms_errors: (N_pairs,) array of per-pair RMS errors in dB.
+        """
+        # Evaluate only in fitting bandwidth
+        if self._fmax_used is not None:
+            freq_eval = self.freq[self.freq <= self._fmax_used]
+        else:
+            freq_eval = self.freq
+        
+        H_fit   = self.evaluate(freq_eval)
+        N_pairs = len(self.selected_pairs)
+        rms_errors = np.zeros(N_pairs)
+        
+        # Mask for original data to match freq_eval
+        if self._fmax_used is not None:
+            mask = self.freq <= self._fmax_used
+        else:
+            mask = np.ones(len(self.freq), dtype=bool)
+
+        for k, (oi, ii) in enumerate(self.selected_pairs):
+            H_orig = self.s_active[mask, oi, ii]
+            # RMS in linear domain (more meaningful)
+            diff = np.abs(H_fit[k]) - np.abs(H_orig)
+            rms_lin = np.sqrt(np.mean(diff**2))
+            ref_rms = np.sqrt(np.mean(np.abs(H_orig)**2))
+            rms_errors[k] = 20 * np.log10(max(rms_lin / ref_rms, 1e-15))
+
+        return rms_errors
+
+    def summary(self) -> None:
+        """
+        Print fitting summary: poles, delays, RMS errors per port pair.
+        """
+        if self.shared_poles is None:
+            print("Model not fitted yet")
+            return
+
+        errors = self.rms_error_db()
+        print(f"\n=== SParamModel Fitting Summary ===")
+        print(f"File       : {self.filename}")
+        print(f"Poles      : {len(self.shared_poles)}")
+        print(f"Pairs      : {len(self.selected_pairs)}")
+        print(f"Diff mode  : {self._is_differential}")
+        print(f"")
+        for k, (oi, ii) in enumerate(self.selected_pairs):
+            tau = (self.delay_map or {}).get((oi, ii), 0.0)
+            print(
+                f"  S({oi + 1},{ii + 1}): RMS={errors[k]:.3f} dB, "
+                f"delay={tau * 1e9:.3f} ns"
+            )
+        print(f"  Mean RMS : {float(np.mean(errors)):.3f} dB")
