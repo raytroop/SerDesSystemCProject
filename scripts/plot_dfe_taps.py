@@ -2,6 +2,15 @@
 """
 DFE Tap Coefficient Analysis Tool
 Plots DFE tap coefficient adaptation curves from SerDes simulation
+
+Usage:
+    python plot_dfe_taps.py [dfe_taps_csv_file] [output_file]
+
+Note:
+    The current nrz_link_tb does not output DFE tap time series.
+    This script requires a CSV file with columns: time_s, tap1, tap2, tap3, tap4, tap5
+    
+    To enable DFE tap logging, modify the testbench to save tap history.
 """
 
 import pandas as pd

@@ -68,11 +68,14 @@ WaveGenerationTdf::WaveGenerationTdf(sc_core::sc_module_name nm,
 
 void WaveGenerationTdf::set_attributes() {
     out.set_rate(1);
-    // Use timestep that aligns with UI: 2 ps for 50 samples/UI at 10Gbps
-    // This ensures integer samples per UI for clean eye diagram
+    // Calculate timestep from UI and samples_per_ui
     double ui = m_ui;
     int samples_per_ui = m_samples_per_ui;
-    double timestep = ui / samples_per_ui;  // Should be 2 ps for 100ps UI / 50 samples
+    double timestep = ui / samples_per_ui;
+    
+    std::cout << "  [WaveGen] set_attributes: ui=" << ui*1e12 << " ps, samples_per_ui=" 
+              << samples_per_ui << ", timestep=" << timestep*1e12 << " ps" << std::endl;
+    
     out.set_timestep(timestep, sc_core::SC_SEC);
 }
 

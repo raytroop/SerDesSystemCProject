@@ -158,7 +158,8 @@ private:
     ChannelExtendedParams m_ext_params;
     
     // Simple model state
-    double m_filter_state;
+    double m_filter_state;      // For SISO or differential P
+    double m_filter_state_n;    // For differential N
     double m_alpha;
     
     // Full model data (from JSON)

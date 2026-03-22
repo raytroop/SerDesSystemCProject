@@ -51,7 +51,8 @@ class EyeAnalyzer:
                  csv_data_path: str = 'eye_analysis_data',
                  n_ui_display: float = 2.0,
                  center_eye: bool = True,
-                 interpolate_factor: int = 0):
+                 interpolate_factor: int = 0,
+                 use_bresenham: bool = True):
         """
         Initialize the EyeAnalyzer.
 
@@ -83,6 +84,9 @@ class EyeAnalyzer:
                                0 = auto (ensure samples_per_ui >= ui_bins)
                                1 = no interpolation
                                >1 = use specified factor (e.g., 8 for 8x upsampling)
+            use_bresenham: Use Bresenham line algorithm for rasterization (default: False)
+                          When True, connects adjacent samples with Bresenham lines
+                          to create continuous eye diagram traces.
 
         Raises:
             ValueError: If parameters are invalid
@@ -117,6 +121,7 @@ class EyeAnalyzer:
         self.n_ui_display = n_ui_display
         self.center_eye = center_eye
         self.interpolate_factor = interpolate_factor
+        self.use_bresenham = use_bresenham
         
         # Calculate phase display range for centered eye
         # For 2 UI display with centered eye: -0.5 UI to 1.5 UI
@@ -302,6 +307,32 @@ class EyeAnalyzer:
         """
         return (time_array % self.ui) / self.ui
 
+    def _bresenham_line(self, x0: int, y0: int, x1: int, y1: int):
+        """
+        Bresenham line algorithm for rasterization.
+        
+        Returns list of (x, y) points on the line from (x0, y0) to (x1, y1).
+        """
+        points = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        
+        while True:
+            points.append((x0, y0))
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+        return points
+
     def _build_eye_diagram(self, phase_array: np.ndarray,
                           amplitude_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -352,14 +383,113 @@ class EyeAnalyzer:
         v_range = [-v_max - v_margin, v_max + v_margin]
         
         # Build histogram with configured phase range
-        hist2d, xedges, yedges = np.histogram2d(
-            phase_array,
-            amplitude_array,
-            bins=[self.ui_bins, self.amp_bins],
-            range=[[self.phase_min, self.phase_max], v_range],
-            density=self.hist2d_normalize
-        )
+        if self.use_bresenham:
+            # Use Bresenham line rasterization for continuous traces
+            hist2d, xedges, yedges = self._build_eye_diagram_bresenham(
+                phase_array, amplitude_array, v_range
+            )
+        else:
+            # Standard histogram2d
+            hist2d, xedges, yedges = np.histogram2d(
+                phase_array,
+                amplitude_array,
+                bins=[self.ui_bins, self.amp_bins],
+                range=[[self.phase_min, self.phase_max], v_range],
+                density=self.hist2d_normalize
+            )
 
+        return hist2d, xedges, yedges
+
+    def _build_eye_diagram_bresenham(self, phase_array: np.ndarray,
+                                     amplitude_array: np.ndarray,
+                                     v_range: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Build 2D histogram using Bresenham line rasterization.
+        
+        This creates continuous eye diagram traces by connecting adjacent samples
+        with Bresenham lines, resulting in smoother eye diagrams especially for
+        ideal square wave signals.
+        """
+        # Create bin edges
+        xedges = np.linspace(self.phase_min, self.phase_max, self.ui_bins + 1)
+        yedges = np.linspace(v_range[0], v_range[1], self.amp_bins + 1)
+        
+        # Initialize histogram
+        hist2d = np.zeros((self.ui_bins, self.amp_bins))
+        
+        # For Bresenham rasterization, we work with original phase [0, 1) 
+        # and map to display range [-0.5, 1.5] for centered eye
+        n_samples = len(phase_array)
+        
+        # Estimate samples per UI from the phase array
+        # Phase array values are in [0, 1), so count how many samples per UI
+        # by finding where phase wraps around
+        phase_diff = np.diff(phase_array)
+        wrap_indices = np.where(phase_diff < -0.5)[0]  # Phase drops significantly
+        
+        if len(wrap_indices) >= 2:
+            samples_per_ui = int(np.median(np.diff(wrap_indices)))
+        else:
+            # Fallback: estimate from total samples and approximate UI count
+            # Each UI has roughly the same number of samples
+            approx_ui_count = max(1, int(phase_array[-1] - phase_array[0]))
+            samples_per_ui = n_samples // max(1, approx_ui_count)
+        
+        samples_per_ui = max(10, samples_per_ui)  # Sanity check
+        
+        # Process each UI separately
+        n_ui = n_samples // samples_per_ui
+        
+        for ui_idx in range(max(1, n_ui - 1)):
+            start = ui_idx * samples_per_ui
+            end = min((ui_idx + 1) * samples_per_ui, n_samples)
+            
+            p_seg = phase_array[start:end]
+            v_seg = amplitude_array[start:end]
+            
+            # Map phase to display range for centered eye
+            if self.center_eye and self.n_ui_display >= 2.0:
+                # Create 3 copies: [-0.5, 0), [0, 1), [1, 1.5)
+                p_display = []
+                v_display = []
+                
+                for p, v in zip(p_seg, v_seg):
+                    # Original [0, 1) -> displayed at [0, 1)
+                    p_display.append(p)
+                    v_display.append(v)
+                    
+                    # [0.5, 1) -> also displayed at [-0.5, 0)
+                    if p >= 0.5:
+                        p_display.append(p - 1.0)
+                        v_display.append(v)
+                    
+                    # [0, 0.5) -> also displayed at [1, 1.5)
+                    if p < 0.5:
+                        p_display.append(p + 1.0)
+                        v_display.append(v)
+                
+                p_seg = np.array(p_display)
+                v_seg = np.array(v_display)
+            
+            # Convert to bin indices
+            p_bins = ((p_seg - self.phase_min) / (self.phase_max - self.phase_min) * (self.ui_bins - 1)).astype(int)
+            v_bins = ((v_seg - v_range[0]) / (v_range[1] - v_range[0]) * (self.amp_bins - 1)).astype(int)
+            
+            # Clip to valid range
+            p_bins = np.clip(p_bins, 0, self.ui_bins - 1)
+            v_bins = np.clip(v_bins, 0, self.amp_bins - 1)
+            
+            # Connect adjacent points with Bresenham lines
+            for i in range(len(p_bins) - 1):
+                x0, y0 = p_bins[i], v_bins[i]
+                x1, y1 = p_bins[i+1], v_bins[i+1]
+                
+                # Only connect nearby points (avoid large jumps between copies)
+                if abs(x1 - x0) <= self.ui_bins // 5 and abs(y1 - y0) <= self.amp_bins // 2:
+                    for px, py in self._bresenham_line(x0, y0, x1, y1):
+                        if 0 <= px < self.ui_bins and 0 <= py < self.amp_bins:
+                            hist2d[px, py] += 1
+        
         return hist2d, xedges, yedges
 
     def _compute_eye_height(self, hist2d: np.ndarray,

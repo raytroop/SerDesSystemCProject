@@ -1,24 +1,51 @@
 #!/usr/bin/env python3
 """
 Generate eye diagram for DFE output
+
+Usage:
+    python plot_dfe_eye.py [dfe_csv_file] [output_dir]
+    
+Examples:
+    python plot_dfe_eye.py                                    # Auto-detect latest *_dfe.csv
+    python plot_dfe_eye.py build/nrz_diff_full_dfe.csv        # Specific file
+    python plot_dfe_eye.py build/nrz_diff_full_dfe.csv myout  # Custom output dir
 """
 import sys
 import os
+import glob
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from eye_analyzer import analyze_eye
+from eye_analyzer import EyeAnalyzer, plot_eye_diagram
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
+def find_latest_dfe_file():
+    """Find the most recent *_dfe.csv file in build directory"""
+    build_dir = os.path.join(os.path.dirname(__file__), '..', 'build')
+    pattern = os.path.join(build_dir, '*_dfe.csv')
+    files = glob.glob(pattern)
+    if not files:
+        return None
+    # Return most recently modified file
+    return max(files, key=os.path.getmtime)
+
 def main():
-    # DFE output file path
-    dfe_file = 'build/serdes_link_basic_dfe.csv'
-    output_dir = 'output_eye'
+    # Parse arguments
+    if len(sys.argv) > 1:
+        dfe_file = sys.argv[1]
+    else:
+        dfe_file = find_latest_dfe_file()
+        if dfe_file:
+            print(f"Auto-detected: {dfe_file}")
+    
+    output_dir = sys.argv[2] if len(sys.argv) > 2 else 'output_eye'
     
     # Check if file exists
-    if not os.path.exists(dfe_file):
-        print(f"Error: {dfe_file} not found!")
-        print("Please run the simulation first: ./tb/serdes_link_tb")
+    if not dfe_file or not os.path.exists(dfe_file):
+        print(f"Error: DFE file not found!")
+        print("Usage: python plot_dfe_eye.py [dfe_csv_file] [output_dir]")
+        print("Please run the simulation first: ./bin/nrz_link_tb")
         return 1
     
     print("="*60)
@@ -30,7 +57,17 @@ def main():
     print("\nLoading waveform data...")
     df = pd.read_csv(dfe_file)
     time_array = df['time_s'].values
-    voltage_array = df['voltage_v'].values
+    
+    # Support both old format (voltage_v) and new format (voltage_diff)
+    if 'voltage_diff' in df.columns:
+        voltage_array = df['voltage_diff'].values
+        print("  Using differential voltage (voltage_diff)")
+    elif 'voltage_v' in df.columns:
+        voltage_array = df['voltage_v'].values
+        print("  Using single-ended voltage (voltage_v)")
+    else:
+        print(f"Error: No voltage column found. Available columns: {list(df.columns)}")
+        return 1
     
     print(f"  Total samples: {len(time_array)}")
     print(f"  Time range: {time_array[0]:.3e} s to {time_array[-1]:.3e} s")
@@ -46,46 +83,71 @@ def main():
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Analyze eye diagram
-    metrics = analyze_eye(
-        waveform_array=np.column_stack((time_array, voltage_array)),
+    # Create analyzer and run analysis
+    analyzer = EyeAnalyzer(
         ui=ui,
-        ui_bins=128,
-        amp_bins=128,
-        measure_length=None,  # Use all data
-        target_ber=1e-12,
+        modulation='nrz',
+        mode='empirical',  # Use empirical mode for waveform-based analysis
         sampling='phase-lock',
-        jitter_method='dual-dirac',
-        output_image_format='png',
-        output_image_dpi=300
+        interpolate_factor=16,  # 16x interpolation for smooth transitions
+        center_eye=True,  # Center the eye pattern to show complete transitions
+        n_ui_display=2.0,  # Display 2 UI to show both left and right transitions
+        use_bresenham=True,  # Use Bresenham rasterization for continuous eye traces
     )
     
-    # Save results
-    from eye_analyzer import EyeAnalyzer
-    analyzer = EyeAnalyzer(ui=ui, ui_bins=128, amp_bins=128)
-    analyzer._dat_path = dfe_file
-    analyzer.analyze(time_array, voltage_array, target_ber=1e-12)
-    analyzer.save_results(metrics, output_dir=output_dir)
+    # Analyze eye diagram (empirical mode requires tuple input)
+    metrics = analyzer.analyze(
+        (time_array, voltage_array),
+        target_ber=1e-12
+    )
+    
+    # Plot and save eye diagram
+    output_file = os.path.join(output_dir, 'eye_diagram.png')
+    
+    # Get eye diagram data from metrics
+    if 'eye_matrix' in metrics:
+        eye_data = metrics['eye_matrix']
+        time_bins = metrics.get('xedges', np.linspace(-1, 1, eye_data.shape[1] + 1))
+        voltage_bins = metrics.get('yedges', np.linspace(-0.3, 0.3, eye_data.shape[0] + 1))
+        eye_metrics = metrics.get('eye_metrics', {})
+        
+        plot_eye_diagram(
+            eye_data,
+            modulation='nrz',
+            time_bins=time_bins,
+            voltage_bins=voltage_bins,
+            eye_metrics=eye_metrics,
+            title='DFE Output Eye Diagram (10 Gbps NRZ)',
+            smooth_sigma=0.0  # No smoothing for Bresenham rasterized eye to preserve sharp transitions
+        )
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"\nEye diagram saved to: {output_file}")
+    else:
+        print("Warning: Could not extract eye diagram data")
     
     print("\n" + "="*60)
     print("Analysis Complete!")
     print("="*60)
+    
+    # Extract metrics from nested structure
+    eye_m = metrics.get('eye_metrics', {})
+    jitter_m = metrics.get('jitter', {})
+    
     print(f"\nEye Metrics:")
-    print(f"  Eye Height:     {metrics['eye_height']*1000:.2f} mV")
-    print(f"  Eye Width:      {metrics['eye_width']:.3f} UI ({metrics['eye_width']*ui*1e12:.2f} ps)")
-    print(f"  Eye Area:       {metrics['eye_area']*1000:.2f} mV*UI")
+    print(f"  Eye Height:     {eye_m.get('eye_height', 0)*1000:.2f} mV")
+    print(f"  Eye Width:      {eye_m.get('eye_width', 0):.3f} UI ({eye_m.get('eye_width', 0)*ui*1e12:.2f} ps)")
+    print(f"  Eye Area:       {eye_m.get('eye_area', 0)*1000:.2f} mV*UI")
     print(f"\nJitter Metrics:")
-    print(f"  RJ (sigma):     {metrics['rj_sigma']*1e12:.2f} ps")
-    print(f"  DJ (pp):        {metrics['dj_pp']*1e12:.2f} ps")
-    print(f"  TJ @ 1e-12:     {metrics['tj_at_ber']*1e12:.2f} ps")
+    print(f"  RJ (sigma):     {jitter_m.get('rj_sigma', 0)*1e12:.2f} ps")
+    print(f"  DJ (pp):        {jitter_m.get('dj_pp', 0)*1e12:.2f} ps")
+    print(f"  TJ @ 1e-12:     {jitter_m.get('tj_at_ber', 0)*1e12:.2f} ps")
     print(f"\nSignal Quality:")
-    print(f"  Signal Mean:    {metrics['signal_mean']*1000:.2f} mV")
-    print(f"  Signal RMS:     {metrics['signal_rms']*1000:.2f} mV")
-    print(f"  Peak-to-peak:   {metrics['signal_peak_to_peak']*1000:.2f} mV")
+    print(f"  Voltage Range:  {voltage_array.min()*1000:.2f} mV to {voltage_array.max()*1000:.2f} mV")
+    print(f"  Peak-to-peak:   {(voltage_array.max() - voltage_array.min())*1000:.2f} mV")
     
     print(f"\nOutput files saved to: {output_dir}/")
     print(f"  - eye_diagram.png")
-    print(f"  - eye_metrics.json")
     
     return 0
 

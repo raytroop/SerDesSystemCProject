@@ -23,6 +23,7 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm, const ChannelPara
     , out("out")
     , m_params(params)
     , m_filter_state(0.0)
+    , m_filter_state_n(0.0)
     , m_alpha(0.3)
     , m_config_loaded(false)
     , m_initialized(false)
@@ -43,6 +44,7 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm,
     , m_params(params)
     , m_ext_params(ext_params)
     , m_filter_state(0.0)
+    , m_filter_state_n(0.0)
     , m_alpha(0.3)
     , m_config_loaded(false)
     , m_initialized(false)
@@ -58,9 +60,20 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm,
                   << static_cast<int>(m_ext_params.method) << std::endl;
     }
     
-    // Initialize ports based on config (or default SISO)
-    int n_in = m_port_config.active_inputs.empty() ? 1 : m_port_config.active_inputs.size();
-    int n_out = m_port_config.active_outputs.empty() ? 1 : m_port_config.active_outputs.size();
+    // Initialize ports based on config or params.ports
+    int n_in = 1;
+    int n_out = 1;
+    
+    if (!m_port_config.active_inputs.empty()) {
+        // Use port config from JSON
+        n_in = m_port_config.active_inputs.size();
+        n_out = m_port_config.active_outputs.size();
+    } else if (m_ext_params.method == ChannelMethod::SIMPLE && m_params.ports >= 4) {
+        // SIMPLE mode with differential: 2 inputs, 2 outputs
+        n_in = 2;
+        n_out = 2;
+    }
+    
     in.init(n_in);
     out.init(n_out);
     
@@ -108,9 +121,25 @@ void ChannelSParamTdf::initialize() {
 void ChannelSParamTdf::processing() {
     switch (m_ext_params.method) {
         case ChannelMethod::SIMPLE: {
-            double x_in = in[0].read();
-            double y_out = process_simple(x_in);
-            out[0].write(y_out);
+            // Support both SISO and differential (2-port) modes
+            double attenuation_linear = std::pow(10.0, -m_params.attenuation_db / 20.0);
+            
+            if (in.size() == 1) {
+                // SISO mode
+                double x_in = in[0].read();
+                m_filter_state = m_alpha * x_in + (1.0 - m_alpha) * m_filter_state;
+                out[0].write(attenuation_linear * m_filter_state);
+            } else {
+                // Differential mode: process P and N with independent states
+                double x_p = in[0].read();
+                double x_n = in[1].read();
+                
+                m_filter_state = m_alpha * x_p + (1.0 - m_alpha) * m_filter_state;
+                m_filter_state_n = m_alpha * x_n + (1.0 - m_alpha) * m_filter_state_n;
+                
+                out[0].write(attenuation_linear * m_filter_state);
+                out[1].write(attenuation_linear * m_filter_state_n);
+            }
             break;
         }
         case ChannelMethod::STATE_SPACE: {
@@ -155,13 +184,39 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
         if (method_lower == "state_space" || method_lower == "state-space" ||
                    method_lower == "state_space_mimo") {
             m_ext_params.method = ChannelMethod::STATE_SPACE;
+            
+            // Parse port configuration NOW (needed for port initialization in constructor)
+            if (config.contains("full_model")) {
+                const auto& fm = config["full_model"];
+                int n_inputs = fm.value("n_diff_ports", 1);
+                int n_outputs = fm.value("n_outputs", 1);
+                
+                // Parse port_config or use defaults
+                if (config.contains("port_config")) {
+                    const auto& pc = config["port_config"];
+                    for (const auto& inp : pc["active_inputs"]) {
+                        m_port_config.active_inputs.push_back(inp.get<int>());
+                    }
+                    for (const auto& outp : pc["active_outputs"]) {
+                        m_port_config.active_outputs.push_back(outp.get<int>());
+                    }
+                } else {
+                    // Default: use all inputs and outputs
+                    for (int i = 0; i < n_inputs; ++i) {
+                        m_port_config.active_inputs.push_back(i);
+                    }
+                    for (int i = 0; i < n_outputs; ++i) {
+                        m_port_config.active_outputs.push_back(i);
+                    }
+                }
+                std::cout << "[DEBUG] ChannelSParamTdf: Port config parsed: "
+                          << m_port_config.active_inputs.size() << " inputs, "
+                          << m_port_config.active_outputs.size() << " outputs" << std::endl;
+            }
         } else {
             // Default to SIMPLE for any other method (including legacy "rational", "impulse")
             m_ext_params.method = ChannelMethod::SIMPLE;
         }
-        
-        // Note: "filters" and "impulse_responses" parsing removed
-        // Only "state_space" method is supported for S-parameter modeling
         
         std::cout << "[DEBUG] ChannelSParamTdf: Configuration loaded successfully (method=" 
                   << static_cast<int>(m_ext_params.method) << ")" << std::endl;
@@ -188,7 +243,9 @@ void ChannelSParamTdf::init_simple_model() {
     // Using bilinear transform approximation
     m_alpha = omega_c * dt / (1.0 + omega_c * dt);
     
+    // Initialize filter states (for SISO and differential modes)
     m_filter_state = 0.0;
+    m_filter_state_n = 0.0;
 }
 
 void ChannelSParamTdf::init_state_space_model() {
@@ -303,17 +360,9 @@ void ChannelSParamTdf::init_state_space_model() {
                 }
             }
             
-            // Parse port_config
-            if (config.contains("port_config")) {
-                const auto& pc = config["port_config"];
-                for (const auto& inp : pc["active_inputs"]) {
-                    m_port_config.active_inputs.push_back(inp.get<int>());
-                }
-                for (const auto& outp : pc["active_outputs"]) {
-                    m_port_config.active_outputs.push_back(outp.get<int>());
-                }
-            } else {
-                // Default: use all inputs and outputs
+            // Port config already parsed in parse_json_config(), just verify
+            if (m_port_config.active_inputs.empty()) {
+                // Fallback: use all inputs and outputs
                 for (int i = 0; i < n_inputs; ++i) {
                     m_port_config.active_inputs.push_back(i);
                 }

@@ -1427,25 +1427,17 @@ class SParamModel:
 
     def to_state_space(self) -> Dict:
         """
-        Build compact MIMO state-space from shared poles.
+        Build MIMO state-space from shared poles.
 
-        Architecture (shared poles, per-column residues)::
-
-            For each selected (out_i, in_j) pair k:
-                x_dot = A * x_j + B * u_j(t)   # one state per active input
-                y_i   = C[k,:] * x_j + D[k] * u_j(t)
-
-        Matrices
-        --------
-        A : (n_states, n_states)  block-diagonal, shared by all outputs
-        B : (n_states, 1)         standard excitation vector, shared
-        C : (N_pairs, n_states)   one row per (out, in) pair
-        D : (N_pairs,)            direct-feed term per pair
-        E : (N_pairs,)            derivative term per pair
+        For a true MIMO system with N_inputs and N_outputs:
+        - A : (n_states, n_states)  block-diagonal, shared
+        - B : (n_states, N_inputs)  one column per unique input
+        - C : (N_outputs, n_states) one row per unique output
+        - D : (N_outputs, N_inputs) feedthrough matrix
+        - E : (N_outputs, N_inputs) derivative matrix
 
         Returns:
-            dict with keys A, B, C, D, E, n_states, n_pairs,
-            port_pairs, delay_map.
+            dict with MIMO state-space matrices.
         """
         if self.shared_poles is None:
             raise RuntimeError("Must call fit() before to_state_space()")
@@ -1454,12 +1446,22 @@ class SParamModel:
         N_poles = len(poles)
         N_pairs = len(self.selected_pairs)
 
+        # Determine unique inputs and outputs from selected_pairs
+        unique_inputs = sorted(set(ii for oi, ii in self.selected_pairs))
+        unique_outputs = sorted(set(oi for oi, ii in self.selected_pairs))
+        N_inputs = len(unique_inputs)
+        N_outputs = len(unique_outputs)
+        
+        # Map from port index to matrix index
+        input_map = {port: idx for idx, port in enumerate(unique_inputs)}
+        output_map = {port: idx for idx, port in enumerate(unique_outputs)}
+
         # Build cindex for block type identification
         vf_tmp = VectorFitting(order=N_poles)
         vf_tmp.poles = poles
         cindex = vf_tmp._build_cindex(poles)
 
-        # ── Assemble A (block-diagonal) and B (standard excitation) ─────────
+        # ── Assemble A (block-diagonal) and B_col (standard excitation) ─────
         A_blocks, B_entries = [], []
         i = 0
         while i < N_poles:
@@ -1482,36 +1484,52 @@ class SParamModel:
             A[idx:idx + m, idx:idx + m] = ab
             idx += m
 
-        B = np.array(B_entries, dtype=float).reshape(-1, 1)  # (n_states, 1)
+        B_col = np.array(B_entries, dtype=float)  # (n_states,)
+        
+        # ── Build MIMO B matrix (n_states, N_inputs) ────────────────────────
+        # Each input gets its own copy of the standard excitation vector
+        B = np.zeros((n_states, N_inputs))
+        for j in range(N_inputs):
+            B[:, j] = B_col
 
-        # ── Assemble C (N_pairs x n_states), D, E ───────────────────────────
-        C = np.zeros((N_pairs, n_states))
-        D = self.d_vector.copy()
-        E = self.e_vector.copy()
+        # ── Build MIMO C matrix (N_outputs, n_states) ───────────────────────
+        # And MIMO D, E matrices (N_outputs, N_inputs)
+        C = np.zeros((N_outputs, n_states))
+        D = np.zeros((N_outputs, N_inputs))
+        E = np.zeros((N_outputs, N_inputs))
 
-        for k in range(N_pairs):
+        for k, (oi, ii) in enumerate(self.selected_pairs):
+            out_idx = output_map[oi]
+            in_idx = input_map[ii]
+            
             residues = self.residues_matrix[k]
+            
+            # Fill C row for this output (accumulate if multiple inputs to same output)
             j_st = 0
             j_pl = 0
             while j_pl < N_poles:
                 p = poles[j_pl]
                 r = residues[j_pl]
                 if abs(p.imag) > 1e-10:         # complex pair block
-                    # When p.imag < 0, A uses abs(p.imag), so we need to
-                    # flip the sign of the imaginary part of C to compensate
-                    C[k, j_st]     = r.real
-                    C[k, j_st + 1] = r.imag if p.imag > 0 else -r.imag
+                    C[out_idx, j_st]     += r.real
+                    C[out_idx, j_st + 1] += r.imag if p.imag > 0 else -r.imag
                     j_st += 2
                     j_pl += 2
                 else:                           # real pole
-                    C[k, j_st] = r.real
+                    C[out_idx, j_st] += r.real
                     j_st += 1
                     j_pl += 1
+            
+            # Fill D and E for this (output, input) pair
+            D[out_idx, in_idx] = self.d_vector[k]
+            E[out_idx, in_idx] = self.e_vector[k]
 
         return {
             'A': A, 'B': B, 'C': C, 'D': D, 'E': E,
             'n_states':  n_states,
             'n_pairs':   N_pairs,
+            'n_inputs':  N_inputs,
+            'n_outputs': N_outputs,
             'port_pairs': self.selected_pairs,
             'delay_map':  self.delay_map or {},
         }

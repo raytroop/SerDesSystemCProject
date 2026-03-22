@@ -96,3 +96,10 @@ endif()
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/channel/channel_sparam_tb.cpp)
     add_serdes_testbench(channel_sparam_tb channel/channel_sparam_tb.cpp)
 endif()
+
+# ============================================================================
+# NRZ Link testbench (10Gbps, differential direct connection)
+# ============================================================================
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/top/nrz_link_tb.cpp)
+    add_serdes_testbench(nrz_link_tb top/nrz_link_tb.cpp)
+endif()
