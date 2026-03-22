@@ -210,12 +210,6 @@ SC_MODULE(ChannelSparamTestbench) {
                 case ChannelMethod::STATE_SPACE:
                     m_output_prefix = "channel_state_space";
                     break;
-                case ChannelMethod::IMPULSE:
-                    m_output_prefix = "channel_impulse";
-                    break;
-                case ChannelMethod::RATIONAL:
-                    m_output_prefix = "channel_rational";
-                    break;
                 default:
                     m_output_prefix = "channel_sparam_config";
                     break;
@@ -237,8 +231,6 @@ SC_MODULE(ChannelSparamTestbench) {
     const char* get_method_string(ChannelMethod method) {
         switch (method) {
             case ChannelMethod::SIMPLE: return "SIMPLE";
-            case ChannelMethod::RATIONAL: return "RATIONAL";
-            case ChannelMethod::IMPULSE: return "IMPULSE";
             case ChannelMethod::STATE_SPACE: return "STATE_SPACE";
             default: return "UNKNOWN";
         }
@@ -267,7 +259,6 @@ SC_MODULE(ChannelSparamTestbench) {
             // Detect method from config file content
             m_ext_params.method = detect_method_from_config(m_config_file);
             m_ext_params.config_file = m_config_file;
-            m_ext_params.fs = m_sample_rate;
         } else {
             m_ext_params.method = ChannelMethod::SIMPLE;    // Simple low-pass model
         }
@@ -281,15 +272,15 @@ SC_MODULE(ChannelSparamTestbench) {
         std::ifstream file(config_file);
         if (!file.is_open()) {
             std::cerr << "Warning: Cannot open config file " << config_file 
-                      << ", using RATIONAL method" << std::endl;
-            return ChannelMethod::RATIONAL;
+                      << ", using SIMPLE method" << std::endl;
+            return ChannelMethod::SIMPLE;
         }
         
         std::string content((std::istreambuf_iterator<char>(file)),
                             std::istreambuf_iterator<char>());
         file.close();
         
-        // Check for method field
+        // Check for method field - only STATE_SPACE is supported
         if (content.find("\"method\": \"STATE_SPACE\"") != std::string::npos ||
             content.find("\"method\":\"STATE_SPACE\"") != std::string::npos ||
             content.find("\"method\": \"state_space\"") != std::string::npos ||
@@ -297,21 +288,11 @@ SC_MODULE(ChannelSparamTestbench) {
             content.find("\"state_space\"") != std::string::npos) {
             std::cout << "  Detected STATE_SPACE method from config" << std::endl;
             return ChannelMethod::STATE_SPACE;
-        } else if (content.find("\"method\": \"IMPULSE\"") != std::string::npos ||
-                   content.find("\"method\":\"IMPULSE\"") != std::string::npos) {
-            std::cout << "  Detected IMPULSE method from config" << std::endl;
-            return ChannelMethod::IMPULSE;
-        } else if (content.find("\"impulse_response\"") != std::string::npos) {
-            std::cout << "  Detected IMPULSE method from impulse_response field" << std::endl;
-            return ChannelMethod::IMPULSE;
-        } else if (content.find("\"rational\"") != std::string::npos ||
-                   content.find("\"numerator\"") != std::string::npos) {
-            std::cout << "  Detected RATIONAL method from rational/numerator field" << std::endl;
-            return ChannelMethod::RATIONAL;
         }
         
-        std::cout << "  Using default RATIONAL method" << std::endl;
-        return ChannelMethod::RATIONAL;
+        // Legacy methods (IMPULSE, RATIONAL) default to SIMPLE
+        std::cout << "  Using default SIMPLE method (legacy config detected)" << std::endl;
+        return ChannelMethod::SIMPLE;
     }
     
     // ========================================================================
@@ -324,14 +305,13 @@ SC_MODULE(ChannelSparamTestbench) {
         // Create WaveGen
         wave_gen = new WaveGenerationTdf("wave_gen", m_wave_params, m_sample_rate, m_ui, 12345);
         
-        // Create Channel with appropriate constructor
+        // Create Channel with extended constructor (always use ext_params for proper fs setting)
         if (m_use_sparam_config) {
             std::cout << "  Using S-parameter configuration: " << m_config_file << std::endl;
-            channel = new ChannelSParamTdf("channel", m_channel_params, m_ext_params);
         } else {
             std::cout << "  Using simple channel model" << std::endl;
-            channel = new ChannelSParamTdf("channel", m_channel_params);
         }
+        channel = new ChannelSParamTdf("channel", m_channel_params, m_ext_params);
         
         // Create recorder
         recorder = new ChannelSignalRecorder("recorder", m_sample_rate);
