@@ -695,40 +695,7 @@ class VectorFitting:
             'n_outputs': 1
         }
     
-    def export_to_json(self, filename: str, fs: float = 80e9) -> None:
-        """
-        Export state-space representation to JSON file for C++ Channel.
-        
-        Args:
-            filename: Output JSON file path
-            fs: Sampling frequency in Hz
-        """
-        import json
-        
-        state_space = self.to_state_space()
-        
-        config = {
-            'version': '2.1-vf',
-            'method': 'state_space',
-            'fs': float(fs),
-            'state_space': {
-                'A': state_space['A'],
-                'B': state_space['B'],
-                'C': state_space['C'],
-                'D': state_space['D'],
-                'E': state_space['E']
-            },
-            'metadata': {
-                'order': self.order,
-                'n_states': state_space['n_states'],
-                'n_outputs': state_space['n_outputs']
-            }
-        }
-        
-        with open(filename, 'w') as f:
-            json.dump(config, f, indent=2)
-        
-        logger.info(f"Exported state-space to: {filename}")
+
 
 
 def fit_vector_fitting(s: np.ndarray, H: np.ndarray, order: int = 8,
@@ -1530,8 +1497,10 @@ class SParamModel:
                 p = poles[j_pl]
                 r = residues[j_pl]
                 if abs(p.imag) > 1e-10:         # complex pair block
-                    C[k, j_st]     =  r.real
-                    C[k, j_st + 1] = -r.imag
+                    # When p.imag < 0, A uses abs(p.imag), so we need to
+                    # flip the sign of the imaginary part of C to compensate
+                    C[k, j_st]     = r.real
+                    C[k, j_st + 1] = r.imag if p.imag > 0 else -r.imag
                     j_st += 2
                     j_pl += 2
                 else:                           # real pole
@@ -1547,57 +1516,86 @@ class SParamModel:
             'delay_map':  self.delay_map or {},
         }
 
-    def export_json(self, filename: str, fs: float = 80e9) -> None:
+    def export_json(self, filename: str, fs: float = 80e9,
+                     active_inputs: Optional[List[int]] = None,
+                     active_outputs: Optional[List[int]] = None) -> None:
         """
         Export MIMO state-space to JSON for C++ channel simulation.
+
+        The JSON contains the full State Space model plus port selection config.
+        C++ side can use the full model and select which inputs/outputs to use.
 
         JSON layout::
 
             {
-              "method": "state_space_mimo",
-              "n_inputs": 1,
-              "n_outputs": <N_pairs>,
-              "n_states": <n_states>,
-              "port_pairs": [[out0,in0], [out1,in1], ...],
-              "delay_s": [tau0, tau1, ...],
-              "state_space": {"A": ..., "B": ..., "C": ..., "D": ..., "E": ...},
+              "version": "3.0",
+              "method": "state_space",
+              "fs": <sampling_freq>,
+              "full_model": {
+                "n_diff_ports": <N>,
+                "n_outputs": <N_pairs>,
+                "n_states": <n_states>,
+                "port_pairs": [[out,in], ...],
+                "delay_s": [tau0, ...],
+                "state_space": {"A", "B", "C", "D", "E"}
+              },
+              "port_config": {
+                "active_inputs": [0, ...],
+                "active_outputs": [0, ...]
+              },
               "metadata": {...}
             }
 
         Args:
             filename: Output JSON file path.
-            fs: Simulation sampling frequency (Hz), stored as metadata.
+            fs: Simulation sampling frequency (Hz).
+            active_inputs: Which input ports to use (0-based). None = all.
+            active_outputs: Which outputs to use (0-based). None = all.
         """
         import json
 
         ss = self.to_state_space()
+        n_diff = self.s_active.shape[1] if self.s_active is not None else 1
+
+        # Default: use all inputs and outputs
+        if active_inputs is None:
+            active_inputs = list(range(n_diff))
+        if active_outputs is None:
+            active_outputs = list(range(ss['n_pairs']))
+
         delay_list = [
             float(ss['delay_map'].get(tuple(p), 0.0))
             for p in ss['port_pairs']
         ]
 
         config = {
-            'version': '3.0-vf-mimo',
-            'method': 'state_space_mimo',
+            'version': '3.0',
+            'method': 'state_space',
             'fs': float(fs),
-            'n_inputs':  1,
-            'n_outputs': int(ss['n_pairs']),
-            'n_states':  int(ss['n_states']),
-            'port_pairs': [[int(o), int(i)] for o, i in ss['port_pairs']],
-            'delay_s':    delay_list,
-            'state_space': {
-                'A': ss['A'].tolist(),
-                'B': ss['B'].tolist(),
-                'C': ss['C'].tolist(),
-                'D': ss['D'].tolist(),
-                'E': ss['E'].tolist(),
+            'full_model': {
+                'n_diff_ports': n_diff,
+                'n_outputs': int(ss['n_pairs']),
+                'n_states': int(ss['n_states']),
+                'port_pairs': [[int(o), int(i)] for o, i in ss['port_pairs']],
+                'delay_s': delay_list,
+                'state_space': {
+                    'A': ss['A'].tolist(),
+                    'B': ss['B'].tolist(),
+                    'C': ss['C'].tolist(),
+                    'D': ss['D'].tolist(),
+                    'E': ss['E'].tolist(),
+                },
+            },
+            'port_config': {
+                'active_inputs': active_inputs,
+                'active_outputs': active_outputs,
             },
             'metadata': {
-                'n_raw_ports':    self.n_ports_raw,
+                'n_raw_ports': self.n_ports_raw,
                 'is_differential': self._is_differential,
-                'diff_pairs':     self.diff_pairs,
-                'freq_min_ghz':   float(self.freq[0]  / 1e9),
-                'freq_max_ghz':   float(self.freq[-1] / 1e9),
+                'diff_pairs': self.diff_pairs,
+                'freq_min_ghz': float(self.freq[0] / 1e9) if self.freq is not None else 0.0,
+                'freq_max_ghz': float(self.freq[-1] / 1e9) if self.freq is not None else 0.0,
             },
         }
 
@@ -1608,6 +1606,7 @@ class SParamModel:
         print(f"[Export] Saved: {filename}")
         print(
             f"  States={ss['n_states']}, Outputs={ss['n_pairs']}, "
+            f"Active inputs={len(active_inputs)}, Active outputs={len(active_outputs)}, "
             f"Max delay={max_delay * 1e9:.3f} ns"
         )
         logger.info(f"Exported MIMO state-space to {filename}")

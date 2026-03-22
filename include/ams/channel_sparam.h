@@ -8,35 +8,45 @@
 #include <memory>
 #include <deque>
 /**
- * State-space representation for channel modeling
+ * State-space representation for channel modeling (MIMO support)
  * dx/dt = A*x + B*u
  * y = C*x + D*u + E*du/dt (optional derivative term)
+ *
+ * For MIMO:
+ * - B: (n_states x n_inputs)
+ * - C: (n_outputs x n_states)
+ * - D: (n_outputs x n_inputs)
+ * - E: (n_outputs x n_inputs)
  */
 struct StateSpaceData {
     sca_util::sca_matrix<double> A;  // State matrix (n x n)
-    sca_util::sca_matrix<double> B;  // Input matrix (n x 1)
-    sca_util::sca_matrix<double> C;  // Output matrix (n_c x n)
-    sca_util::sca_matrix<double> D;  // Direct matrix (n_c x 1)
-    sca_util::sca_matrix<double> E;  // Differential matrix (n_c x 1), optional
+    sca_util::sca_matrix<double> B;  // Input matrix (n x n_inputs)
+    sca_util::sca_matrix<double> C;  // Output matrix (n_outputs x n)
+    sca_util::sca_matrix<double> D;  // Direct matrix (n_outputs x n_inputs)
+    sca_util::sca_matrix<double> E;  // Differential matrix (n_outputs x n_inputs)
     int n_states{0};
-    int n_outputs{0};
+    int n_inputs{1};   // Number of input ports
+    int n_outputs{1};  // Number of output ports
 };
 
 /**
- * Pole-residue filter data for channel modeling
- * Represents transfer function as sum of pole-residue pairs:
- *   H(s) = constant + proportional*s + sum( residue_i / (s - pole_i) )
+ * Port configuration for MIMO channel
  */
-struct PoleResidueFilterData {
-    std::vector<double> poles_real;
-    std::vector<double> poles_imag;
-    std::vector<double> residues_real;
-    std::vector<double> residues_imag;
-    double constant = 0.0;
-    double proportional = 0.0;
-    int order = 0;
-    double dc_gain = 1.0;
-    double mse = 0.0;
+struct PortConfig {
+    std::vector<int> active_inputs;   // Which input ports to use (0-based)
+    std::vector<int> active_outputs;  // Which outputs to use (0-based)
+};
+
+/**
+ * Full model data from JSON (complete S-parameter matrix)
+ */
+struct FullModelData {
+    int n_diff_ports{0};              // Number of differential ports
+    int n_outputs{0};                 // Total outputs (= n_diff_ports^2)
+    int n_states{0};                  // State vector dimension
+    std::vector<std::pair<int,int>> port_pairs;  // Each output's (out,in) mapping
+    std::vector<double> delays;       // Delay per output
+    StateSpaceData state_space;       // Full A, B, C, D, E matrices
 };
 
 namespace serdes {
@@ -48,8 +58,7 @@ enum class ChannelMethod {
     SIMPLE,        // Simple low-pass filter (default, v0.4 compatible)
     RATIONAL,      // Rational function fitting (sca_ltf_nd)
     IMPULSE,       // Impulse response convolution
-    POLE_RESIDUE,  // Pole-residue fitting with biquad chain
-    STATE_SPACE    // State-space representation (sca_ss)
+    STATE_SPACE    // State-space representation (sca_ss) - unified VF modeling entry
 };
 
 /**
@@ -117,12 +126,12 @@ struct ImpulseResponseData {
  */
 class ChannelSParamTdf : public sca_tdf::sca_module {
 public:
-    // TDF ports
-    sca_tdf::sca_in<double> in;
-    sca_tdf::sca_out<double> out;
+    // TDF ports (dynamic, using sc_vector for MIMO support)
+    sc_core::sc_vector<sca_tdf::sca_in<double>> in;
+    sc_core::sc_vector<sca_tdf::sca_out<double>> out;
     
     /**
-     * Constructor with basic parameters (v0.4 compatible)
+     * Constructor with basic parameters (v0.4 compatible, SISO mode)
      * @param nm Module name
      * @param params Basic channel parameters
      */
@@ -166,37 +175,14 @@ public:
     double get_dc_gain() const;
     
     /**
-     * Get frequency response of the channel model (POLE_RESIDUE method)
-     * Computes H(s) = constant + proportional*s + sum(residue_i / (s - pole_i))
-     * @param frequencies Input frequency array (Hz)
-     * @param mag_db Output magnitude in dB
-     * @param phase_deg Output phase in degrees
+     * Get number of active inputs
      */
-    void get_frequency_response(
-        const std::vector<double>& frequencies,
-        std::vector<double>& mag_db,
-        std::vector<double>& phase_deg) const;
+    int get_n_active_inputs() const { return m_port_config.active_inputs.size(); }
     
     /**
-     * Get pole-residue data for external analysis
-     * @return Reference to pole-residue filter data structure
+     * Get number of active outputs
      */
-    const PoleResidueFilterData& get_pole_residue_data() const { 
-        return m_pole_residue_data; 
-    }
-    
-    /**
-     * Initialize pole-residue model
-     * Converts pole-residue pairs to cascaded biquad sections
-     */
-    void init_pole_residue_model();
-    
-    /**
-     * Process input through pole-residue filter
-     * @param x Input sample
-     * @return Filtered output
-     */
-    double process_pole_residue(double x);
+    int get_n_active_outputs() const { return m_port_config.active_outputs.size(); }
     
     /**
      * Initialize state-space model
@@ -205,11 +191,9 @@ public:
     void init_state_space_model();
     
     /**
-     * Process input through state-space filter
-     * @param x Input sample
-     * @return Filtered output
+     * Process MIMO state-space (called from processing())
      */
-    double process_state_space(double x);
+    void process_state_space_mimo();
 
 private:
     // Parameters
@@ -241,28 +225,18 @@ private:
     std::deque<double> m_output_queue;
     int m_block_idx;
     
-    // State-space method
-    StateSpaceData m_state_space;
+    // Full model data (from JSON)
+    FullModelData m_full_model;
+    
+    // Port configuration (which inputs/outputs to use)
+    PortConfig m_port_config;
+    
+    // Active state-space matrices (extracted from full model)
+    StateSpaceData m_active_ss;
+    
+    // State-space filter and state
     sca_tdf::sca_ss m_ss_filter;
-    sca_util::sca_vector<double> m_ss_state;  // State vector for sca_ss
-    
-    // Pole-residue filter state
-    PoleResidueFilterData m_pole_residue_data;
-    
-    // Pole-residue filter - state space matrices
-    // Continuous-time (for reference)
-    std::vector<std::vector<double>> m_pr_ss_A_flat;  
-    std::vector<std::vector<double>> m_pr_ss_B_flat;
-    std::vector<std::vector<double>> m_pr_ss_C_flat;
-    std::vector<std::vector<double>> m_pr_ss_D_flat;
-    // Discrete-time (bilinear/Tustin transform)
-    std::vector<std::vector<double>> m_pr_ss_Ad;      // Discrete A matrices
-    std::vector<std::vector<double>> m_pr_ss_Bd;      // Discrete B vectors
-    std::vector<std::vector<double>> m_pr_ss_Cd;      // Discrete C vectors
-    std::vector<double> m_pr_ss_Dd;                   // Discrete D scalars
-    // State and history
-    std::vector<std::vector<double>> m_pr_ss_states;  // State vectors
-    double m_pr_input_prev;  // For proportional term derivative
+    sca_util::sca_vector<double> m_ss_state;
     
     // Initialization flags
     bool m_config_loaded;
@@ -272,7 +246,9 @@ private:
     void init_simple_model();
     void init_rational_model();
     void init_impulse_model();
-    // init_state_space_model_internal() removed - merged into init_state_space_model()
+    
+    // Extract active matrices from full model based on port_config
+    void extract_active_matrices();
     
     // Polynomial multiplication helper for pole-residue
     std::vector<double> poly_multiply(const std::vector<double>& p1, const std::vector<double>& p2);
@@ -281,13 +257,13 @@ private:
     double process_rational(double x);
     double process_impulse(double x);
     double process_impulse_fft(double x);
-    double process_pole_residue_ss(double x);  // State space implementation
     
     // JSON parsing helpers
     bool parse_json_config(const std::string& json_content);
     bool parse_rational_filter(const std::string& name, const void* json_obj);
     bool parse_impulse_response(const std::string& name, const void* json_obj);
-    bool parse_pole_residue_filter(const std::string& name, const void* json_obj);
+    bool parse_full_model(const std::string& name, const void* json_obj);
+    bool parse_port_config(const std::string& name, const void* json_obj);
     
     // FFT helpers
     void init_fft_convolution();

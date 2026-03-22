@@ -1,8 +1,62 @@
 cmake_minimum_required(VERSION 3.14)
+
+# ============================================================================
+# Platform-Adaptive Compiler Configuration
+# ============================================================================
+# This project supports dual-platform development:
+#   - Linux: Uses GCC (default system compiler)
+#   - macOS: Uses Clang (default system compiler)
+#
+# IMPORTANT: SystemC/SystemC-AMS libraries must be compiled with the SAME
+# compiler as this project. Set SYSTEMC_HOME to the matching library path.
+#
+# Manual override:
+#   cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ ..
+#   cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ..
+# ============================================================================
+
+if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED CMAKE_CXX_COMPILER)
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+        # Linux: prefer GCC
+        find_program(DEFAULT_C_COMPILER gcc)
+        find_program(DEFAULT_CXX_COMPILER g++)
+        set(PLATFORM_COMPILER_NAME "GCC")
+    elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+        # macOS: prefer Clang (system default, stable SDK paths)
+        find_program(DEFAULT_C_COMPILER clang)
+        find_program(DEFAULT_CXX_COMPILER clang++)
+        set(PLATFORM_COMPILER_NAME "Clang")
+    endif()
+    
+    if(DEFAULT_C_COMPILER AND DEFAULT_CXX_COMPILER)
+        set(CMAKE_C_COMPILER ${DEFAULT_C_COMPILER} CACHE FILEPATH "C compiler")
+        set(CMAKE_CXX_COMPILER ${DEFAULT_CXX_COMPILER} CACHE FILEPATH "C++ compiler")
+        message(STATUS "Platform: ${CMAKE_HOST_SYSTEM_NAME} -> Using ${PLATFORM_COMPILER_NAME}")
+    endif()
+endif()
+
 project(serdes)
 
-# Set C++ standard globally - SystemC is built with C++11
-set(CMAKE_CXX_STANDARD 14)
+# ============================================================================
+# macOS SDK Configuration (fix Clang header search paths)
+# ============================================================================
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # Find macOS SDK path
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE MACOS_SDK_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(MACOS_SDK_PATH)
+        set(CMAKE_OSX_SYSROOT ${MACOS_SDK_PATH})
+        # Add C++ standard library headers explicitly
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isysroot ${MACOS_SDK_PATH} -I${MACOS_SDK_PATH}/usr/include/c++/v1")
+        message(STATUS "macOS SDK: ${MACOS_SDK_PATH}")
+    endif()
+endif()
+
+# Set C++ standard globally - must match SystemC library
+set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add cmake modules path

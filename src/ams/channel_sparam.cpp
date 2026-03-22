@@ -34,6 +34,9 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm, const ChannelPara
 {
     // Default to simple model for backward compatibility
     m_ext_params.method = ChannelMethod::SIMPLE;
+    // Initialize with SISO ports (will be resized after config load)
+    in.init(1);
+    out.init(1);
 }
 
 ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm, 
@@ -64,6 +67,15 @@ ChannelSParamTdf::ChannelSParamTdf(sc_core::sc_module_name nm,
         std::cout << "[DEBUG] ChannelSParamTdf: After load_config, method=" 
                   << static_cast<int>(m_ext_params.method) << std::endl;
     }
+    
+    // Initialize ports based on config (or default SISO)
+    int n_in = m_port_config.active_inputs.empty() ? 1 : m_port_config.active_inputs.size();
+    int n_out = m_port_config.active_outputs.empty() ? 1 : m_port_config.active_outputs.size();
+    in.init(n_in);
+    out.init(n_out);
+    
+    std::cout << "[DEBUG] ChannelSParamTdf: Ports initialized: " 
+              << n_in << " inputs, " << n_out << " outputs" << std::endl;
 }
 
 ChannelSParamTdf::~ChannelSParamTdf() {
@@ -75,8 +87,13 @@ ChannelSParamTdf::~ChannelSParamTdf() {
 // ============================================================================
 
 void ChannelSParamTdf::set_attributes() {
-    in.set_rate(1);
-    out.set_rate(1);
+    // Set rate for all input and output ports
+    for (unsigned int i = 0; i < in.size(); ++i) {
+        in[i].set_rate(1);
+    }
+    for (unsigned int i = 0; i < out.size(); ++i) {
+        out[i].set_rate(1);
+    }
     
     // Set timestep for TDF module
     double timestep = 1.0 / m_ext_params.fs;
@@ -85,7 +102,9 @@ void ChannelSParamTdf::set_attributes() {
     // Set delay based on method
     if (m_ext_params.method == ChannelMethod::IMPULSE && m_use_fft) {
         // FFT convolution introduces block delay
-        out.set_delay(m_block_size);
+        for (unsigned int i = 0; i < out.size(); ++i) {
+            out[i].set_delay(m_block_size);
+        }
     }
 }
 
@@ -105,9 +124,6 @@ void ChannelSParamTdf::initialize() {
         case ChannelMethod::IMPULSE:
             init_impulse_model();
             break;
-        case ChannelMethod::POLE_RESIDUE:
-            init_pole_residue_model();
-            break;
         case ChannelMethod::STATE_SPACE:
             init_state_space_model();
             break;
@@ -117,33 +133,36 @@ void ChannelSParamTdf::initialize() {
 }
 
 void ChannelSParamTdf::processing() {
-    double x_in = in.read();
-    double y_out = 0.0;
-    
     switch (m_ext_params.method) {
-        case ChannelMethod::SIMPLE:
-            y_out = process_simple(x_in);
+        case ChannelMethod::SIMPLE: {
+            double x_in = in[0].read();
+            double y_out = process_simple(x_in);
+            out[0].write(y_out);
             break;
-        case ChannelMethod::RATIONAL:
-            y_out = process_rational(x_in);
+        }
+        case ChannelMethod::RATIONAL: {
+            double x_in = in[0].read();
+            double y_out = process_rational(x_in);
+            out[0].write(y_out);
             break;
-        case ChannelMethod::IMPULSE:
+        }
+        case ChannelMethod::IMPULSE: {
+            double x_in = in[0].read();
+            double y_out;
             if (m_use_fft) {
                 y_out = process_impulse_fft(x_in);
             } else {
                 y_out = process_impulse(x_in);
             }
+            out[0].write(y_out);
             break;
-        case ChannelMethod::POLE_RESIDUE:
-            // Use custom state space implementation (numerical integration)
-            y_out = process_pole_residue_ss(x_in);
+        }
+        case ChannelMethod::STATE_SPACE: {
+            // MIMO processing
+            process_state_space_mimo();
             break;
-        case ChannelMethod::STATE_SPACE:
-            y_out = process_state_space(x_in);
-            break;
+        }
     }
-    
-    out.write(y_out);
 }
 
 // ============================================================================
@@ -186,9 +205,8 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
             m_ext_params.method = ChannelMethod::RATIONAL;
         } else if (method_lower == "impulse") {
             m_ext_params.method = ChannelMethod::IMPULSE;
-        } else if (method_lower == "pole_residue" || method_lower == "pole-residue") {
-            m_ext_params.method = ChannelMethod::POLE_RESIDUE;
-        } else if (method_lower == "state_space" || method_lower == "state-space") {
+        } else if (method_lower == "state_space" || method_lower == "state-space" ||
+                   method_lower == "state_space_mimo") {
             m_ext_params.method = ChannelMethod::STATE_SPACE;
         } else {
             m_ext_params.method = ChannelMethod::SIMPLE;
@@ -227,105 +245,6 @@ bool ChannelSParamTdf::parse_json_config(const std::string& json_content) {
                 
                 break; // Only use first filter for now
             }
-        }
-        
-        // Parse pole_residue filters (old format with filters object)
-        if (config.contains("pole_residue_filters")) {
-            int pr_count = 0;
-            for (auto it = config["pole_residue_filters"].begin(); it != config["pole_residue_filters"].end(); ++it) {
-                pr_count++;
-            }
-            std::cout << "[DEBUG] ChannelSParamTdf: Found " << pr_count << " pole-residue filters" << std::endl;
-        }
-        if (config.contains("pole_residue_filters") && !config["pole_residue_filters"].empty()) {
-            for (auto it = config["pole_residue_filters"].begin(); it != config["pole_residue_filters"].end(); ++it) {
-                const auto& pr = it.value();
-                m_pole_residue_data.poles_real.clear(); m_pole_residue_data.poles_imag.clear();
-                m_pole_residue_data.residues_real.clear(); m_pole_residue_data.residues_imag.clear();
-                
-                // Parse constant term
-                m_pole_residue_data.constant = pr.value("constant", 0.0);
-                
-                // Parse poles and residues (complex pairs)
-                if (pr.contains("poles") && pr.contains("residues")) {
-                    const auto& poles = pr["poles"];
-                    const auto& residues = pr["residues"];
-                    
-                    for (size_t i = 0; i < poles.size() && i < residues.size(); ++i) {
-                        double pr_val = 0.0, pi_val = 0.0;
-                        double rr_val = 0.0, ri_val = 0.0;
-                        
-                        if (poles[i].is_array() && poles[i].size() >= 2) {
-                            pr_val = poles[i][0].get<double>();
-                            pi_val = poles[i][1].get<double>();
-                        }
-                        if (residues[i].is_array() && residues[i].size() >= 2) {
-                            rr_val = residues[i][0].get<double>();
-                            ri_val = residues[i][1].get<double>();
-                        }
-                        
-                        m_pole_residue_data.poles_real.push_back(pr_val); m_pole_residue_data.poles_imag.push_back(pi_val);
-                        m_pole_residue_data.residues_real.push_back(rr_val); m_pole_residue_data.residues_imag.push_back(ri_val);
-                    }
-                }
-                
-                m_pole_residue_data.order = pr.value("order", static_cast<int>(m_pole_residue_data.poles_real.size()));
-                m_pole_residue_data.dc_gain = pr.value("dc_gain", 1.0);
-                m_pole_residue_data.mse = pr.value("mse", 0.0);
-                
-                std::cout << "[DEBUG] ChannelSParamTdf: Parsed pole-residue filter '" << it.key() 
-                          << "': poles=" << m_pole_residue_data.poles_real.size() 
-                          << ", constant=" << m_pole_residue_data.constant 
-                          << ", order=" << m_pole_residue_data.order << std::endl;
-                
-                break; // Only use first filter for now
-            }
-        }
-        
-        // Parse new format pole_residue (from scikit-rf export)
-        if (config.contains("pole_residue")) {
-            const auto& pr = config["pole_residue"];
-            m_pole_residue_data.poles_real.clear(); m_pole_residue_data.poles_imag.clear();
-            m_pole_residue_data.residues_real.clear(); m_pole_residue_data.residues_imag.clear();
-            
-            // Parse constant and proportional terms
-            m_pole_residue_data.constant = pr.value("constant", 0.0);
-            m_pole_residue_data.proportional = pr.value("proportional", 0.0);
-            
-            // Parse poles and residues from separate real/imag arrays
-            if (pr.contains("poles_real") && pr.contains("poles_imag") &&
-                pr.contains("residues_real") && pr.contains("residues_imag")) {
-                
-                const auto& poles_real = pr["poles_real"];
-                const auto& poles_imag = pr["poles_imag"];
-                const auto& residues_real = pr["residues_real"];
-                const auto& residues_imag = pr["residues_imag"];
-                
-                size_t n_poles = poles_real.size();
-                if (poles_imag.size() < n_poles) n_poles = poles_imag.size();
-                if (residues_real.size() < n_poles) n_poles = residues_real.size();
-                if (residues_imag.size() < n_poles) n_poles = residues_imag.size();
-                
-                for (size_t i = 0; i < n_poles; ++i) {
-                    double p_real = poles_real[i].get<double>();
-                    double p_imag = poles_imag[i].get<double>();
-                    double r_real = residues_real[i].get<double>();
-                    double r_imag = residues_imag[i].get<double>();
-                    
-                    m_pole_residue_data.poles_real.push_back(p_real); m_pole_residue_data.poles_imag.push_back(p_imag);
-                    m_pole_residue_data.residues_real.push_back(r_real); m_pole_residue_data.residues_imag.push_back(r_imag);
-                }
-            }
-            
-            m_pole_residue_data.order = pr.value("order", static_cast<int>(m_pole_residue_data.poles_real.size()));
-            m_pole_residue_data.dc_gain = pr.value("dc_gain", 1.0);
-            m_pole_residue_data.mse = pr.value("mse", 0.0);
-            
-            std::cout << "[DEBUG] ChannelSParamTdf: Parsed pole_residue (scikit-rf format): poles=" 
-                      << m_pole_residue_data.poles_real.size() 
-                      << ", constant=" << m_pole_residue_data.constant 
-                      << ", proportional=" << m_pole_residue_data.proportional
-                      << ", order=" << m_pole_residue_data.order << std::endl;
         }
         
         // Parse impulse responses
@@ -478,89 +397,188 @@ void ChannelSParamTdf::init_state_space_model() {
         file >> config;
         file.close();
         
-        // Check for state_space section
-        if (!config.contains("state_space")) {
-            std::cerr << "ChannelSParamTdf: No state_space data in config" << std::endl;
-            m_ext_params.method = ChannelMethod::SIMPLE;
-            init_simple_model();
-            return;
-        }
-        
-        const auto& ss = config["state_space"];
-        
-        // Parse matrices A, B, C, D, E from JSON
-        if (!ss.contains("A") || !ss.contains("B") || !ss.contains("C") || !ss.contains("D")) {
-            std::cerr << "ChannelSParamTdf: State-space matrices A, B, C, D required" << std::endl;
-            m_ext_params.method = ChannelMethod::SIMPLE;
-            init_simple_model();
-            return;
-        }
-        
-        // Get dimensions
-        const auto& A_json = ss["A"];
-        int n_states = A_json.size();
-        if (n_states == 0) {
-            std::cerr << "ChannelSParamTdf: State-space A matrix is empty" << std::endl;
-            m_ext_params.method = ChannelMethod::SIMPLE;
-            init_simple_model();
-            return;
-        }
-        
-        int n_states_2 = A_json[0].size();
-        const auto& C_json = ss["C"];
-        int n_outputs = C_json.size();
-        
-        m_state_space.n_states = n_states;
-        m_state_space.n_outputs = n_outputs;
-        
-        // Resize matrices
-        m_state_space.A.resize(n_states, n_states);
-        m_state_space.B.resize(n_states, 1);
-        m_state_space.C.resize(n_outputs, n_states);
-        m_state_space.D.resize(n_outputs, 1);
-        m_state_space.E.resize(n_outputs, 1);
-        
-        // Fill A matrix (n x n)
-        for (int i = 0; i < n_states; ++i) {
-            for (int j = 0; j < n_states; ++j) {
-                m_state_space.A(i+1, j+1) = A_json[i][j].get<double>();
+        // Parse new format: full_model + port_config
+        if (config.contains("full_model")) {
+            // New MIMO format
+            const auto& fm = config["full_model"];
+            
+            m_full_model.n_diff_ports = fm.value("n_diff_ports", 1);
+            m_full_model.n_outputs = fm.value("n_outputs", 1);
+            m_full_model.n_states = fm.value("n_states", 0);
+            
+            // Parse port_pairs
+            if (fm.contains("port_pairs")) {
+                for (const auto& pp : fm["port_pairs"]) {
+                    m_full_model.port_pairs.push_back({pp[0].get<int>(), pp[1].get<int>()});
+                }
             }
-        }
-        
-        // Fill B matrix (n x 1)
-        const auto& B_json = ss["B"];
-        for (int i = 0; i < n_states; ++i) {
-            m_state_space.B(i+1, 1) = B_json[i][0].get<double>();
-        }
-        
-        // Fill C matrix (n_c x n)
-        for (int i = 0; i < n_outputs; ++i) {
-            for (int j = 0; j < n_states; ++j) {
-                m_state_space.C(i+1, j+1) = C_json[i][j].get<double>();
+            
+            // Parse delays
+            if (fm.contains("delay_s")) {
+                for (const auto& d : fm["delay_s"]) {
+                    m_full_model.delays.push_back(d.get<double>());
+                }
             }
-        }
-        
-        // Fill D matrix (n_c x 1)
-        const auto& D_json = ss["D"];
-        for (int i = 0; i < n_outputs; ++i) {
-            m_state_space.D(i+1, 1) = D_json[i][0].get<double>();
-        }
-        
-        // Fill E matrix (n_c x 1) - optional, default to 0
-        if (ss.contains("E")) {
-            const auto& E_json = ss["E"];
+            
+            // Parse state_space matrices
+            if (!fm.contains("state_space")) {
+                std::cerr << "ChannelSParamTdf: No state_space in full_model" << std::endl;
+                m_ext_params.method = ChannelMethod::SIMPLE;
+                init_simple_model();
+                return;
+            }
+            
+            const auto& ss = fm["state_space"];
+            int n_states = m_full_model.n_states;
+            int n_inputs = m_full_model.n_diff_ports;
+            int n_outputs = m_full_model.n_outputs;
+            
+            m_full_model.state_space.n_states = n_states;
+            m_full_model.state_space.n_inputs = n_inputs;
+            m_full_model.state_space.n_outputs = n_outputs;
+            
+            // Resize matrices
+            m_full_model.state_space.A.resize(n_states, n_states);
+            m_full_model.state_space.B.resize(n_states, n_inputs);
+            m_full_model.state_space.C.resize(n_outputs, n_states);
+            m_full_model.state_space.D.resize(n_outputs, n_inputs);
+            m_full_model.state_space.E.resize(n_outputs, n_inputs);
+            
+            // Fill A matrix
+            const auto& A_json = ss["A"];
+            for (int i = 0; i < n_states; ++i) {
+                for (int j = 0; j < n_states; ++j) {
+                    m_full_model.state_space.A(i+1, j+1) = A_json[i][j].get<double>();
+                }
+            }
+            
+            // Fill B matrix (n_states x n_inputs)
+            const auto& B_json = ss["B"];
+            for (int i = 0; i < n_states; ++i) {
+                for (int j = 0; j < n_inputs; ++j) {
+                    m_full_model.state_space.B(i+1, j+1) = B_json[i][j].get<double>();
+                }
+            }
+            
+            // Fill C matrix (n_outputs x n_states)
+            const auto& C_json = ss["C"];
             for (int i = 0; i < n_outputs; ++i) {
-                m_state_space.E(i+1, 1) = E_json[i][0].get<double>();
+                for (int j = 0; j < n_states; ++j) {
+                    m_full_model.state_space.C(i+1, j+1) = C_json[i][j].get<double>();
+                }
             }
+            
+            // Fill D matrix (n_outputs x n_inputs)
+            const auto& D_json = ss["D"];
+            for (int i = 0; i < n_outputs; ++i) {
+                for (int j = 0; j < n_inputs; ++j) {
+                    m_full_model.state_space.D(i+1, j+1) = D_json[i][j].get<double>();
+                }
+            }
+            
+            // Fill E matrix (n_outputs x n_inputs)
+            if (ss.contains("E")) {
+                const auto& E_json = ss["E"];
+                for (int i = 0; i < n_outputs; ++i) {
+                    for (int j = 0; j < n_inputs; ++j) {
+                        m_full_model.state_space.E(i+1, j+1) = E_json[i][j].get<double>();
+                    }
+                }
+            }
+            
+            // Parse port_config
+            if (config.contains("port_config")) {
+                const auto& pc = config["port_config"];
+                for (const auto& inp : pc["active_inputs"]) {
+                    m_port_config.active_inputs.push_back(inp.get<int>());
+                }
+                for (const auto& outp : pc["active_outputs"]) {
+                    m_port_config.active_outputs.push_back(outp.get<int>());
+                }
+            } else {
+                // Default: use all inputs and outputs
+                for (int i = 0; i < n_inputs; ++i) {
+                    m_port_config.active_inputs.push_back(i);
+                }
+                for (int i = 0; i < n_outputs; ++i) {
+                    m_port_config.active_outputs.push_back(i);
+                }
+            }
+            
+            // Extract active matrices
+            extract_active_matrices();
+            
+            std::cout << "[DEBUG] ChannelSParamTdf: MIMO State-space model initialized" << std::endl;
+            std::cout << "[DEBUG]   Full model: " << n_states << " states, " 
+                      << n_inputs << " inputs, " << n_outputs << " outputs" << std::endl;
+            std::cout << "[DEBUG]   Active: " << m_port_config.active_inputs.size() << " inputs, "
+                      << m_port_config.active_outputs.size() << " outputs" << std::endl;
+            
+        } else if (config.contains("state_space")) {
+            // Legacy format (backward compatibility)
+            const auto& ss = config["state_space"];
+            
+            const auto& A_json = ss["A"];
+            int n_states = A_json.size();
+            const auto& C_json = ss["C"];
+            int n_outputs = C_json.size();
+            
+            m_full_model.n_states = n_states;
+            m_full_model.n_diff_ports = 1;
+            m_full_model.n_outputs = n_outputs;
+            
+            m_full_model.state_space.n_states = n_states;
+            m_full_model.state_space.n_inputs = 1;
+            m_full_model.state_space.n_outputs = n_outputs;
+            
+            m_full_model.state_space.A.resize(n_states, n_states);
+            m_full_model.state_space.B.resize(n_states, 1);
+            m_full_model.state_space.C.resize(n_outputs, n_states);
+            m_full_model.state_space.D.resize(n_outputs, 1);
+            m_full_model.state_space.E.resize(n_outputs, 1);
+            
+            for (int i = 0; i < n_states; ++i) {
+                for (int j = 0; j < n_states; ++j) {
+                    m_full_model.state_space.A(i+1, j+1) = A_json[i][j].get<double>();
+                }
+            }
+            
+            const auto& B_json = ss["B"];
+            for (int i = 0; i < n_states; ++i) {
+                m_full_model.state_space.B(i+1, 1) = B_json[i][0].get<double>();
+            }
+            
+            for (int i = 0; i < n_outputs; ++i) {
+                for (int j = 0; j < n_states; ++j) {
+                    m_full_model.state_space.C(i+1, j+1) = C_json[i][j].get<double>();
+                }
+            }
+            
+            const auto& D_json = ss["D"];
+            for (int i = 0; i < n_outputs; ++i) {
+                m_full_model.state_space.D(i+1, 1) = D_json[i][0].get<double>();
+            }
+            
+            if (ss.contains("E")) {
+                const auto& E_json = ss["E"];
+                for (int i = 0; i < n_outputs; ++i) {
+                    m_full_model.state_space.E(i+1, 1) = E_json[i][0].get<double>();
+                }
+            }
+            
+            // Default SISO config
+            m_port_config.active_inputs = {0};
+            m_port_config.active_outputs = {0};
+            
+            extract_active_matrices();
+            
+            std::cout << "[DEBUG] ChannelSParamTdf: Legacy state-space model loaded" << std::endl;
         } else {
-            for (int i = 0; i < n_outputs; ++i) {
-                m_state_space.E(i+1, 1) = 0.0;
-            }
+            std::cerr << "ChannelSParamTdf: No state_space or full_model in config" << std::endl;
+            m_ext_params.method = ChannelMethod::SIMPLE;
+            init_simple_model();
+            return;
         }
-        
-        // sca_ss filter will be used in processing() with matrices passed each time
-        std::cout << "[DEBUG] ChannelSParamTdf: State-space model initialized" << std::endl;
-        std::cout << "[DEBUG]   States: " << n_states << ", Outputs: " << n_outputs << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "ChannelSParamTdf: Error initializing state-space model: " << e.what() << std::endl;
@@ -569,260 +587,90 @@ void ChannelSParamTdf::init_state_space_model() {
     }
 }
 
-double ChannelSParamTdf::process_state_space(double x_in) {
-    // Use sca_ss filter to compute output
-    // sca_tdf::sca_ss::operator() with state vector:
-    // (A, B, C, D, state_vector, input_vector, timestep)
-    sca_util::sca_vector<double> in_vec(1);
-    in_vec(1) = x_in;
+void ChannelSParamTdf::extract_active_matrices() {
+    int n_states = m_full_model.n_states;
+    int n_active_in = m_port_config.active_inputs.size();
+    int n_active_out = m_port_config.active_outputs.size();
     
-    // State vector needs to be stored and maintained between calls
-    // Initialize on first use if empty (using length() method)
-    if (m_ss_state.length() == 0) {
-        m_ss_state.resize(m_state_space.n_states);
-        for (int i = 1; i <= m_state_space.n_states; ++i) {
-            m_ss_state(i) = 0.0;
+    m_active_ss.n_states = n_states;
+    m_active_ss.n_inputs = n_active_in;
+    m_active_ss.n_outputs = n_active_out;
+    
+    // Resize active matrices
+    m_active_ss.A.resize(n_states, n_states);
+    m_active_ss.B.resize(n_states, n_active_in);
+    m_active_ss.C.resize(n_active_out, n_states);
+    m_active_ss.D.resize(n_active_out, n_active_in);
+    m_active_ss.E.resize(n_active_out, n_active_in);
+    
+    // A is shared (copy directly)
+    m_active_ss.A = m_full_model.state_space.A;
+    
+    // Extract B columns for active inputs
+    for (int j = 0; j < n_active_in; ++j) {
+        int src_col = m_port_config.active_inputs[j] + 1;  // 1-based for sca_matrix
+        for (int i = 1; i <= n_states; ++i) {
+            m_active_ss.B(i, j + 1) = m_full_model.state_space.B(i, src_col);
         }
     }
     
-    // Use the overload without E matrix (E is typically for descriptor systems)
-    // The sca_ss operator() returns a proxy that can be assigned to a vector
-    sca_util::sca_vector<double> out_vec = m_ss_filter(
-        m_state_space.A, m_state_space.B, m_state_space.C,
-        m_state_space.D, m_ss_state, in_vec, get_timestep());
+    // Extract C rows for active outputs
+    for (int i = 0; i < n_active_out; ++i) {
+        int src_row = m_port_config.active_outputs[i] + 1;  // 1-based
+        for (int j = 1; j <= n_states; ++j) {
+            m_active_ss.C(i + 1, j) = m_full_model.state_space.C(src_row, j);
+        }
+    }
     
-    return out_vec(1);
+    // Extract D submatrix
+    for (int i = 0; i < n_active_out; ++i) {
+        int src_row = m_port_config.active_outputs[i] + 1;
+        for (int j = 0; j < n_active_in; ++j) {
+            int src_col = m_port_config.active_inputs[j] + 1;
+            m_active_ss.D(i + 1, j + 1) = m_full_model.state_space.D(src_row, src_col);
+        }
+    }
+    
+    // Extract E submatrix
+    for (int i = 0; i < n_active_out; ++i) {
+        int src_row = m_port_config.active_outputs[i] + 1;
+        for (int j = 0; j < n_active_in; ++j) {
+            int src_col = m_port_config.active_inputs[j] + 1;
+            m_active_ss.E(i + 1, j + 1) = m_full_model.state_space.E(src_row, src_col);
+        }
+    }
+    
+    // Initialize state vector
+    m_ss_state.resize(n_states);
+    for (int i = 1; i <= n_states; ++i) {
+        m_ss_state(i) = 0.0;
+    }
+    
+    std::cout << "[DEBUG] ChannelSParamTdf: Active matrices extracted" << std::endl;
+    std::cout << "[DEBUG]   B: " << n_states << "x" << n_active_in << std::endl;
+    std::cout << "[DEBUG]   C: " << n_active_out << "x" << n_states << std::endl;
 }
 
-void ChannelSParamTdf::init_pole_residue_model() {
-    size_t n_poles = m_pole_residue_data.poles_real.size();
-    std::cout << "[DEBUG] ChannelSParamTdf: init_pole_residue_model called, poles=" 
-              << n_poles << std::endl;
+void ChannelSParamTdf::process_state_space_mimo() {
+    int n_in = m_port_config.active_inputs.size();
+    int n_out = m_port_config.active_outputs.size();
     
-    if (n_poles == 0) {
-        std::cerr << "ChannelSParamTdf: Pole-residue data not loaded" << std::endl;
-        m_ext_params.method = ChannelMethod::SIMPLE;
-        init_simple_model();
-        return;
+    // Read inputs into vector
+    sca_util::sca_vector<double> u(n_in);
+    for (int i = 0; i < n_in; ++i) {
+        u(i + 1) = in[i].read();
     }
     
-    // Debug: print first few poles
-    for (size_t i = 0; i < std::min(size_t(4), n_poles); ++i) {
-        double pr = m_pole_residue_data.poles_real[i];
-        double pi = m_pole_residue_data.poles_imag[i];
-        double rr = m_pole_residue_data.residues_real[i];
-        double ri = m_pole_residue_data.residues_imag[i];
-        std::cout << "[DEBUG]   Pole[" << i << "]: " << pr << " + " << pi << "i, "
-                  << "Residue: " << rr << " + " << ri << "i" << std::endl;
+    // State-space computation using sca_ss
+    // y = C*x + D*u + E*du/dt
+    sca_util::sca_vector<double> y = m_ss_filter(
+        m_active_ss.A, m_active_ss.B, m_active_ss.C,
+        m_active_ss.D, m_ss_state, u, get_timestep());
+    
+    // Write outputs
+    for (int i = 0; i < n_out; ++i) {
+        out[i].write(y(i + 1));
     }
-    
-    // Clear previous state space data
-    m_pr_ss_A_flat.clear();
-    m_pr_ss_B_flat.clear();
-    m_pr_ss_C_flat.clear();
-    m_pr_ss_D_flat.clear();
-    m_pr_ss_states.clear();
-    m_pr_ss_Ad.clear();
-    m_pr_ss_Bd.clear();
-    m_pr_ss_Cd.clear();
-    m_pr_ss_Dd.clear();
-    
-    // Reset input history
-    m_pr_input_prev = 0.0;
-    
-    // Calculate Nyquist frequency and timestep
-    double nyquist_freq = m_ext_params.fs / 2.0;
-    double max_pole_freq = 0.8 * nyquist_freq;
-    double dt = 1.0 / m_ext_params.fs;
-    
-    int used_sections = 0;
-    int skipped_sections = 0;
-    
-    for (size_t i = 0; i < n_poles; ++i) {
-        double pr = m_pole_residue_data.poles_real[i];
-        double pi = m_pole_residue_data.poles_imag[i];
-        double rr = m_pole_residue_data.residues_real[i];
-        double ri = m_pole_residue_data.residues_imag[i];
-        
-        std::complex<double> p1(pr, pi);
-        std::complex<double> r1(rr, ri);
-        
-        // Check pole frequency (skip poles too close to Nyquist)
-        double pole_freq = std::abs(p1) / (2.0 * M_PI);
-        if (pole_freq > max_pole_freq) {
-            skipped_sections++;
-            continue;
-        }
-        
-        // Continuous-time state space matrices
-        std::vector<double> Ac, Bc, Cc, Dc;
-        int n_states = 0;
-        
-        if (std::abs(pi) > 1e-12) {
-            // Complex pole (scikit-rf only outputs upper half-plane poles)
-            // For real-valued systems, we need the conjugate pair
-            // H(s) = r/(s-p) + r*/(s-p*) = (b1*s + b0) / (s^2 + a1*s + a2)
-            
-            double b1 = 2.0 * rr;
-            double b0 = -2.0 * (rr * pr + ri * pi);
-            double a1 = -2.0 * pr;
-            double a2 = pr * pr + pi * pi;
-            
-            // State space (controllable canonical form):
-            Ac = {0.0, 1.0, -a2, -a1};  // 2x2
-            Bc = {0.0, 1.0};             // 2x1
-            Cc = {b0, b1};               // 1x2
-            Dc = {0.0};                  // 1x1
-            n_states = 2;
-            
-            used_sections++;
-        } else {
-            // Real pole: H(s) = r / (s - p)
-            Ac = {pr};      // 1x1 (pr is negative for stable poles)
-            Bc = {1.0};     // 1x1  (input directly to state)
-            Cc = {rr};      // 1x1  (scale by residue)
-            Dc = {0.0};     // 1x1
-            n_states = 1;
-            
-            used_sections++;
-        }
-        
-        // Discretize using bilinear transform (Tustin)
-        // Convert continuous-time (A,B,C,D) to discrete-time (Ad,Bd,Cd,Dd)
-        // Ad = (I - A*dt/2)^-1 * (I + A*dt/2)
-        // Bd = (I - A*dt/2)^-1 * B * dt
-        // Cd = C * (I - A*dt/2)^-1
-        // Dd = D + C * (I - A*dt/2)^-1 * B * dt/2
-        
-        std::vector<double> Ad(n_states * n_states);
-        std::vector<double> Bd(n_states);
-        std::vector<double> Cd(n_states);
-        double Dd = Dc[0];
-        
-        if (n_states == 1) {
-            // Scalar case: simple formulas
-            double a = Ac[0];
-            double b = Bc[0];
-            double c = Cc[0];
-            
-            // Ad = (1 + a*dt/2) / (1 - a*dt/2)
-            double denom = 1.0 - a * dt / 2.0;
-            Ad[0] = (1.0 + a * dt / 2.0) / denom;
-            
-            // Bd = b * dt / (1 - a*dt/2)
-            Bd[0] = b * dt / denom;
-            
-            // Cd = c / (1 - a*dt/2)
-            Cd[0] = c / denom;
-            
-            // Dd = c * b * dt / (2 * (1 - a*dt/2))
-            Dd = Dc[0] + c * b * dt / (2.0 * denom);
-        } else {
-            // 2x2 case
-            // (I - A*dt/2)
-            double i00 = 1.0 - Ac[0] * dt / 2.0;
-            double i01 = -Ac[1] * dt / 2.0;
-            double i10 = -Ac[2] * dt / 2.0;
-            double i11 = 1.0 - Ac[3] * dt / 2.0;
-            
-            // Inverse of (I - A*dt/2)
-            double det_inv = 1.0 / (i00 * i11 - i01 * i10);
-            double inv00 = i11 * det_inv;
-            double inv01 = -i01 * det_inv;
-            double inv10 = -i10 * det_inv;
-            double inv11 = i00 * det_inv;
-            
-            // (I + A*dt/2)
-            double p00 = 1.0 + Ac[0] * dt / 2.0;
-            double p01 = Ac[1] * dt / 2.0;
-            double p10 = Ac[2] * dt / 2.0;
-            double p11 = 1.0 + Ac[3] * dt / 2.0;
-            
-            // Ad = inv(I - A*dt/2) * (I + A*dt/2)
-            Ad[0] = inv00 * p00 + inv01 * p10;
-            Ad[1] = inv00 * p01 + inv01 * p11;
-            Ad[2] = inv10 * p00 + inv11 * p10;
-            Ad[3] = inv10 * p01 + inv11 * p11;
-            
-            // Bd = inv(I - A*dt/2) * B * dt
-            // B = [0; 1]
-            Bd[0] = inv01 * dt;
-            Bd[1] = inv11 * dt;
-            
-            // Cd = C * inv(I - A*dt/2)
-            // C = [c0, c1]
-            Cd[0] = Cc[0] * inv00 + Cc[1] * inv10;
-            Cd[1] = Cc[0] * inv01 + Cc[1] * inv11;
-            
-            // Dd = D + C * inv(I - A*dt/2) * B * dt/2
-            // = D + [Cd0, Cd1] * [0; 1] * dt/2 = D + Cd1 * dt/2
-            Dd = Dc[0] + Cd[1] * dt / 2.0;
-        }
-        
-        // Store discrete-time matrices
-        m_pr_ss_Ad.push_back(Ad);
-        m_pr_ss_Bd.push_back(Bd);
-        m_pr_ss_Cd.push_back(Cd);
-        m_pr_ss_Dd.push_back(Dd);
-        m_pr_ss_states.push_back(std::vector<double>(n_states, 0.0));
-    }
-    
-    std::cout << "[DEBUG] ChannelSParamTdf: Pole-residue filter initialized" << std::endl;
-    std::cout << "[DEBUG]   State space sections: " << used_sections << std::endl;
-    std::cout << "[DEBUG]   Skipped (freq > 0.8*Nyquist): " << skipped_sections << std::endl;
-}
-
-double ChannelSParamTdf::process_pole_residue_ss(double x_in) {
-    // Apply constant term
-    double y_out = m_pole_residue_data.constant * x_in;
-    
-    // Apply proportional term if non-zero
-    // H_prop(s) = k*s corresponds to y(t) = k * dx/dt
-    // In discrete time: y[n] = k * (x[n] - x[n-1]) / dt
-    if (std::abs(m_pole_residue_data.proportional) > 1e-20) {
-        double dt = 1.0 / m_ext_params.fs;
-        y_out += m_pole_residue_data.proportional * (x_in - m_pr_input_prev) / dt;
-    }
-    m_pr_input_prev = x_in;
-    
-    // Apply cascaded discrete-time state space sections
-    // Each section: x[n+1] = Ad*x[n] + Bd*u[n]
-    //               y[n] = Cd*x[n] + Dd*u[n]
-    double signal = x_in;
-    
-    for (size_t i = 0; i < m_pr_ss_states.size(); ++i) {
-        const auto& Ad = m_pr_ss_Ad[i];
-        const auto& Bd = m_pr_ss_Bd[i];
-        const auto& Cd = m_pr_ss_Cd[i];
-        double Dd = m_pr_ss_Dd[i];
-        auto& state = m_pr_ss_states[i];
-        
-        int n_states = state.size();
-        
-        // Compute output: y = Cd*s + Dd*u
-        double y = Dd * signal;
-        for (int j = 0; j < n_states; ++j) {
-            y += Cd[j] * state[j];
-        }
-        
-        // Update state: s[n+1] = Ad*s[n] + Bd*u[n]
-        std::vector<double> new_state(n_states);
-        for (int j = 0; j < n_states; ++j) {
-            new_state[j] = Bd[j] * signal;
-            for (int k = 0; k < n_states; ++k) {
-                new_state[j] += Ad[j * n_states + k] * state[k];
-            }
-        }
-        
-        // Store updated state
-        for (int j = 0; j < n_states; ++j) {
-            state[j] = new_state[j];
-        }
-        
-        signal = y;
-    }
-    
-    return y_out + signal;
 }
 
 
@@ -916,18 +764,16 @@ double ChannelSParamTdf::get_dc_gain() const {
                 }
                 return sum * m_impulse_data.dt;
             }
-        case ChannelMethod::POLE_RESIDUE:
-            return m_pole_residue_data.dc_gain;
         case ChannelMethod::STATE_SPACE:
             // DC gain for state-space: D - C * inv(A) * B
-            if (m_state_space.n_states > 0 && m_state_space.n_outputs > 0) {
+            if (m_active_ss.n_states > 0 && m_active_ss.n_outputs > 0) {
                 // Compute DC gain = D - C * A^-1 * B
                 // For single-input single-output: compute directly
                 // Solve A * x = B for x, then DC = D - C * x
                 try {
                     // Simple implementation for small matrices
                     // Compute A^-1 * B using Gaussian elimination
-                    int n = m_state_space.n_states;
+                    int n = m_active_ss.n_states;
                     std::vector<std::vector<double>> A_inv(n, std::vector<double>(n, 0.0));
                     
                     // Initialize identity matrix
@@ -939,7 +785,7 @@ double ChannelSParamTdf::get_dc_gain() const {
                     std::vector<std::vector<double>> aug(n, std::vector<double>(2 * n, 0.0));
                     for (int i = 0; i < n; ++i) {
                         for (int j = 0; j < n; ++j) {
-                            aug[i][j] = m_state_space.A(i + 1, j + 1);
+                            aug[i][j] = m_active_ss.A(i + 1, j + 1);
                         }
                         aug[i][n + i] = 1.0;
                     }
@@ -959,7 +805,7 @@ double ChannelSParamTdf::get_dc_gain() const {
                         
                         // Check for singular matrix
                         if (std::abs(aug[i][i]) < 1e-15) {
-                            return m_state_space.D(1, 1);  // Return D if A is singular
+                            return m_active_ss.D(1, 1);  // Return D if A is singular
                         }
                         
                         // Normalize row
@@ -986,75 +832,28 @@ double ChannelSParamTdf::get_dc_gain() const {
                         }
                     }
                     
-                    // Compute A_inv * B
+                    // Compute A_inv * B (first column of B for SISO)
                     std::vector<double> A_inv_B(n, 0.0);
                     for (int i = 0; i < n; ++i) {
                         for (int j = 0; j < n; ++j) {
-                            A_inv_B[i] += A_inv[i][j] * m_state_space.B(j + 1, 1);
+                            A_inv_B[i] += A_inv[i][j] * m_active_ss.B(j + 1, 1);
                         }
                     }
                     
-                    // Compute C * A_inv * B
+                    // Compute C * A_inv * B (first output for SISO)
                     double C_Ainv_B = 0.0;
-                    for (int i = 0; i < m_state_space.n_outputs; ++i) {
-                        for (int j = 0; j < n; ++j) {
-                            C_Ainv_B += m_state_space.C(i + 1, j + 1) * A_inv_B[j];
-                        }
+                    for (int j = 0; j < n; ++j) {
+                        C_Ainv_B += m_active_ss.C(1, j + 1) * A_inv_B[j];
                     }
                     
-                    return m_state_space.D(1, 1) - C_Ainv_B;
+                    return m_active_ss.D(1, 1) - C_Ainv_B;
                 } catch (...) {
-                    return m_state_space.D(1, 1);  // Return D on error
+                    return m_active_ss.D(1, 1);  // Return D on error
                 }
             }
             return 1.0;
         default:
             return 1.0;
-    }
-}
-
-void ChannelSParamTdf::get_frequency_response(
-    const std::vector<double>& frequencies,
-    std::vector<double>& mag_db,
-    std::vector<double>& phase_deg) const 
-{
-    size_t n_freq = frequencies.size();
-    mag_db.resize(n_freq);
-    phase_deg.resize(n_freq);
-    
-    // Only valid for POLE_RESIDUE method
-    if (m_ext_params.method != ChannelMethod::POLE_RESIDUE) {
-        std::cerr << "[WARNING] get_frequency_response() only supports POLE_RESIDUE method" << std::endl;
-        std::fill(mag_db.begin(), mag_db.end(), 0.0);
-        std::fill(phase_deg.begin(), phase_deg.end(), 0.0);
-        return;
-    }
-    
-    for (size_t i = 0; i < n_freq; ++i) {
-        double f = frequencies[i];
-        std::complex<double> s(0.0, 2.0 * M_PI * f);
-        std::complex<double> H(m_pole_residue_data.constant, 0.0);
-        
-        // proportional term: H += e * s
-        if (std::abs(m_pole_residue_data.proportional) > 1e-20) {
-            H += m_pole_residue_data.proportional * s;
-        }
-        
-        // pole-residue terms: H += r_i / (s - p_i)
-        for (size_t j = 0; j < m_pole_residue_data.poles_real.size(); ++j) {
-            std::complex<double> p(
-                m_pole_residue_data.poles_real[j],
-                m_pole_residue_data.poles_imag[j]);
-            std::complex<double> r(
-                m_pole_residue_data.residues_real[j],
-                m_pole_residue_data.residues_imag[j]);
-            H += r / (s - p);
-        }
-        
-        // Convert to dB and degrees
-        double mag = std::abs(H);
-        mag_db[i] = 20.0 * std::log10(std::max(mag, 1e-15));
-        phase_deg[i] = std::arg(H) * 180.0 / M_PI;
     }
 }
 

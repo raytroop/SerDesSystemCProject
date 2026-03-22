@@ -207,17 +207,14 @@ SC_MODULE(ChannelSparamTestbench) {
         // Set output prefix based on method
         if (m_use_sparam_config) {
             switch (m_ext_params.method) {
-                case ChannelMethod::POLE_RESIDUE:
-                    m_output_prefix = "channel_pr";
+                case ChannelMethod::STATE_SPACE:
+                    m_output_prefix = "channel_state_space";
                     break;
                 case ChannelMethod::IMPULSE:
                     m_output_prefix = "channel_impulse";
                     break;
                 case ChannelMethod::RATIONAL:
                     m_output_prefix = "channel_rational";
-                    break;
-                case ChannelMethod::STATE_SPACE:
-                    m_output_prefix = "channel_state_space";
                     break;
                 default:
                     m_output_prefix = "channel_sparam_config";
@@ -242,7 +239,6 @@ SC_MODULE(ChannelSparamTestbench) {
             case ChannelMethod::SIMPLE: return "SIMPLE";
             case ChannelMethod::RATIONAL: return "RATIONAL";
             case ChannelMethod::IMPULSE: return "IMPULSE";
-            case ChannelMethod::POLE_RESIDUE: return "POLE_RESIDUE";
             case ChannelMethod::STATE_SPACE: return "STATE_SPACE";
             default: return "UNKNOWN";
         }
@@ -294,17 +290,17 @@ SC_MODULE(ChannelSparamTestbench) {
         file.close();
         
         // Check for method field
-        if (content.find("\"method\": \"POLE_RESIDUE\"") != std::string::npos ||
-            content.find("\"method\":\"POLE_RESIDUE\"") != std::string::npos) {
-            std::cout << "  Detected POLE_RESIDUE method from config" << std::endl;
-            return ChannelMethod::POLE_RESIDUE;
+        if (content.find("\"method\": \"STATE_SPACE\"") != std::string::npos ||
+            content.find("\"method\":\"STATE_SPACE\"") != std::string::npos ||
+            content.find("\"method\": \"state_space\"") != std::string::npos ||
+            content.find("\"method\":\"state_space\"") != std::string::npos ||
+            content.find("\"state_space\"") != std::string::npos) {
+            std::cout << "  Detected STATE_SPACE method from config" << std::endl;
+            return ChannelMethod::STATE_SPACE;
         } else if (content.find("\"method\": \"IMPULSE\"") != std::string::npos ||
                    content.find("\"method\":\"IMPULSE\"") != std::string::npos) {
             std::cout << "  Detected IMPULSE method from config" << std::endl;
             return ChannelMethod::IMPULSE;
-        } else if (content.find("\"pole_residue\"") != std::string::npos) {
-            std::cout << "  Detected POLE_RESIDUE method from pole_residue field" << std::endl;
-            return ChannelMethod::POLE_RESIDUE;
         } else if (content.find("\"impulse_response\"") != std::string::npos) {
             std::cout << "  Detected IMPULSE method from impulse_response field" << std::endl;
             return ChannelMethod::IMPULSE;
@@ -312,11 +308,6 @@ SC_MODULE(ChannelSparamTestbench) {
                    content.find("\"numerator\"") != std::string::npos) {
             std::cout << "  Detected RATIONAL method from rational/numerator field" << std::endl;
             return ChannelMethod::RATIONAL;
-        } else if (content.find("\"method\": \"state_space\"") != std::string::npos ||
-                   content.find("\"method\":\"state_space\"") != std::string::npos ||
-                   content.find("\"state_space\"") != std::string::npos) {
-            std::cout << "  Detected STATE_SPACE method from config" << std::endl;
-            return ChannelMethod::STATE_SPACE;
         }
         
         std::cout << "  Using default RATIONAL method" << std::endl;
@@ -347,8 +338,8 @@ SC_MODULE(ChannelSparamTestbench) {
         
         // Connect signals
         wave_gen->out(sig_input);
-        channel->in(sig_input);
-        channel->out(sig_output);
+        channel->in[0](sig_input);
+        channel->out[0](sig_output);
         recorder->in_signal(sig_input);
         recorder->out_signal(sig_output);
         

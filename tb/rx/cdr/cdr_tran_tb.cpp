@@ -50,7 +50,6 @@ SC_MODULE(CdrTransientTestbench) {
 
     // Signal connections
     sca_tdf::sca_signal<double> sig_data;
-    sca_tdf::sca_signal<double> sig_phase_offset;
     sca_tdf::sca_signal<double> sig_sampled;
     sca_tdf::sca_signal<double> sig_phase_out;
 
@@ -87,14 +86,11 @@ SC_MODULE(CdrTransientTestbench) {
         src->out(sig_data);
 
         sampler->in(sig_data);
-        sampler->phase_offset(sig_phase_offset);
+        sampler->phase_offset(sig_phase_out);  // Direct feedback from CDR
         sampler->out(sig_sampled);
 
         cdr->in(sig_sampled);  // CDR gets data from sampler output
         cdr->phase_out(sig_phase_out);
-
-        // Feedback connection: CDR phase output -> Sampler phase offset
-        sig_phase_offset(sig_phase_out);
 
         monitor->phase_in(sig_phase_out);
         monitor->data_in(sig_sampled);

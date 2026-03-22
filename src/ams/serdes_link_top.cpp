@@ -103,10 +103,10 @@ SerdesLinkTopModule::SerdesLinkTopModule(sc_core::sc_module_name nm,
     
     // DiffToSingle output -> Channel input
     m_d2s->out(m_sig_channel_in);
-    m_channel->in(m_sig_channel_in);
+    m_channel->in[0](m_sig_channel_in);  // sc_vector: first input port
     
     // Channel output -> SingleToDiff input
-    m_channel->out(m_sig_channel_out);
+    m_channel->out[0](m_sig_channel_out);  // sc_vector: first output port
     m_s2d->in(m_sig_channel_out);
     
     // SingleToDiff output -> RX differential input
