@@ -1,5 +1,5 @@
 # Tests CMakeLists.txt
-# 
+#
 # 此文件定义了所有单元测试的构建规则。每个测试都构建为独立的可执行文件，
 # 以避免 SystemC 仿真器重置问题。所有测试共享相同的主函数文件 (test_main.cpp)
 # 并链接到必要的库。
@@ -17,14 +17,15 @@ function(create_test_executables test_list)
             test_main.cpp
             unit/test_${test_name}.cpp
         )
-        
+
         target_link_libraries(test_${test_name}
             GTest::gtest
             serdes_lib
             SystemC::systemc
-            SystemC::systemc-ams
+            # SystemC::systemc-ams
+            /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
         )
-        
+
         add_test(NAME ${test_name} COMMAND test_${test_name})
     endforeach()
 endfunction()
@@ -299,7 +300,8 @@ add_executable(test_sparam_load
 target_link_libraries(test_sparam_load
     serdes_lib
     SystemC::systemc
-    SystemC::systemc-ams
+    # SystemC::systemc-ams
+    /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
 )
 
 add_test(NAME sparam_load COMMAND test_sparam_load)
@@ -315,14 +317,15 @@ if(INTEGRATION_TEST_SOURCES)
         test_main.cpp
         ${INTEGRATION_TEST_SOURCES}
     )
-    
+
     target_link_libraries(integration_tests
         serdes_lib
         SystemC::systemc
-        SystemC::systemc-ams
+        # SystemC::systemc-ams
+        /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
         GTest::gtest
         GTest::gtest_main
     )
-    
+
     add_test(NAME integration_tests COMMAND integration_tests)
 endif()

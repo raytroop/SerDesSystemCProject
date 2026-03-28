@@ -79,9 +79,13 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 #      - macOS Homebrew: /opt/homebrew/opt/systemc
 # ============================================================================
 
-find_package(SystemC REQUIRED)
+#find_package(SystemC REQUIRED)
+list(APPEND CMAKE_PREFIX_PATH ${SYSTEMC_HOME})
+find_package(SystemCLanguage REQUIRED)
 
-if(NOT SystemC_FOUND OR NOT SystemCAMS_FOUND)
+
+#if(NOT SystemCLanguage_FOUND OR NOT SystemCAMS_FOUND)
+if(NOT SystemCLanguage_FOUND)
     message(FATAL_ERROR "
 SystemC or SystemC-AMS not found!
 
@@ -107,8 +111,10 @@ endif()
 # Include directories
 # ============================================================================
 include_directories(
-    ${SystemC_INCLUDE_DIRS}
-    ${SystemCAMS_INCLUDE_DIRS}
+    #${SYSTEMC_HOME}/include
+    #${SYSTEMC_AMS_HOME}/include
+    /home/software/systemc-2.3.4/include
+    /home/software/systemc-ams-2.3.4/include
     include
     include/ams
     include/common
@@ -131,7 +137,9 @@ add_library(serdes_lib STATIC ${AMS_SOURCES} ${DE_SOURCES})
 # Link SystemC libraries
 target_link_libraries(serdes_lib
     SystemC::systemc
-    SystemC::systemc-ams
+    #SystemC::systemc-ams
+    #${SYSTEMC_AMS_HOME}/lib-linux64/libsystemc-ams.a
+    /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
 )
 
 # ============================================================================

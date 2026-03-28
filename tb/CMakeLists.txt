@@ -3,17 +3,19 @@
 # Helper function to create testbench executables
 function(add_serdes_testbench target_name source_file)
     add_executable(${target_name} ${source_file})
-    
+
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    
+
     target_link_libraries(${target_name}
         serdes_lib
         SystemC::systemc
-        SystemC::systemc-ams
+	    #SystemC::systemc-ams
+        #${SYSTEMC_AMS_HOME}/lib-linux64/libsystemc-ams.a
+        /home/software/systemc-ams-2.3.4/lib-linux64/libsystemc-ams.a
     )
-    
+
     # Set output directory
     set_target_properties(${target_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
