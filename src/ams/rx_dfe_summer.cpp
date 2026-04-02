@@ -161,31 +161,31 @@ void RxDfeSummerTdf::read_de_tap_updates()
     // 读取各抽头更新（如果有变化则更新）
     if (m_tap_coeffs.size() >= 1) {
         double tap1_val = tap1_de.read();
-        if (std::isfinite(tap1_val) && tap1_val != 0.0) {
+        if (std::isfinite(tap1_val)) {
             m_tap_coeffs[0] = tap1_val;
         }
     }
     if (m_tap_coeffs.size() >= 2) {
         double tap2_val = tap2_de.read();
-        if (std::isfinite(tap2_val) && tap2_val != 0.0) {
+        if (std::isfinite(tap2_val)) {
             m_tap_coeffs[1] = tap2_val;
         }
     }
     if (m_tap_coeffs.size() >= 3) {
         double tap3_val = tap3_de.read();
-        if (std::isfinite(tap3_val) && tap3_val != 0.0) {
+        if (std::isfinite(tap3_val)) {
             m_tap_coeffs[2] = tap3_val;
         }
     }
     if (m_tap_coeffs.size() >= 4) {
         double tap4_val = tap4_de.read();
-        if (std::isfinite(tap4_val) && tap4_val != 0.0) {
+        if (std::isfinite(tap4_val)) {
             m_tap_coeffs[3] = tap4_val;
         }
     }
     if (m_tap_coeffs.size() >= 5) {
         double tap5_val = tap5_de.read();
-        if (std::isfinite(tap5_val) && tap5_val != 0.0) {
+        if (std::isfinite(tap5_val)) {
             m_tap_coeffs[4] = tap5_val;
         }
     }

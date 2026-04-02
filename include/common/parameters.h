@@ -497,43 +497,53 @@ struct AdaptionParams {
     struct DfeAdaptParams {
         bool enabled;                // Enable DFE online update
         int num_taps;                // Number of taps (1-8)
-        std::string algorithm;       // Update algorithm: "lms"|"sign-lms"|"nlms"
-        double mu;                   // Step size coefficient
+        std::string algorithm;       // Update algorithm: "sign-lms" (default, per proposal)
+        double mu;                   // Step size coefficient (startup phase)
         double leakage;              // Leakage coefficient (0-1)
         std::vector<double> initial_taps;  // Initial tap coefficients
         double tap_min;              // Minimum tap value
         double tap_max;              // Maximum tap value
-        double freeze_threshold;     // Error threshold to freeze update
-        
+        int stats_period;            // Statistics accumulation period (in UI, e.g. 1024)
+
+        // Variable step size schedule
+        double mu_startup;           // Step size during STARTUP phase
+        double mu_acquire;           // Step size during ACQUIRE phase
+        double mu_track;             // Step size during TRACK phase
+
         DfeAdaptParams()
             : enabled(true)
             , num_taps(5)
             , algorithm("sign-lms")
-            , mu(1e-4)
+            , mu(0.125)
             , leakage(1e-6)
-            , initial_taps({-0.05, -0.02, 0.01, 0.005, 0.002})
+            , initial_taps({0.0, 0.0, 0.0, 0.0, 0.0})
             , tap_min(-0.5)
             , tap_max(0.5)
-            , freeze_threshold(0.5) {}
+            , stats_period(1024)
+            , mu_startup(0.125)       // 1/8
+            , mu_acquire(0.03125)     // 1/32
+            , mu_track(0.0078125) {}  // 1/128
     } dfe;
     
-    // Threshold adaptation parameters
-    struct ThresholdAdaptParams {
-        bool enabled;                // Enable threshold adaptation
-        double initial;              // Initial threshold (V)
-        double hysteresis;           // Hysteresis window (V)
-        double adapt_step;           // Adjustment step size (V/update)
-        double target_ber;           // Target BER for optimization
-        double drift_threshold;      // Level drift threshold (V)
-        
-        ThresholdAdaptParams()
-            : enabled(true)
-            , initial(0.0)
-            , hysteresis(0.02)
-            , adapt_step(0.001)
-            , target_ber(1e-12)
-            , drift_threshold(0.05) {}
-    } threshold;
+    // Vref adaptation parameters (for dual-threshold DFE error extraction)
+    struct VrefAdaptParams {
+        bool enabled;                // Enable Vref adaptation; false = use fixed Vref
+        double vref_pos;             // Fixed +Vref threshold (V), used when enabled=false
+        double vref_neg;             // Fixed -Vref threshold (V), used when enabled=false
+        double vref_initial;         // Initial Vref for adaptation (V)
+        double target_confidence;    // Target joint confidence C (e.g. 0.7)
+        double asymmetry_alert;      // Asymmetry alert threshold |Delta| (e.g. 0.15)
+        double adapt_alpha;          // Vref adaptation step factor
+
+        VrefAdaptParams()
+            : enabled(false)
+            , vref_pos(0.15)
+            , vref_neg(-0.15)
+            , vref_initial(0.15)
+            , target_confidence(0.7)
+            , asymmetry_alert(0.15)
+            , adapt_alpha(0.05) {}
+    } vref_adapt;
     
     // CDR PI controller parameters
     struct CdrPiAdaptParams {
@@ -577,6 +587,15 @@ struct AdaptionParams {
         , update_mode("multi-rate")
         , fast_update_period(2.5e-10)
         , slow_update_period(2.5e-7) {}
+
+    // Convenience: get DFE tap count
+    int dfe_num_taps() const { return dfe.enabled ? dfe.num_taps : 0; }
+
+    // Convenience: get current Vref (positive)
+    double get_vref_pos() const { return vref_adapt.vref_pos; }
+
+    // Convenience: get current Vref (negative)
+    double get_vref_neg() const { return vref_adapt.vref_neg; }
 };
 
 // ============================================================================

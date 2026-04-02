@@ -3,7 +3,7 @@
 
 namespace serdes {
 
-RxTopModule::RxTopModule(sc_core::sc_module_name nm, 
+RxTopModule::RxTopModule(sc_core::sc_module_name nm,
                          const RxParams& rx_params,
                          const AdaptionParams& adaption_params)
     : sc_module(nm)
@@ -19,36 +19,52 @@ RxTopModule::RxTopModule(sc_core::sc_module_name nm,
     , m_sig_dfe_out_p("sig_dfe_out_p")
     , m_sig_dfe_out_n("sig_dfe_out_n")
     , m_sig_sampler_out("sig_sampler_out")
+    , m_sig_vref_pos_out("sig_vref_pos_out")
+    , m_sig_vref_neg_out("sig_vref_neg_out")
     , m_sig_cdr_phase("sig_cdr_phase")
     , m_sig_cdr_in("sig_cdr_in")
     , m_sig_data_feedback("sig_data_feedback")
     , m_sig_clk("sig_clk")
-    // DE-TDF bridge signals (Adaption outputs)
-    , m_sig_vga_gain_de("sig_vga_gain_de")
+    // DfeAdaptTdf -> DFE Summer taps
     , m_sig_dfe_tap1_de("sig_dfe_tap1_de")
     , m_sig_dfe_tap2_de("sig_dfe_tap2_de")
     , m_sig_dfe_tap3_de("sig_dfe_tap3_de")
     , m_sig_dfe_tap4_de("sig_dfe_tap4_de")
     , m_sig_dfe_tap5_de("sig_dfe_tap5_de")
-    , m_sig_sampler_threshold_de("sig_sampler_threshold_de")
-    , m_sig_sampler_hysteresis_de("sig_sampler_hysteresis_de")
-    , m_sig_phase_cmd_de("sig_phase_cmd_de")
-    // DE-TDF bridge signals (Adaption inputs)
-    , m_sig_phase_error_de("sig_phase_error_de")
-    , m_sig_amplitude_rms_de("sig_amplitude_rms_de")
-    , m_sig_error_count_de("sig_error_count_de")
-    , m_sig_isi_metric_de("sig_isi_metric_de")
-    , m_sig_mode_de("sig_mode_de")
-    , m_sig_reset_de("sig_reset_de")
-    , m_sig_scenario_switch_de("sig_scenario_switch_de")
-    , m_sig_sampler_data_out_de("sig_sampler_data_out_de")
-    // Other Adaption outputs
-    , m_sig_ctle_zero_de("sig_ctle_zero_de")
-    , m_sig_ctle_pole_de("sig_ctle_pole_de")
-    , m_sig_ctle_dc_gain_de("sig_ctle_dc_gain_de")
     , m_sig_dfe_tap6_de("sig_dfe_tap6_de")
     , m_sig_dfe_tap7_de("sig_dfe_tap7_de")
     , m_sig_dfe_tap8_de("sig_dfe_tap8_de")
+    // DfeAdaptTdf -> AdaptionDe statistics
+    , m_sig_stat_N_A_de("sig_stat_N_A_de")
+    , m_sig_stat_N_B_de("sig_stat_N_B_de")
+    , m_sig_stat_N_C_de("sig_stat_N_C_de")
+    , m_sig_stat_N_D_de("sig_stat_N_D_de")
+    , m_sig_stat_P_pos_de("sig_stat_P_pos_de")
+    , m_sig_stat_P_neg_de("sig_stat_P_neg_de")
+    , m_sig_stat_C_de("sig_stat_C_de")
+    , m_sig_stat_Delta_de("sig_stat_Delta_de")
+    , m_sig_stat_state_de("sig_stat_state_de")
+    , m_sig_stat_mu_de("sig_stat_mu_de")
+    , m_sig_stat_update_count_de("sig_stat_update_count_de")
+    , m_sig_vref_current_de("sig_vref_current_de")
+    // AdaptionDe -> DfeAdaptTdf control
+    , m_sig_mode_de("sig_mode_de")
+    , m_sig_reset_de("sig_reset_de")
+    , m_sig_vref_cmd_de("sig_vref_cmd_de")
+    // AdaptionDe -> VGA
+    , m_sig_vga_gain_de("sig_vga_gain_de")
+    // AdaptionDe -> Sampler
+    , m_sig_sampler_threshold_de("sig_sampler_threshold_de")
+    , m_sig_sampler_hysteresis_de("sig_sampler_hysteresis_de")
+    // CDR -> AdaptionDe
+    , m_sig_phase_error_de("sig_phase_error_de")
+    , m_sig_amplitude_rms_de("sig_amplitude_rms_de")
+    , m_sig_scenario_switch_de("sig_scenario_switch_de")
+    // AdaptionDe monitoring outputs
+    , m_sig_ctle_zero_de("sig_ctle_zero_de")
+    , m_sig_ctle_pole_de("sig_ctle_pole_de")
+    , m_sig_ctle_dc_gain_de("sig_ctle_dc_gain_de")
+    , m_sig_phase_cmd_de("sig_phase_cmd_de")
     , m_sig_update_count_de("sig_update_count_de")
     , m_sig_freeze_flag_de("sig_freeze_flag_de")
     // Parameters
@@ -58,148 +74,229 @@ RxTopModule::RxTopModule(sc_core::sc_module_name nm,
     // ========================================================================
     // Instantiate sub-modules (TDF domain)
     // ========================================================================
-    
-    // CTLE: Continuous-Time Linear Equalizer
+
     m_ctle = new RxCtleTdf("ctle", m_params.ctle);
-    
-    // VGA: Variable Gain Amplifier
     m_vga = new RxVgaTdf("vga", m_params.vga);
-    
-    // DFE Summer: 差分 DFE 求和器 (替代双 DFE)
     m_dfe_summer = new RxDfeSummerTdf("dfe_summer", m_params.dfe_summer);
-    
-    // Sampler: Decision circuit
-    // Configure for phase-driven mode (CDR controls sampling phase)
+
+    // Main sampler: threshold = 0 (data decision d_k)
     RxSamplerParams sampler_params = m_params.sampler;
-    sampler_params.phase_source = "phase";  // Force phase-driven mode
+    sampler_params.phase_source = "phase";
+    sampler_params.threshold = 0.0;
     m_sampler = new RxSamplerTdf("sampler", sampler_params);
-    
-    // CDR: Clock and Data Recovery
+
+    // +Vref comparator: threshold = +Vref
+    double vref_pos = m_adaption_params.vref_adapt.vref_pos;
+    RxSamplerParams vref_pos_params = sampler_params;
+    vref_pos_params.threshold = vref_pos;
+    vref_pos_params.hysteresis = 0.0;  // No hysteresis for Vref comparators
+    m_vref_pos_sampler = new RxSamplerTdf("vref_pos_sampler", vref_pos_params);
+
+    // -Vref comparator: threshold = -Vref
+    double vref_neg = m_adaption_params.vref_adapt.vref_neg;
+    RxSamplerParams vref_neg_params = sampler_params;
+    vref_neg_params.threshold = vref_neg;
+    vref_neg_params.hysteresis = 0.0;
+    m_vref_neg_sampler = new RxSamplerTdf("vref_neg_sampler", vref_neg_params);
+
     m_cdr = new RxCdrTdf("cdr", m_params.cdr);
-    
+
+    // DFE Adaptation Engine (TDF domain, Plan A)
+    m_dfe_adapt = new DfeAdaptTdf("dfe_adapt",
+                                   m_adaption_params.dfe,
+                                   m_adaption_params.vref_adapt);
+
     // ========================================================================
     // Instantiate sub-modules (DE domain)
     // ========================================================================
-    
-    // Adaption: DE 域自适应控制模块
+
     m_adaption = new AdaptionDe("adaption", m_adaption_params);
-    
+
     // ========================================================================
     // Instantiate helper modules
     // ========================================================================
-    
-    // Clock source: Dummy clock for Sampler's clk_sample port
-    // (Required for port connection but not used in phase-driven mode)
+
     m_clk_src = new ConstClockSource("clk_src");
-    
-    // Data output tap: Pass-through module to drive external data_out port
     m_data_out_tap = new SignalPassThrough("data_out_tap");
-    
-    // Sampler splitter: Split sampler output to CDR and data feedback
     m_sampler_splitter = new SignalSplitter("sampler_splitter");
-    
+    m_dfe_out_splitter = new SignalSplitter3("dfe_out_splitter");
+
     // ========================================================================
     // Connect TDF signal chain
     // ========================================================================
-    
-    // External input → CTLE input (differential)
+
+    // External input -> CTLE -> VGA -> DFE Summer
     m_ctle->in_p(in_p);
     m_ctle->in_n(in_n);
     m_ctle->vdd(vdd);
-    
-    // CTLE output → VGA input
     m_ctle->out_p(m_sig_ctle_out_p);
     m_ctle->out_n(m_sig_ctle_out_n);
+
     m_vga->in_p(m_sig_ctle_out_p);
     m_vga->in_n(m_sig_ctle_out_n);
     m_vga->vdd(vdd);
-    
-    // VGA output → DFE Summer input (differential)
     m_vga->out_p(m_sig_vga_out_p);
     m_vga->out_n(m_sig_vga_out_n);
+
     m_dfe_summer->in_p(m_sig_vga_out_p);
     m_dfe_summer->in_n(m_sig_vga_out_n);
-    
-    // DFE Summer output → Sampler input (differential)
+
+    // DFE Summer output -> 3-way splitter -> three comparators
     m_dfe_summer->out_p(m_sig_dfe_out_p);
     m_dfe_summer->out_n(m_sig_dfe_out_n);
-    m_sampler->in_p(m_sig_dfe_out_p);
+    m_dfe_out_splitter->in(m_sig_dfe_out_p);
+    m_dfe_out_splitter->out1(m_sig_dfe_to_main_in);   // -> Main sampler in_p
+    m_dfe_out_splitter->out2(m_sig_dfe_to_vpos_in);   // -> +Vref comparator in_p
+    m_dfe_out_splitter->out3(m_sig_dfe_to_vneg_in);   // -> -Vref comparator in_p
+
+    // Connect three comparators (differential: split out_p, use same out_n)
+    // Main sampler: in_p from splitter out1, in_n from dfe_out_n
+    m_sampler->in_p(m_sig_dfe_to_main_in);
     m_sampler->in_n(m_sig_dfe_out_n);
-    
-    // Sampler control signals
+
+    // +Vref comparator: same differential input
+    m_vref_pos_sampler->in_p(m_sig_dfe_to_vpos_in);
+    m_vref_pos_sampler->in_n(m_sig_dfe_out_n);
+
+    // -Vref comparator: same differential input
+    m_vref_neg_sampler->in_p(m_sig_dfe_to_vneg_in);
+    m_vref_neg_sampler->in_n(m_sig_dfe_out_n);
+
+    // Dummy clock for all samplers
     m_clk_src->out(m_sig_clk);
-    m_sampler->clk_sample(m_sig_clk);       // Dummy clock (unused in phase mode)
-    // Note: sampling_trigger comes from CDR below
-    m_sampler->data_out_de(m_sig_sampler_data_out_de);  // DE domain output
-    
-    // Sampler output → Splitter → CDR and data feedback
-    m_sampler->data_out(m_sig_sampler_out);
-    m_sampler_splitter->in(m_sig_sampler_out);
-    m_sampler_splitter->out1(m_sig_data_feedback);  // To DFE Summer
-    m_sampler_splitter->out2(m_sig_cdr_in);         // To CDR
-    
-    // Data feedback → DFE Summer (历史判决反馈)
-    m_dfe_summer->data_in(m_sig_data_feedback);
-    
-    // CDR input from splitter output
-    m_cdr->in(m_sig_cdr_in);
-    
-    // CDR outputs: phase_out (for monitoring) and sampling_trigger (controls sampler)
-    m_cdr->phase_out(m_sig_cdr_phase);          // For debug/monitoring only
-    m_cdr->sampling_trigger(m_sig_sampling_trigger);  // Controls when sampler captures
-    
-    // Connect CDR's sampling trigger to sampler
+    m_sampler->clk_sample(m_sig_clk);
+    m_vref_pos_sampler->clk_sample(m_sig_clk);
+    m_vref_neg_sampler->clk_sample(m_sig_clk);
+
+    // CDR sampling trigger -> all three comparators
+    m_cdr->sampling_trigger(m_sig_sampling_trigger);
     m_sampler->sampling_trigger(m_sig_sampling_trigger);
-    
-    // External data_out: pass-through from sampler output
+    m_vref_pos_sampler->sampling_trigger(m_sig_sampling_trigger);
+    m_vref_neg_sampler->sampling_trigger(m_sig_sampling_trigger);
+
+    // Main sampler output (data_out) -> downstream
+    m_sampler->data_out(m_sig_sampler_out);
+    // +Vref comparator output
+    m_vref_pos_sampler->data_out(m_sig_vref_pos_out);
+    // -Vref comparator output
+    m_vref_neg_sampler->data_out(m_sig_vref_neg_out);
+
+    // Main sampler -> splitter -> CDR input + DFE Summer data feedback
+    m_sampler_splitter->in(m_sig_sampler_out);
+    m_sampler_splitter->out1(m_sig_data_feedback);  // -> DFE Summer
+    m_sampler_splitter->out2(m_sig_cdr_in);         // -> CDR
+
+    m_dfe_summer->data_in(m_sig_data_feedback);
+    m_cdr->in(m_sig_cdr_in);
+    m_cdr->phase_out(m_sig_cdr_phase);
+
+    // Bind unused data_out_de ports to dummy signals (required by SystemC-AMS)
+    m_sampler->data_out_de(m_sig_dummy_data_out_de_0);
+    m_vref_pos_sampler->data_out_de(m_sig_dummy_data_out_de_pos);
+    m_vref_neg_sampler->data_out_de(m_sig_dummy_data_out_de_neg);
+
+    // External data_out
     m_data_out_tap->in(m_sig_sampler_out);
     m_data_out_tap->out(data_out);
-    
+
     // ========================================================================
-    // Connect DE-TDF bridge signals (Adaption ↔ TDF modules)
+    // Connect DfeAdaptTdf inputs
     // ========================================================================
-    
-    // Adaption inputs (from DE signals - need external driver or default)
-    m_adaption->phase_error(m_sig_phase_error_de);
-    m_adaption->amplitude_rms(m_sig_amplitude_rms_de);
-    m_adaption->error_count(m_sig_error_count_de);
-    m_adaption->isi_metric(m_sig_isi_metric_de);
-    m_adaption->mode(m_sig_mode_de);
-    m_adaption->reset(m_sig_reset_de);
-    m_adaption->scenario_switch(m_sig_scenario_switch_de);
-    
-    // Adaption outputs (to DE signals)
-    m_adaption->vga_gain(m_sig_vga_gain_de);
-    m_adaption->ctle_zero(m_sig_ctle_zero_de);
-    m_adaption->ctle_pole(m_sig_ctle_pole_de);
-    m_adaption->ctle_dc_gain(m_sig_ctle_dc_gain_de);
-    m_adaption->dfe_tap1(m_sig_dfe_tap1_de);
-    m_adaption->dfe_tap2(m_sig_dfe_tap2_de);
-    m_adaption->dfe_tap3(m_sig_dfe_tap3_de);
-    m_adaption->dfe_tap4(m_sig_dfe_tap4_de);
-    m_adaption->dfe_tap5(m_sig_dfe_tap5_de);
-    m_adaption->dfe_tap6(m_sig_dfe_tap6_de);
-    m_adaption->dfe_tap7(m_sig_dfe_tap7_de);
-    m_adaption->dfe_tap8(m_sig_dfe_tap8_de);
-    m_adaption->sampler_threshold(m_sig_sampler_threshold_de);
-    m_adaption->sampler_hysteresis(m_sig_sampler_hysteresis_de);
-    m_adaption->phase_cmd(m_sig_phase_cmd_de);
-    m_adaption->update_count(m_sig_update_count_de);
-    m_adaption->freeze_flag(m_sig_freeze_flag_de);
-    
-    // Connect DFE Summer DE ports (抽头更新)
+
+    // Three comparator outputs -> DfeAdaptTdf
+    // Note: data_out is sca_out<double>, carrying 0 or 1
+    // We need to split: data_out is already used for CDR/DFE feedback.
+    // Use data_out for DfeAdaptTdf's data_in.
+    // The +Vref and -Vref comparators have their own data_out ports.
+
+    // Three comparator outputs -> DfeAdaptTdf
+    m_dfe_adapt->data_in(m_sig_sampler_out);
+    m_dfe_adapt->vref_pos_in(m_sig_vref_pos_out);
+    m_dfe_adapt->vref_neg_in(m_sig_vref_neg_out);
+    m_dfe_adapt->sampling_trigger(m_sig_sampling_trigger);
+
+    // DE control inputs
+    m_dfe_adapt->mode_de(m_sig_mode_de);
+    m_dfe_adapt->reset_de(m_sig_reset_de);
+    m_dfe_adapt->vref_cmd_de(m_sig_vref_cmd_de);
+
+    // ========================================================================
+    // Connect DfeAdaptTdf outputs -> DFE Summer taps
+    // ========================================================================
+    m_dfe_adapt->tap1_de(m_sig_dfe_tap1_de);
+    m_dfe_adapt->tap2_de(m_sig_dfe_tap2_de);
+    m_dfe_adapt->tap3_de(m_sig_dfe_tap3_de);
+    m_dfe_adapt->tap4_de(m_sig_dfe_tap4_de);
+    m_dfe_adapt->tap5_de(m_sig_dfe_tap5_de);
+    m_dfe_adapt->tap6_de(m_sig_dfe_tap6_de);
+    m_dfe_adapt->tap7_de(m_sig_dfe_tap7_de);
+    m_dfe_adapt->tap8_de(m_sig_dfe_tap8_de);
+
     m_dfe_summer->tap1_de(m_sig_dfe_tap1_de);
     m_dfe_summer->tap2_de(m_sig_dfe_tap2_de);
     m_dfe_summer->tap3_de(m_sig_dfe_tap3_de);
     m_dfe_summer->tap4_de(m_sig_dfe_tap4_de);
     m_dfe_summer->tap5_de(m_sig_dfe_tap5_de);
-    
-    // Initialize DE input signals with default values
+
+    // ========================================================================
+    // Connect DfeAdaptTdf statistics -> AdaptionDe
+    // ========================================================================
+    m_dfe_adapt->stat_N_A(m_sig_stat_N_A_de);
+    m_dfe_adapt->stat_N_B(m_sig_stat_N_B_de);
+    m_dfe_adapt->stat_N_C(m_sig_stat_N_C_de);
+    m_dfe_adapt->stat_N_D(m_sig_stat_N_D_de);
+    m_dfe_adapt->stat_P_pos(m_sig_stat_P_pos_de);
+    m_dfe_adapt->stat_P_neg(m_sig_stat_P_neg_de);
+    m_dfe_adapt->stat_C(m_sig_stat_C_de);
+    m_dfe_adapt->stat_Delta(m_sig_stat_Delta_de);
+    m_dfe_adapt->stat_state(m_sig_stat_state_de);
+    m_dfe_adapt->stat_mu(m_sig_stat_mu_de);
+    m_dfe_adapt->stat_update_count(m_sig_stat_update_count_de);
+    m_dfe_adapt->vref_current(m_sig_vref_current_de);
+
+    m_adaption->stat_N_A(m_sig_stat_N_A_de);
+    m_adaption->stat_N_B(m_sig_stat_N_B_de);
+    m_adaption->stat_N_C(m_sig_stat_N_C_de);
+    m_adaption->stat_N_D(m_sig_stat_N_D_de);
+    m_adaption->stat_P_pos(m_sig_stat_P_pos_de);
+    m_adaption->stat_P_neg(m_sig_stat_P_neg_de);
+    m_adaption->stat_C(m_sig_stat_C_de);
+    m_adaption->stat_Delta(m_sig_stat_Delta_de);
+    m_adaption->stat_dfe_state(m_sig_stat_state_de);
+
+    // ========================================================================
+    // Connect AdaptionDe -> DfeAdaptTdf (control)
+    // ========================================================================
+    m_adaption->vref_cmd(m_sig_vref_cmd_de);
+
+    // ========================================================================
+    // Connect AdaptionDe other ports
+    // ========================================================================
+
+    // AdaptionDe inputs
+    m_adaption->phase_error(m_sig_phase_error_de);
+    m_adaption->amplitude_rms(m_sig_amplitude_rms_de);
+    m_adaption->mode(m_sig_mode_de);
+    m_adaption->reset(m_sig_reset_de);
+    m_adaption->scenario_switch(m_sig_scenario_switch_de);
+
+    // AdaptionDe outputs
+    m_adaption->vga_gain(m_sig_vga_gain_de);
+    m_adaption->ctle_zero(m_sig_ctle_zero_de);
+    m_adaption->ctle_pole(m_sig_ctle_pole_de);
+    m_adaption->ctle_dc_gain(m_sig_ctle_dc_gain_de);
+    m_adaption->sampler_threshold(m_sig_sampler_threshold_de);
+    m_adaption->sampler_hysteresis(m_sig_sampler_hysteresis_de);
+    m_adaption->phase_cmd(m_sig_phase_cmd_de);
+    m_adaption->update_count(m_sig_update_count_de);
+    m_adaption->freeze_flag(m_sig_freeze_flag_de);
+
+    // ========================================================================
+    // Initialize DE signals with default values
+    // ========================================================================
     m_sig_phase_error_de.write(0.0);
     m_sig_amplitude_rms_de.write(0.4);
-    m_sig_error_count_de.write(0);
-    m_sig_isi_metric_de.write(0.0);
-    m_sig_mode_de.write(2);  // Data mode
+    m_sig_mode_de.write(2);        // Data mode from start
     m_sig_reset_de.write(false);
     m_sig_scenario_switch_de.write(0.0);
 }
@@ -210,11 +307,15 @@ RxTopModule::~RxTopModule()
     delete m_vga;
     delete m_dfe_summer;
     delete m_sampler;
+    delete m_vref_pos_sampler;
+    delete m_vref_neg_sampler;
     delete m_cdr;
+    delete m_dfe_adapt;
     delete m_adaption;
     delete m_clk_src;
     delete m_data_out_tap;
     delete m_sampler_splitter;
+    delete m_dfe_out_splitter;
 }
 
 double RxTopModule::get_cdr_phase() const
