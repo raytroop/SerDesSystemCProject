@@ -34,7 +34,7 @@ struct SerdesLinkParams {
         // Default adaption parameters (disabled)
         adaption.agc.enabled = false;
         adaption.dfe.enabled = false;
-        adaption.threshold.enabled = false;
+        adaption.vref_adapt.enabled = false;
         adaption.cdr_pi.enabled = false;
         adaption.safety.freeze_on_error = false;
         adaption.safety.rollback_enable = false;

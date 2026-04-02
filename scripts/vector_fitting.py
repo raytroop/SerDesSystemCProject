@@ -1592,7 +1592,7 @@ class SParamModel:
             'fs': float(fs),
             'full_model': {
                 'n_diff_ports': n_diff,
-                'n_outputs': int(ss['n_pairs']),
+                'n_outputs': int(ss['n_outputs']),
                 'n_states': int(ss['n_states']),
                 'port_pairs': [[int(o), int(i)] for o, i in ss['port_pairs']],
                 'delay_s': delay_list,

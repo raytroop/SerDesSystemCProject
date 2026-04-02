@@ -194,7 +194,7 @@ struct NrzLinkConfig {
         rx.vga.noise_enable = false;
         
         // ====== RX DFE Summer ======
-        rx.dfe_summer.tap_coeffs = {-0.05, -0.02, 0.01};
+        rx.dfe_summer.tap_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0};  // 5 taps, all from DfeAdaptTdf
         rx.dfe_summer.vcm_out = 0.0;
         rx.dfe_summer.vtap = 1.0;
         rx.dfe_summer.map_mode = "pm1";
@@ -235,12 +235,13 @@ struct NrzLinkConfig {
         adaption.dfe.num_taps = 5;
         adaption.dfe.algorithm = "sign-lms";
         adaption.dfe.mu = 1e-4;
-        adaption.dfe.initial_taps = {-0.05, -0.02, 0.01, 0.005, 0.002};
-        
-        adaption.threshold.enabled = true;
-        adaption.threshold.initial = 0.0;
-        adaption.threshold.hysteresis = 0.02;
-        
+        adaption.dfe.initial_taps = {0.0, 0.0, 0.0, 0.0, 0.0};
+        adaption.dfe.stats_period = 1024;
+
+        adaption.vref_adapt.enabled = false;
+        adaption.vref_adapt.vref_pos = 0.15;
+        adaption.vref_adapt.vref_neg = -0.15;
+
         adaption.cdr_pi.enabled = true;
         adaption.cdr_pi.kp = 0.01;
         adaption.cdr_pi.ki = 1e-4;
@@ -304,7 +305,7 @@ struct NrzLinkConfig {
     void disable_adaption() {
         adaption.agc.enabled = false;
         adaption.dfe.enabled = false;
-        adaption.threshold.enabled = false;
+        adaption.vref_adapt.enabled = false;
         adaption.cdr_pi.enabled = false;
     }
     
